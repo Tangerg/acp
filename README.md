@@ -42,6 +42,7 @@ disagree, the schema is right and this is a bug.
 ## Documentation
 
 - [AGENTS.md](./AGENTS.md) — the rules this repository is built under
+- [DESIGN.md](./DESIGN.md) — the Go shape of the protocol, and why
 - [CONTRIBUTING.md](./CONTRIBUTING.md) — toolchain, the gate, and how to release
 - [CHANGELOG.md](./CHANGELOG.md) — caller-visible changes
 - [SECURITY.md](./SECURITY.md) — reporting a vulnerability privately
