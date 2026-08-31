@@ -1,0 +1,173 @@
+version: "2"
+
+# Lint configuration for the module.
+#
+# The enabled set is deliberately much broader than golangci-lint's default six.
+# This file exists so the standard is enforced on every push rather than
+# re-established by hand: a finding is either fixed, or suppressed at the exact
+# line with a comment saying why. No linter that found real code is disabled
+# wholesale.
+
+run:
+  # Tests are where most of this repository's claims are actually stated, so they
+  # are held to the same standard as the code they describe.
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - asasalint
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - canonicalheader
+    - containedctx
+    - contextcheck
+    - copyloopvar
+    - decorder
+    - dogsled
+    - dupl
+    - dupword
+    - durationcheck
+    - errcheck
+    - errchkjson
+    - errname
+    - errorlint
+    - exhaustive
+    - exptostd
+    - fatcontext
+    - forcetypeassert
+    - gocheckcompilerdirectives
+    - gochecksumtype
+    - gocognit
+    - goconst
+    - gocritic
+    - gocyclo
+    - godoclint
+    - godot
+    - goprintffuncname
+    - gosec
+    - govet
+    - iface
+    - inamedparam
+    - ineffassign
+    - interfacebloat
+    - intrange
+    - iotamixing
+    - makezero
+    - maintidx
+    - mirror
+    - misspell
+    - modernize
+    - nakedret
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - noctx
+    - nolintlint
+    - nosprintfhostport
+    - perfsprint
+    - predeclared
+    - reassign
+    - recvcheck
+    - revive
+    - staticcheck
+    - tagalign
+    - testableexamples
+    - thelper
+    - tparallel
+    - unconvert
+    - unparam
+    - unused
+    - usestdlibvars
+    - usetesting
+    - wastedassign
+    - whitespace
+
+  settings:
+    govet:
+      # Includes shadow, so the zero-shadowing property is enforced rather than
+      # periodically restored.
+      enable-all: true
+      disable:
+        # Field order in the protocol types is chosen to read as documentation and
+        # to match the published schema's own ordering, so a reader can hold one
+        # against the other. Reordering for padding would trade that for a few
+        # bytes per message.
+        - fieldalignment
+
+    exhaustive:
+      # The protocol's string enumerations are open by design: a peer may send a
+      # variant from a later revision, and a default case is how this package
+      # refuses it rather than silently ignoring it.
+      default-signifies-exhaustive: true
+
+    goconst:
+      # Tests repeat values in readable case tables on purpose and are excluded
+      # below. Ignoring them while counting too stops a test-only repetition from
+      # reporting the sole real occurrence.
+      ignore-tests: true
+      # Equal strings in separate messages are not the same concept. Only
+      # repetitions that can drift apart should share a constant.
+      match-constant: false
+
+    gocognit:
+      # A function above this line is doing more than one readable job. Tests use
+      # deliberate case tables and fault scripts, so the production-only rule is
+      # selected below.
+      min-complexity: 30
+
+    gocyclo:
+      min-complexity: 30
+
+    recvcheck:
+      # Reading a value and writing one are not the same receiver, and the wire
+      # encoding needs both: MarshalJSON reads, and json.Unmarshaler cannot be
+      # satisfied without a pointer. It is what time.Time and net.IP do, and the
+      # alternative is a value type nobody can decode into.
+      exclusions:
+        - "*.UnmarshalJSON"
+        - "*.UnmarshalText"
+
+    nolintlint:
+      # A suppression is a claim that the linter is wrong. It has to name the rule
+      # it disables and say why, or it is indistinguishable from silencing a real
+      # finding.
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+
+  exclusions:
+    # Generated files are code too. Protocol types generated from the published
+    # schema are the ones most worth linting, so the implicit exclusion is off from
+    # the day the first one appears.
+    generated: disable
+    warn-unused: true
+    rules:
+      # A failed assertion in a test is a test failure with a stack trace pointing
+      # at the assertion. The comma-ok form would add a branch that can only ever
+      # report the same thing less directly.
+      - path: _test\.go
+        linters:
+          - forcetypeassert
+
+      # Production functions have one readable responsibility. Table-driven tests
+      # and fault scripts deliberately combine many cases; splitting those would
+      # hide the complete contract they audit.
+      - path: _test\.go
+        linters:
+          - gocognit
+          - gocyclo
+          - maintidx
+
+issues:
+  # Truncating output turns "clean" into "clean as far as we looked".
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  exclusions:
+    generated: disable

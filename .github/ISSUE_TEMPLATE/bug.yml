@@ -1,0 +1,85 @@
+name: Bug report
+description: Report reproducible incorrect behavior in a published release
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security vulnerabilities must use the private process in SECURITY.md.
+        For other defects, provide the smallest program and exact environment that reproduce the behavior.
+
+  - type: dropdown
+    id: side
+    attributes:
+      label: Which side
+      description: Whether this package was acting as the client or as the agent.
+      options:
+        - Client driving an agent
+        - Agent serving a client
+        - Both
+        - Neither, or not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Module version
+      description: Give the release version or commit.
+      placeholder: v0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: protocol
+    attributes:
+      label: Protocol version
+      description: The protocolVersion negotiated by initialize, and the peer implementation if known.
+      placeholder: "1, against Zed 0.2xx"
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include `go version`, operating system, and the transport such as subprocess stdio.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Include a program, test, or JSON-RPC message sequence and the command that runs it.
+      render: go
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: State what happened, including errors or the messages exchanged.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: State the contract you expected the library to preserve, and where the schema states it.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I reproduced this with the latest release.
+          required: true
+        - label: This report contains no private exploit or credential material.
+          required: true

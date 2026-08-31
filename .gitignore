@@ -1,0 +1,19 @@
+# Binaries built from the examples and from any local scratch command.
+/bin/
+*.exe
+*.test
+
+# Coverage and profiling output.
+*.out
+*.prof
+coverage.*
+
+# Editor and OS leavings. Kept here rather than in a personal global ignore file
+# because a contributor on a different editor should not have to discover this.
+.idea/
+.vscode/
+.DS_Store
+*~
+
+# Documentation-check dependencies.
+node_modules/
