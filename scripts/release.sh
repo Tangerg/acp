@@ -71,6 +71,10 @@ if [[ -n "$(git status --porcelain)" ]]; then
 	echo "release: the working tree has uncommitted changes" >&2
 	exit 2
 fi
+if ! git remote get-url "$REMOTE" >/dev/null 2>&1; then
+	echo "release: no '$REMOTE' remote; a release is a tag somebody else can fetch" >&2
+	exit 2
+fi
 git fetch --tags --quiet "$REMOTE"
 if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
 	echo "release: $tag already exists; a published tag is never moved" >&2
