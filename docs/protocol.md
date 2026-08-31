@@ -73,21 +73,33 @@ methods, 14 client methods, and one protocol method — 43 in total.** The
 
 `$/cancel_request` cancels a single in-flight JSON-RPC request. LSP's spelling,
 not MCP's `notifications/cancelled`. It is distinct from `session/cancel`, which
-cancels a *turn* — see [design.md](./design.md#cancellation-is-not-ctxerr), where
+cancels a *turn* — see [design.md](./design.md#two-cancellations-kept-apart), where
 the difference decides an API signature.
 
 ## Capability gating
 
-`initialize` is a capability exchange. Past the baseline — `initialize`,
-`authenticate`, `session/new`, `session/prompt` on one side and
-`session/request_permission` on the other — a method may only be called if the
-peer advertised the capability that gates it. An agent that was never told the
+`initialize` is a capability exchange. Many methods may only be called if the
+peer advertised the capability that gates them: an agent that was never told the
 client can read files does not ask it to.
 
-This makes capability advertisement a correctness concern rather than metadata,
-and it is why [design.md](./design.md#handlers-are-fields-and-they-imply-capabilities)
-derives what is advertised from what is implemented instead of asking a caller to
-keep two lists in step.
+Not everything past the baseline is gated, and it is worth being precise because
+an earlier draft of these notes was not. `session/cancel` and `session/update`
+are baseline session operations with no capability behind them, and there are
+other exceptions. The gate for any given method is whatever the schema's
+capability types say, which is the only list worth trusting.
+
+Where a capability does exist, it is not always one per method.
+`ClientCapabilities.terminal` is a single boolean documented as "Whether the
+Client support all `terminal*` methods" — one flag for five methods — while
+`ClientCapabilities.fs` is two independent booleans, `readTextFile` and
+`writeTextFile`.
+
+This makes capability advertisement a correctness concern rather than metadata:
+capabilities decide whether an agent may read a file or run a command, so they
+are an authority boundary. It is why
+[design.md](./design.md#handlers-are-fields-and-capabilities-are-derived-from-complete-groups)
+derives what is advertised from what is implemented, in whatever grouping the
+capability type actually has.
 
 ## The shape of a turn
 
@@ -120,19 +132,45 @@ request with `RequestPermissionOutcome::Cancelled`"; and on `Client.sessionUpdat
 "Clients SHOULD continue accepting tool call updates even after sending a
 `session/cancel` notification").
 
+`session/cancel` is not `$/cancel_request`, and the difference is not cosmetic.
+`$/cancel_request` cancels one JSON-RPC request — the TypeScript SDK sends it
+when a per-request abort signal fires (`src/jsonrpc.ts:99`). `session/cancel`
+cancels a turn and leaves the request outstanding, on purpose, so that the agent
+can answer it. [design.md](./design.md#two-cancellations-kept-apart) keeps them
+as two separate operations in Go for this reason.
+
 ## The type system
 
 From `schema/schema.json` at `schema-v1.21.0`: **265 definitions and 41 unions.**
 
-The unions split cleanly in two, and the split decides how they are represented
-in Go:
+The unions do not split in two. They split in five, and the schema is explicit
+about which is which:
 
-- **14 are closed sets of strings** — `StopReason`, `ToolKind`, `ToolCallStatus`,
-  `Role`, `PlanEntryPriority` and friends.
-- **27 carry a discriminator and a payload.** The largest is `SessionUpdate`,
-  with **15 arms** tagged by a `sessionUpdate` field. It is also the one sent
-  most: it is the whole of a turn's output.
+| Class | Count | Open? |
+| --- | --- | --- |
+| Closed string enumerations — `StopReason`, `ToolKind`, `Role` | 14 | No |
+| Open string unions — const arms plus a bare `string`: `LlmProtocol`, `CompactionStatus`, `SessionConfigOptionCategory` | 3 | Yes |
+| Closed discriminated object unions — `SessionUpdate`, `ContentBlock` | 16 | No |
+| Open object unions carrying a `not` catch-all | 4 | Yes |
+| Primitive, value and mixed — `RequestId`, `ErrorCode`, `ElicitationContentValue` | 4 | n/a |
 
-Both counts move upward over time. `SessionUpdate` did not start at fifteen.
-[design.md](./design.md#unions) treats that as the governing fact rather than a
-detail.
+The largest is `SessionUpdate`, with **15 arms** tagged by a `sessionUpdate`
+field. It is also the one sent most: it is the whole of a turn's output. It is
+**closed**.
+
+Openness is a property the schema states, not one an implementation may grant
+itself. `zStopReason` is five literals with no fallback; `zLlmProtocol` is five
+literals plus `z.string()` (`src/schema/zod.gen.ts:2075`, `:1671`). Exactly four
+unions carry the `not` clause that makes an object union open.
+
+Two schema extension keywords also carry decoding semantics no plain JSON decoder
+implements: **`x-deserialize-default-on-error` appears 378 times** and
+**`x-deserialize-skip-invalid-items` 35 times**. A malformed value under the
+first becomes the schema's declared default rather than failing the message.
+
+`schema.json` also marks **52 of its 265 definitions UNSTABLE** — providers,
+ACP-carried MCP, document sync, NES, session forking, compaction — so being in
+the v1 lane is not the same as being stable.
+
+[design.md](./design.md#unions) treats all of this as the governing constraint
+rather than detail.

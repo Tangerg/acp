@@ -40,7 +40,7 @@ jobs:
         # The language floor and the current patch release. The first catches an
         # accidental dependency on a later point release; the second catches changes
         # in the toolchain itself.
-        go: ["1.27.0", "1.27.x"]
+        go: ["1.25.0", "1.25.x"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -77,7 +77,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.27.x"
+          go-version: "1.25.x"
           check-latest: true
           # go.mod rather than go.sum: the module has no dependencies yet, and
           # setup-go fails outright on a cache path that matches no file.
@@ -123,13 +123,13 @@ jobs:
           fi
 
   floor:
-    name: Go 1.27 module floor
+    name: Go 1.25 module floor
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.27.0"
+          go-version: "1.25.0"
           cache: false
       - name: Test the declared floor on every supported source set
         env:
@@ -148,7 +148,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.27.x"
+          go-version: "1.25.x"
           check-latest: true
           # go.mod rather than go.sum: the module has no dependencies yet, and
           # setup-go fails outright on a cache path that matches no file.
@@ -190,7 +190,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.27.x"
+          go-version: "1.25.x"
           check-latest: true
           # go.mod rather than go.sum: the module has no dependencies yet, and
           # setup-go fails outright on a cache path that matches no file.
@@ -241,7 +241,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.27.x"
+          go-version: "1.25.x"
           check-latest: true
           # go.mod rather than go.sum: the module has no dependencies yet, and
           # setup-go fails outright on a cache path that matches no file.
@@ -250,9 +250,7 @@ jobs:
       # gofumpt rather than gofmt: it is gofmt plus the decisions gofmt left open,
       # and a repository that argues about them in review is one that has not made
       # them.
-      # The latest tagged gofumpt predates Go 1.27 method syntax. Pin the first
-      # upstream revision that parses it; do not float on master.
-      - run: go install mvdan.cc/gofumpt@v0.11.1-0.20260820074422-a2bc6805583d
+      - run: go install mvdan.cc/gofumpt@v0.11.0
       - name: gofumpt
         run: |
           set -euo pipefail
@@ -300,7 +298,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.27.x"
+          go-version: "1.25.x"
           check-latest: true
           # go.mod rather than go.sum: the module has no dependencies yet, and
           # setup-go fails outright on a cache path that matches no file.

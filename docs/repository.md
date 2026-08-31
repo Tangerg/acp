@@ -112,7 +112,7 @@ a protocol SDK exists to be called from outside it.
 
 ```text
 acp/
-├── go.mod                    module github.com/Tangerg/acp, Go 1.27
+├── go.mod                    module github.com/Tangerg/acp, Go 1.25
 ├── doc.go  version.go        the package, and ProtocolVersion
 ├── AGENTS.md                 the rules the code is written under
 ├── CLAUDE.md -> AGENTS.md    one file, two names, no drift
@@ -125,6 +125,23 @@ acp/
 
 `CLAUDE.md` is a symlink rather than a copy: two files with the same rules drift,
 and the one that drifts is whichever was not edited.
+
+## The language floor is 1.25, not the newest release
+
+oolong declares Go 1.27 because it uses Go 1.27 method syntax. This module
+inherited that number and had no such reason, which
+[design-review.md](./design-review.md#advisory-recommendations) caught: a
+library's floor is a cost it imposes on everyone who imports it, and it should be
+the lowest one it can justify.
+
+1.25 is justified — `testing/synctest` is stable there, and
+[roadmap.md](./roadmap.md#3-link) commits to testing the connection layer's
+shutdown and cancellation with it rather than with sleeps. Nothing in the design
+needs anything newer; the official MCP Go SDK declares 1.25 for comparable code.
+
+The gofumpt pin moved with it. It was a pseudo-version because that was the first
+revision parsing Go 1.27 methods; with no 1.27 syntax to parse, the released
+v0.11.0 formats this tree identically and is what CI installs.
 
 ## Versioning
 

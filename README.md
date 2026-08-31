@@ -15,7 +15,7 @@ client, because the two are the same message grammar read from opposite ends.
 go get github.com/Tangerg/acp
 ```
 
-Requires Go 1.27.
+Requires Go 1.25.
 
 ## Status
 
@@ -26,7 +26,7 @@ it targets is not.
 | --- | --- |
 | Protocol version | 1 |
 | Module version | unreleased |
-| Go floor | 1.27 |
+| Go floor | 1.25 |
 
 ## What it is
 
