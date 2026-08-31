@@ -8,6 +8,11 @@ config:
     siblings_only: true
   # Inline HTML is not used; badges are Markdown links.
   MD033: false
+  # Go is tab-indented — that is what gofmt emits — so a Go sample in the
+  # documentation is indented the way the file it describes would be. Prose is
+  # still held to spaces.
+  MD010:
+    code_blocks: false
 globs:
   - "**/*.md"
   - "!**/node_modules/**"

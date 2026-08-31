@@ -2,19 +2,32 @@
   "version": "0.2",
   "language": "en-GB,en-US",
   "useGitignore": true,
-  "files": ["*.md", "docs/**/*.md", "NOTICE"],
-  "ignorePaths": ["**/go.sum", "node_modules/**", "package-lock.json"],
+  "files": [
+    "*.md",
+    "docs/**/*.md",
+    "NOTICE"
+  ],
+  "ignorePaths": [
+    "**/go.sum",
+    "node_modules/**",
+    "package-lock.json"
+  ],
   "words": [
+    "acp",
     "agentclientprotocol",
+    "AGENTS",
     "apidiff",
+    "bidirectional",
     "deadcode",
     "dupl",
+    "elicitation",
     "errcheck",
     "fuzztime",
     "GOFLAGS",
     "gofumpt",
     "golangci",
     "goldens",
+    "gopls",
     "GOPROXY",
     "gorelease",
     "goroutines",
@@ -24,9 +37,13 @@
     "Itoa",
     "jsonrpc",
     "keepalive",
+    "LSP",
+    "ndjson",
     "notifications",
     "opencode",
+    "pkg",
     "Println",
+    "schemagen",
     "shfmt",
     "stdio",
     "strconv",
@@ -35,9 +52,12 @@
     "synctest",
     "Tangerg",
     "testdata",
+    "transliteration",
     "unmarshalling",
     "WASI",
     "wasip",
-    "Zed"
+    "workspaces",
+    "Zed",
+    "Zod"
   ]
 }
