@@ -73,7 +73,7 @@ methods, 14 client methods, and one protocol method — 43 in total.** The
 
 `$/cancel_request` cancels a single in-flight JSON-RPC request. LSP's spelling,
 not MCP's `notifications/cancelled`. It is distinct from `session/cancel`, which
-cancels a *turn* — see [design.md](./design.md#two-cancellations-kept-apart), where
+cancels a *turn* — see [design.md](./design.md#two-cancellations-and-who-owns-each), where
 the difference decides an API signature.
 
 ## Capability gating
@@ -85,8 +85,15 @@ client can read files does not ask it to.
 Not everything past the baseline is gated, and it is worth being precise because
 an earlier draft of these notes was not. `session/cancel` and `session/update`
 are baseline session operations with no capability behind them, and there are
-other exceptions. The gate for any given method is whatever the schema's
-capability types say, which is the only list worth trusting.
+other exceptions.
+
+Which method is gated by which capability is **not machine-readable**. The schema
+annotates payloads with `x-method` and `x-side`, 74 occurrences each, and has no
+annotation linking a method to a capability predicate — those links live only in
+prose descriptions. Any implementation therefore maintains that mapping itself;
+[design.md](./design.md#the-capability-table-is-hand-maintained-and-checked)
+makes it a pinned table that CI checks against `meta.json` rather than something
+read off the schema at runtime.
 
 Where a capability does exist, it is not always one per method.
 `ClientCapabilities.terminal` is a single boolean documented as "Whether the
@@ -97,14 +104,17 @@ Client support all `terminal*` methods" — one flag for five methods — while
 This makes capability advertisement a correctness concern rather than metadata:
 capabilities decide whether an agent may read a file or run a command, so they
 are an authority boundary. It is why
-[design.md](./design.md#handlers-are-fields-and-capabilities-are-derived-from-complete-groups)
+[design.md](./design.md#handlers-capability-groups-and-a-checked-table)
 derives what is advertised from what is implemented, in whatever grouping the
 capability type actually has.
 
 ## Errors
 
-`ErrorCode` names eight values: the six JSON-RPC standard codes plus two ACP
-codes in the reserved implementation range.
+`ErrorCode` names eight **predefined constants** — the six JSON-RPC standard
+codes plus two ACP codes in the reserved implementation range — and then a ninth
+arm titled *Other*, an unrestricted `int32`. It is an open integer union, so an
+unknown in-range code is valid and must survive decoding. The TypeScript type is
+the eight literals plus `number` (`src/schema/types.gen.ts:3605`).
 
 | Code | Meaning |
 | --- | --- |
@@ -117,11 +127,15 @@ codes in the reserved implementation range.
 | `-32000` | Authentication required |
 | `-32002` | Resource not found |
 
-Two are control flow rather than failure. **`-32000`** is how an agent answers
-`session/new` to say the client must call `authenticate` first — a documented
-step in the lifecycle, not a fault. **`-32800`** is what a peer returns for a
-request killed by `$/cancel_request`, so it is the far side of a caller's own
-cancellation. [design.md](./design.md#errors) maps both to Go accordingly.
+**`-32000`** is control flow rather than failure: it is how an agent answers
+`session/new` to say the client must call `authenticate` first, a documented step
+in the lifecycle.
+
+**`-32800`** is subtler than it looks. The schema says execution "was aborted
+either due to a cancellation request from the caller or because of resource
+constraints or shutdown" — so receiving it does not prove the receiver cancelled
+anything. [design.md](./design.md#errors) keeps local context completion and
+remote `-32800` distinct for that reason.
 
 ## The shape of a turn
 
@@ -158,7 +172,7 @@ request with `RequestPermissionOutcome::Cancelled`"; and on `Client.sessionUpdat
 `$/cancel_request` cancels one JSON-RPC request — the TypeScript SDK sends it
 when a per-request abort signal fires (`src/jsonrpc.ts:99`). `session/cancel`
 cancels a turn and leaves the request outstanding, on purpose, so that the agent
-can answer it. [design.md](./design.md#two-cancellations-kept-apart) keeps them
+can answer it. [design.md](./design.md#two-cancellations-and-who-owns-each) keeps them
 as two separate operations in Go for this reason.
 
 ## The type system

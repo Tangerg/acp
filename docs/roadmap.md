@@ -29,10 +29,23 @@ Hand-write or generate a handful of representative types and prove the model:
 - an array carrying `x-deserialize-skip-invalid-items`;
 - a type with real numeric or string constraints.
 
-**Done when** accepted values, rejected values, default recovery and serialised
-output all match the TypeScript SDK run against the same inputs. That
-cross-check is the point: two endpoints from one Go implementation can agree
-with each other and both be wrong.
+**Done when** three distinct assertions hold, because "round-trips
+byte-identically" is not a property `encoding/json` has and was the wrong oracle
+to promise:
+
+1. Valid input is accepted by both SDKs and normalises to semantically equivalent
+   JSON. Whitespace, key order, number spelling and escapes may all differ while
+   the decoded value is the same.
+2. Malformed input subject to schema recovery normalises to the same value in
+   both SDKs.
+3. The Go encoder matches golden output for values constructed in Go.
+
+Exact byte retention is asserted only where the schema makes it the contract: the
+payload of an open object-union arm, and `_meta`.
+
+The cross-check against the TypeScript SDK is the point of the layer. Two
+endpoints from one Go implementation can agree with each other and both be
+wrong.
 
 ## 2. Wire
 
@@ -43,9 +56,12 @@ The generator, for real.
   method table, validation and codecs — with the visibility split in
   [design.md](./design.md#what-is-generated-and-what-is-exported), because
   `gorelease` will hold the module to whatever is exported at the first tag.
-- Scope generation to the `$ref` closure of the operations layers 3–5 implement:
-  156 of the 265 definitions. CI recomputes the closure and fails if the exported
-  set differs, so growing the API is always a visible diff.
+- Drive generation from a committed **root manifest**, not from a count written
+  into prose. CI computes the `$ref` closure from the manifest and fails if the
+  exported set differs, so growing the API is a diff in one file. The manifest
+  names implemented payloads, the plumbing they need — `Error` and `ErrorCode`
+  are reached from response envelopes rather than from any method's params, so
+  they are roots once `Error` is exported — and any extension marker types.
 - Copy upstream's UNSTABLE marker into the doc comment of every symbol that
   carries one — 18 of them are inside that closure and cannot be avoided.
 - Regeneration and the cross-SDK fixture comparison are both CI checks.
@@ -75,12 +91,22 @@ sleeps.
 The first release worth using.
 
 - `session/new`, `session/prompt`, `session/update`,
-  `session/request_permission`, behind the `*Session` handle.
+  `session/request_permission`, behind the `*ClientSession` and `*AgentSession`
+  handles.
+- `authenticate`. The previous revision put `ErrAuthRequired` on the ordinary
+  path out of `session/new` and never implemented the method that answers it — a
+  client that can recognise "authenticate first" and cannot authenticate is not
+  end to end against an agent that requires it.
+- The session-turn state machine: one context per turn, pending
+  `session/request_permission` indexed by session, each resolved exactly once
+  with the `cancelled` outcome when a turn is cancelled, and the race against a
+  late user decision decided in the connection rather than the application.
 - Turn cancellation as its own operation, separate from request cancellation —
-  see [design.md](./design.md#two-cancellations-kept-apart).
-- The error model: `*Error`, the eight codes, `ErrAuthRequired` reachable by
-  `errors.Is`, and `-32800` mapped to `context.Canceled`. `auth_required` is on
-  the ordinary path from `session/new`, so it cannot wait.
+  see [design.md](./design.md#two-cancellations-and-who-owns-each).
+- The error model: `ErrorCode int32` with eight predefined constants and unknown
+  in-range codes preserved, `(*Error).Is` comparing codes so `ErrAuthRequired`
+  works as a sentinel, and remote `-32800` distinguished from local context
+  completion rather than flattened into `context.Canceled`.
 - `StdioTransport` and `CommandTransport`.
 
 **Done when** this SDK interoperates with a TypeScript SDK process over stdio: a
@@ -95,6 +121,10 @@ bug they have and are not release evidence.
   booleans, so two independent handlers.
 - The terminal group: all five methods together, because
   `ClientCapabilities.terminal` is one boolean covering all of them.
+- The version-pinned capability table, with CI checking it covers every method in
+  `meta.json`. The schema has `x-method` and `x-side` but no annotation linking a
+  method to a capability, so the table is hand-maintained and has to be checked
+  rather than trusted.
 - The capability invariant enforced in both directions: construction fails if an
   advertised capability lacks its complete handler set, an inbound call to an
   unadvertised method is refused, and an outbound call the peer never advertised
@@ -126,23 +156,23 @@ Things that are not decided, listed so they are not mistaken for decided.
   outbound message is the correct default, but `session/update` arrives
   continuously for the whole of a turn. Whether that needs a fast path is a
   question for a benchmark, not for this document.
-- **Whether `Session` survives a reconnect.** `session/load` and
-  `session/resume` take a `SessionID` that outlives the connection it came from.
-  Whether a `*Session` can be rebound to a new `ClientConn`, or whether callers
-  keep the ID and ask for a fresh handle, decides how much state the handle
-  holds. Layer 6 work, but it constrains the handle, so it should not drift.
 
 ### Resolved
+
+- **Session handles across a reconnect.** Connection-bound. `LoadSession` and
+  `ResumeSession` on a new connection return a new handle; callers keep the
+  `SessionID`. A handle that silently re-pointed at another transport would be a
+  lifetime nobody can reason about.
 
 - **v1's unstable subset.** Deferring it is not available, and the count is why.
   Of the 52 UNSTABLE definitions, 38 are unstable as types and 14 are stable
   types with unstable fields — including `SessionUpdate`, `PromptResponse`,
-  `ToolCall` and both capability structs. Following every `$ref` from the 26
-  method types layers 3–5 implement gives a closure of 156 of 265 definitions,
-  and 18 of the 38 type-level-unstable types are inside it. So generation scope
-  follows **reachability from implemented operations**, generated types are
-  generated whole, and the module's compatibility promise carves out
-  upstream-unstable symbols in writing before v1.0. See
+  `ToolCall` and both capability structs. Following every `$ref` from the
+  operations layers 3–5 implement leaves 18 of the 38 type-level-unstable types
+  inside the closure. So generation scope follows **reachability from implemented
+  operations**, generated types are generated whole, and the module's
+  compatibility promise carves out upstream-unstable symbols in writing before
+  v1.0. See
   [design.md](./design.md#the-v1-schema-lane-only-which-is-not-the-same-as-stable).
 
   This reverses the recommendation offered before the numbers were computed.
