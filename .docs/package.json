@@ -1,0 +1,15 @@
+{
+  "name": "acp-docs",
+  "private": true,
+  "type": "module",
+  "//": "The Markdown toolchain lives in a dot-directory because the repository root is a Go module. Go's ./... pattern walks every directory that does not begin with a dot or an underscore, so a node_modules at the root would feed an npm dependency's vendored Go source to go build, go vet and the reachability gate. cspell already ships one. The scripts run from the repository root so the checkers find the configuration and the prose where those live.",
+  "scripts": {
+    "docs:lint": "cd .. && .docs/node_modules/.bin/markdownlint-cli2",
+    "spell": "cd .. && .docs/node_modules/.bin/cspell --no-progress --no-summary",
+    "docs:check": "npm audit --audit-level=moderate && npm run spell && npm run docs:lint"
+  },
+  "devDependencies": {
+    "cspell": "10.1.0",
+    "markdownlint-cli2": "0.23.2"
+  }
+}

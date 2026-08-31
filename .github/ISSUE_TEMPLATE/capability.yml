@@ -1,0 +1,66 @@
+name: Library capability
+description: Propose a reusable capability that belongs in the SDK rather than one application
+title: "proposal: "
+labels: [proposal]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This package grows through complete vertical slices. Describe the application pressure first; an API shape comes after the ownership and layer are clear.
+
+        A change to the wire grammar itself belongs upstream, in the Agent Client Protocol schema, not here.
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Application use case
+      description: Describe the concrete client or agent and the task it cannot express today.
+    validations:
+      required: true
+
+  - type: textarea
+    id: existing
+    attributes:
+      label: Existing composition
+      description: Show the closest composition of current APIs and where it fails.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Layer
+      options:
+        - Wire types and encoding
+        - JSON-RPC connection and dispatch
+        - Client-side or agent-side session API
+        - Transport
+        - Testing support
+    validations:
+      required: true
+
+  - type: textarea
+    id: ownership
+    attributes:
+      label: State and ownership
+      description: Name the state, who mutates it, when it ends, and which layer can describe it without application vocabulary.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Explain why application code or a smaller composition does not fully meet the requirement.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: The proposal contains no product-specific model, command, or workflow grammar.
+          required: true
+        - label: The proposal does not require a message the published schema does not define.
+          required: true

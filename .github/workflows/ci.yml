@@ -1,0 +1,322 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags:
+      # The compatibility job validates the module against its released baseline
+      # before any release work. The trigger describes the tag grammar.
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Proposed canonical version, for example v1.2.3
+        required: true
+        type: string
+  # A library nobody has touched for a month can still be broken by a new Go
+  # release or a dependency's. Finding that out on a schedule is cheaper than
+  # finding it out from the first person who tries to use it.
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # All three, because the library claims to be portable and a claim nothing
+    # checks is a claim that stops being true quietly. Subprocess handling and
+    # stream framing are where the platforms disagree, and both are on the path
+    # every consumer takes.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        # The language floor and the current patch release. The first catches an
+        # accidental dependency on a later point release; the second catches changes
+        # in the toolchain itself.
+        go: ["1.27.0", "1.27.x"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+          # go.mod rather than go.sum: the module has no dependencies yet, and
+          # setup-go fails outright on a cache path that matches no file.
+          cache-dependency-path: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # The race detector is the point of running the tests at all: a connection
+      # reads, writes and dispatches from separate goroutines, and the only way
+      # the ownership rules stay true is if something checks.
+      - name: Test
+        run: go test -race -count=1 ./...
+
+  compatibility:
+    name: public API release contract
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # A release-tag check compares with the preceding immutable tag. A
+          # shallow checkout cannot know which tag that is.
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+          # go.mod rather than go.sum: the module has no dependencies yet, and
+          # setup-go fails outright on a cache path that matches no file.
+          cache-dependency-path: go.mod
+
+      # gorelease owns both halves of this promise: exported Go API compatibility
+      # and the module/dependency facts that make a release usable. Pinning the
+      # x/exp revision keeps that interpretation from changing under an unrelated
+      # pull request.
+      - name: Install gorelease
+        run: go install golang.org/x/exp/cmd/gorelease@v0.0.0-20260820142414-ca536658362e
+
+      - name: Compare the proposed module with its released baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          current_tag=""
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version="$GITHUB_REF_NAME"
+            current_tag="$GITHUB_REF_NAME"
+          fi
+
+          previous=""
+          while IFS= read -r candidate; do
+            if [[ "$candidate" == "$current_tag" ]]; then
+              continue
+            fi
+            previous="$candidate"
+            break
+          done < <(git tag --list 'v*' --sort=-v:refname)
+          base="${previous:-none}"
+
+          # Major zero is the explicitly unstable development period: report every
+          # API change, but do not pretend patch-number compatibility is promised.
+          # From v1 onward the proposed tag must satisfy Go's compatibility rules
+          # against the preceding immutable release.
+          if [[ "$version" == v0.* ]]; then
+            gorelease -base=none -version="$version" >/dev/null
+            gorelease -base="$base"
+          else
+            gorelease -base="$base" -version="$version"
+          fi
+
+  floor:
+    name: Go 1.27 module floor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.0"
+          cache: false
+      - name: Test the declared floor on every supported source set
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          set -euo pipefail
+          go test -count=1 ./...
+          for os in windows darwin; do
+            GOOS="$os" CGO_ENABLED=0 go test -run '^$' -exec /usr/bin/true ./...
+          done
+
+  quality:
+    name: lint and vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+          # go.mod rather than go.sum: the module has no dependencies yet, and
+          # setup-go fails outright on a cache path that matches no file.
+          cache-dependency-path: go.mod
+
+      # Pinned rather than floating: a linter that changes under a repository is
+      # one whose findings arrive as unrelated failures on somebody else's change.
+      - run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
+
+      # Once per platform, because a linter only sees the files that build for the
+      # one it is standing on. A shadowed variable in a platform-guarded file is
+      # invisible everywhere else, which is how one reaches main.
+      - name: golangci-lint
+        run: |
+          set -euo pipefail
+          for os in linux darwin windows; do
+            GOOS=$os golangci-lint run ./...
+          done
+
+      # Reachability finds dead private implementation and public contracts without
+      # executable caller-side coverage. An unused export is not dead library API:
+      # whether it belongs is an API-design decision, never a repository call count.
+      - run: go install golang.org/x/tools/cmd/deadcode@v0.49.0
+      - name: callable code reachability
+        run: scripts/check-reachability.sh
+
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+      - name: govulncheck
+        run: govulncheck ./...
+
+  # The committed seed corpus runs as part of `go test`, which only replays inputs
+  # somebody already found. A message framer whose answer depends on where the read
+  # split is the defect this job exists to catch, and it is the kind a fuzzer finds
+  # in seconds and a case table never does. The generator runs on every push and
+  # not only when someone remembers.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+          # go.mod rather than go.sum: the module has no dependencies yet, and
+          # setup-go fails outright on a cache path that matches no file.
+          cache-dependency-path: go.mod
+      - name: Fuzz every target
+        run: |
+          set -euo pipefail
+          # grep exits 1 when it matches nothing, and under pipefail that would
+          # report "no fuzz targets yet" as a failed build. Having none is a fact
+          # about how far the package has grown, not a broken gate.
+          files=$(grep -rl '^func Fuzz' --include='*_test.go' . || true)
+          if [ -z "$files" ]; then
+            echo "no fuzz targets"
+            exit 0
+          fi
+          for file in $files; do
+            for target in $(grep -o '^func Fuzz[A-Za-z0-9_]*' "$file" | cut -d' ' -f2); do
+              echo "::group::$file $target"
+              (cd "$(dirname "$file")" && go test . -run '^$' -fuzz "^${target}\$" -fuzztime=30s)
+              echo "::endgroup::"
+            done
+          done
+
+  docs:
+    name: documentation
+    runs-on: ubuntu-latest
+    # The Markdown toolchain installs into .docs so that its node_modules stays
+    # out of the Go module rooted here; the scripts step back up to the root to
+    # check the prose. See .docs/package.json.
+    defaults:
+      run:
+        working-directory: .docs
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: .docs/package-lock.json
+      - run: npm ci
+      - run: npm run docs:check
+
+  tidy:
+    name: formatting and modules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+          # go.mod rather than go.sum: the module has no dependencies yet, and
+          # setup-go fails outright on a cache path that matches no file.
+          cache-dependency-path: go.mod
+
+      # gofumpt rather than gofmt: it is gofmt plus the decisions gofmt left open,
+      # and a repository that argues about them in review is one that has not made
+      # them.
+      # The latest tagged gofumpt predates Go 1.27 method syntax. Pin the first
+      # upstream revision that parses it; do not float on master.
+      - run: go install mvdan.cc/gofumpt@v0.11.1-0.20260820074422-a2bc6805583d
+      - name: gofumpt
+        run: |
+          set -euo pipefail
+          unformatted="$(gofumpt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofumpt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      # These scripts are executable repository policy, so their format gets the
+      # same pinned, mechanical check as Go source instead of relying on review.
+      - run: go install mvdan.cc/sh/v3/cmd/shfmt@v3.13.1
+      - name: shfmt
+        run: shfmt -d scripts
+
+      # go.mod is the module's dependency promise, and a promise nothing checks
+      # drifts.
+      - name: go mod tidy is a no-op
+        run: go mod tidy -diff
+
+  cross:
+    name: cross-compile
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+          - goos: freebsd
+            goarch: amd64
+          # These are source-portability contracts, not claims that this package
+          # owns a browser or WASI process model. Vet includes target-specific test
+          # sources; build proves every library package remains consumable there.
+          - goos: wasip1
+            goarch: wasm
+          - goos: js
+            goarch: wasm
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+          # go.mod rather than go.sum: the module has no dependencies yet, and
+          # setup-go fails outright on a cache path that matches no file.
+          cache-dependency-path: go.mod
+
+      # Vet rather than build, because vet type-checks the tests too. A test file
+      # that names a syscall package with no build tag on it compiles here and
+      # fails on Windows, and a build-only check cannot see it.
+      - name: Vet
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go vet ./...
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build ./...

@@ -1,0 +1,14 @@
+acp — a Go implementation of the Agent Client Protocol
+
+Copyright 2026 Tangerg
+
+This product implements the Agent Client Protocol
+(https://agentclientprotocol.com), a specification published by Zed Industries
+under the Apache License, Version 2.0. The wire grammar, message names and
+schema semantics are the specification's; the Go implementation of them is this
+repository's.
+
+This product is not affiliated with or endorsed by Zed Industries.
+
+A copy of the Apache License, Version 2.0 is available at
+https://www.apache.org/licenses/LICENSE-2.0

@@ -1,0 +1,4 @@
+# Byte fixtures are repository contracts. Git must not rewrite their line endings
+# according to the checkout platform before a decoder test or fuzzer reads them.
+*.golden text eol=lf
+**/testdata/** text eol=lf

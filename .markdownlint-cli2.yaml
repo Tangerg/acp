@@ -1,0 +1,14 @@
+# Markdown is documentation, and documentation is part of the library.
+config:
+  # Prose here is wrapped by hand at a width that reads well in a terminal, and
+  # tables are wider than that on purpose.
+  MD013: false
+  # The changelog repeats version headings by design.
+  MD024:
+    siblings_only: true
+  # Inline HTML is not used; badges are Markdown links.
+  MD033: false
+globs:
+  - "**/*.md"
+  - "!**/node_modules/**"
+  - "!.docs/**"
