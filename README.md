@@ -41,8 +41,19 @@ disagree, the schema is right and this is a bug.
 
 ## Documentation
 
+Design notes, written before the code and meant to be argued with:
+
+- [docs/protocol.md](./docs/protocol.md) — what ACP is: roles, the 43 methods, the shape of a turn
+- [docs/design.md](./docs/design.md) — what it looks like in Go, and why that and not something else
+- [docs/repository.md](./docs/repository.md) — how this repository is built and what each gate proves
+- [docs/roadmap.md](./docs/roadmap.md) — the order of work, and what is still open
+
+Sources for every claim in them — the specification, the TypeScript SDK, and the
+official MCP Go SDK — are listed in [docs/README.md](./docs/README.md#sources).
+
+And the usual:
+
 - [AGENTS.md](./AGENTS.md) — the rules this repository is built under
-- [DESIGN.md](./DESIGN.md) — the Go shape of the protocol, and why
 - [CONTRIBUTING.md](./CONTRIBUTING.md) — toolchain, the gate, and how to release
 - [CHANGELOG.md](./CHANGELOG.md) — caller-visible changes
 - [SECURITY.md](./SECURITY.md) — reporting a vulnerability privately

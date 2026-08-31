@@ -2,7 +2,9 @@
 
 Focused issues and pull requests are welcome. Before changing behaviour or an
 exported API, read the rules this repository is built under in
-[AGENTS.md](./AGENTS.md).
+[AGENTS.md](./AGENTS.md) and the reasoning behind the API in
+[docs/design.md](./docs/design.md). [docs/repository.md](./docs/repository.md)
+explains why the gate below is shaped the way it is.
 
 ## Requirements
 
@@ -17,13 +19,13 @@ exported API, read the rules this repository is built under in
   methods with type parameters; keep it exact until that support has a tagged
   release.
 - Node.js 22.18 or newer when changing Markdown. The exact toolchain is in
-  `.docs/package-lock.json`.
+  `.tools/package-lock.json`.
 - Tests written with the standard `testing` package.
 
 This is one module at the repository root. There is no workspace file, and a plain
 checkout builds.
 
-The Markdown toolchain installs into `.docs` rather than the repository root. Go's
+The Markdown toolchain installs into `.tools` rather than the repository root. Go's
 `./...` walks every directory that does not begin with a dot or an underscore, so a
 root `node_modules` would hand an npm dependency's vendored Go source to `go build`,
 `go vet` and the reachability gate — cspell ships one today. The npm scripts step
@@ -52,7 +54,7 @@ golangci-lint run ./...
 govulncheck ./...
 scripts/check-reachability.sh
 go mod tidy -diff
-(cd .docs && npm ci && npm run docs:check)
+(cd .tools && npm ci && npm run docs:check)
 ```
 
 Fuzz targets run in CI on every push. Run one locally with:
