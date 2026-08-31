@@ -213,6 +213,94 @@ spec adds an optional field to a request, a params struct absorbs it and a
 positional signature cannot. Passing `nil` params stays valid for any method that
 currently needs none.
 
+## Sessions are a handle, for the same reason terminals are
+
+The section below argues that `terminal/*` should not be five functions threading
+an ID string. **32 of the schema's request types carry a `sessionId`** — from
+`PromptRequest` and `SessionNotification` to `ReadTextFileRequest` and every
+`terminal/*` request — so the argument applies far more strongly to sessions, and
+an earlier draft of this page made it for terminals and then left sessions as a
+bare string. That was inconsistent.
+
+```go
+func (*ClientConn) NewSession(context.Context, *NewSessionParams) (*Session, error)
+func (*ClientConn) LoadSession(context.Context, *LoadSessionParams) (*Session, error)
+
+func (*Session) ID() SessionID
+func (*Session) Prompt(context.Context, *PromptParams) (*PromptResult, error)
+func (*Session) Cancel(context.Context) error
+func (*Session) SetMode(context.Context, *SetModeParams) error
+func (*Session) Close(context.Context) error
+```
+
+A `*Session` holds its connection and its ID and nothing else; it is not a second
+place where connection state lives. It exists so that the ID is threaded once, at
+the point the protocol says it comes from, instead of at 32 call sites where it
+can be threaded wrong.
+
+This does not weaken the naming rule from the previous section — it is what makes
+it pay. `Session` is the conversation, `ClientConn` is the link, and now both are
+Go types whose methods are exactly the operations the protocol scopes to them.
+`ClientConn.Prompt` does not exist; `Session.Prompt` does, because a prompt
+without a session is not a thing the protocol can express.
+
+On the agent side the same handle carries the callbacks that are scoped to a
+session: `session.RequestPermission(...)`, `session.ReadTextFile(...)`,
+`session.CreateTerminal(...)`.
+
+## Errors
+
+The design said nothing about errors until this revision, which left the
+`error` returned by every method undefined. ACP names eight codes:
+
+| Code | Meaning |
+| --- | --- |
+| `-32700` | Parse error |
+| `-32600` | Invalid request |
+| `-32601` | Method not found |
+| `-32602` | Invalid params |
+| `-32603` | Internal error |
+| `-32800` | Request cancelled |
+| `-32000` | Authentication required |
+| `-32002` | Resource not found |
+
+```go
+// An Error is a JSON-RPC error returned by the peer.
+type Error struct {
+	Code    int64
+	Message string
+	Data    json.RawMessage
+}
+
+func (e *Error) Error() string
+```
+
+Returned wrapped, so `errors.As` reaches it and the calling site reads normally.
+
+Two of these are not failures and must not be handled as though they were.
+**`-32000` authentication required** is how an agent answers `session/new` to say
+"call `authenticate` first"; it is a step in the documented lifecycle, and a
+caller has to be able to branch on it without string-matching a message:
+
+```go
+sess, err := conn.NewSession(ctx, params)
+if errors.Is(err, acp.ErrAuthRequired) {
+	// Expected: authenticate, then retry. Not a failure.
+}
+```
+
+**`-32800` request cancelled** is what a peer returns for a request killed by
+`$/cancel_request`, so it is the wire form of the caller's own `ctx` being
+cancelled. It maps to `context.Canceled` rather than surfacing as a protocol
+error, because a caller that cancelled its own context should not have to know
+which of the two layers noticed first.
+
+In the other direction, a handler that returns a plain `error` becomes
+`-32603 Internal error` with its message; a handler that returns an `*Error`
+controls the code. Validation failures found before dispatch are `-32602`, and an
+unimplemented or unadvertised method is `-32601` — which is the concrete form of
+the "refuse an ungated method" rule.
+
 ## Terminals are a handle
 
 `terminal/create` returns an ID that four more methods take. Five free functions
@@ -289,10 +377,19 @@ handler, because ACP's capabilities are not one-to-one with methods:
 
 ```go
 type ClientConfig struct {
+	// A notification has no response, so its handler returns nothing. There is
+	// nowhere for an error to go but a log, and a signature that pretends
+	// otherwise invites a caller to believe the peer will hear about it.
+	SessionUpdate func(context.Context, *SessionUpdateRequest)
+
+	// A request handler returns a result and an error, which becomes the
+	// JSON-RPC error the peer sees.
+	RequestPermission func(context.Context, *RequestPermissionRequest) (*RequestPermissionResult, error)
+
 	// fs.readTextFile and fs.writeTextFile are separate booleans in the schema,
 	// so these are separate fields.
 	ReadTextFile  func(context.Context, *ReadTextFileRequest) (*ReadTextFileResult, error)
-	WriteTextFile func(context.Context, *WriteTextFileRequest) error
+	WriteTextFile func(context.Context, *WriteTextFileRequest) (*WriteTextFileResult, error)
 
 	// ClientCapabilities.terminal is one boolean meaning "supports all
 	// terminal* methods", so the five arrive together or not at all.
@@ -303,6 +400,11 @@ type ClientConfig struct {
 	Capabilities *ClientCapabilities
 }
 ```
+
+The split in that struct is the whole convention: notifications return nothing,
+requests return `(result, error)`. It follows `go-sdk/mcp/client.go`, whose
+notification handlers are `func(context.Context, *T)` with no error, and it means
+the signature alone says which kind of message a handler is for.
 
 `terminal` is the case that kills per-handler inference: the schema field is a
 plain boolean documented as "Whether the Client support all `terminal*` methods".
@@ -458,24 +560,48 @@ until v2 stabilises. Two type sets in one package would double the generated
 surface and grow every union arms that exist only in a draft.
 
 That is a statement about lanes, not about stability. **52 of the v1 schema's 265
-definitions are themselves marked UNSTABLE** — providers, ACP-carried MCP,
-document synchronisation, NES, session forking, compaction — each carrying "This
-capability is not part of the spec yet, and may be removed or changed at any
-point." An earlier heading here read "Stable only" and invited exactly the wrong
-inference.
+definitions carry an UNSTABLE marker** — "This capability is not part of the spec
+yet, and may be removed or changed at any point." An earlier heading here read
+"Stable only" and invited exactly the wrong inference.
 
-Two consequences, both unresolved:
+The obvious response is to defer generating the unstable ones. Counting says
+that is not available, and the counting is worth showing because it changes the
+answer:
 
-- Generating types for v1's unstable operations in the wire layer publishes
-  public API for operations the roadmap does not implement until layer 5, and
-  `gorelease` will hold this module to them from the first tag.
-- Whatever the answer, the Go documentation has to carry the upstream instability
-  marker rather than quietly dropping it.
+- **38** definitions are marked unstable *as types*. Those could be deferred.
+- **14** are stable types with unstable *fields* — and they are the central ones:
+  `AgentCapabilities`, `ClientCapabilities`, `SessionUpdate`, `PromptResponse`,
+  `ToolCall`, `ToolCallUpdate`. Nothing can be deferred here; the type is needed
+  in layer 3.
+- Taking the 26 method types that layers 3 to 5 implement and following every
+  `$ref`, the reachable closure is **156 of the 265** definitions — and **18 of
+  the 38 type-level-unstable types are inside it**. `SessionUpdate` has plan and
+  compaction arms; `NewSessionRequest` takes MCP servers; capability structs
+  carry unstable sub-structs. Only **20** are genuinely out of reach.
 
-Deferring generation of the unstable subset, or generating it behind a build tag,
-or generating it and accepting the compatibility surface, are all defensible.
-Choosing is layer 2 work; it is listed in
-[roadmap.md](./roadmap.md#open-questions).
+So instability cannot be the axis. Three rules replace it:
+
+**Generation scope follows reachability, not stability.** Layer 2 generates the
+transitive closure of the operations that are implemented, and nothing else. It
+is a mechanical rule with a mechanical check: regenerate, compute the closure,
+and fail if the exported set differs. Adding an operation in layer 6 grows the
+closure and the diff shows exactly what became public.
+
+**A generated type is generated whole.** Every field, every union arm. Upstream's
+marker warns that a shape may change; it is not permission to omit it. Dropping
+an unstable arm of `SessionUpdate` would make this package fail to decode a
+message an agent is entitled to send — the same defect as inventing an arm, in
+the other direction.
+
+**The compatibility promise carves them out, explicitly, before v1.0.** Otherwise
+tagging v1.0 freezes `PlanUpdate` against a schema that says it may change at any
+point, and the module is promising something upstream has not. Symbols whose
+schema definition carries the UNSTABLE marker are exempt from the module's
+compatibility guarantee, their Go doc comments repeat upstream's warning
+verbatim, and `gorelease` findings against them are reviewed rather than
+automatically blocking. Pre-1.0 this costs nothing — `gorelease` reports without
+enforcing on `v0.x` — which is why it has to be written down now rather than
+discovered at the v1.0 tag.
 
 ## What is deliberately not copied from the TypeScript SDK
 

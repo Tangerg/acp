@@ -43,10 +43,15 @@ The generator, for real.
   method table, validation and codecs — with the visibility split in
   [design.md](./design.md#what-is-generated-and-what-is-exported), because
   `gorelease` will hold the module to whatever is exported at the first tag.
+- Scope generation to the `$ref` closure of the operations layers 3–5 implement:
+  156 of the 265 definitions. CI recomputes the closure and fails if the exported
+  set differs, so growing the API is always a visible diff.
+- Copy upstream's UNSTABLE marker into the doc comment of every symbol that
+  carries one — 18 of them are inside that closure and cannot be avoided.
 - Regeneration and the cross-SDK fixture comparison are both CI checks.
 
 **Done when** the committed output is reproducible, the fixtures agree with the
-TypeScript SDK, and the unstable-subset question below has an answer.
+TypeScript SDK, and the exported set equals the computed closure.
 
 ## 3. Link
 
@@ -70,9 +75,12 @@ sleeps.
 The first release worth using.
 
 - `session/new`, `session/prompt`, `session/update`,
-  `session/request_permission`.
+  `session/request_permission`, behind the `*Session` handle.
 - Turn cancellation as its own operation, separate from request cancellation —
   see [design.md](./design.md#two-cancellations-kept-apart).
+- The error model: `*Error`, the eight codes, `ErrAuthRequired` reachable by
+  `errors.Is`, and `-32800` mapped to `context.Canceled`. `auth_required` is on
+  the ordinary path from `session/new`, so it cannot wait.
 - `StdioTransport` and `CommandTransport`.
 
 **Done when** this SDK interoperates with a TypeScript SDK process over stdio: a
@@ -114,18 +122,30 @@ Not in this list, and deliberately:
 
 Things that are not decided, listed so they are not mistaken for decided.
 
-- **v1's unstable subset.** 52 of the 265 definitions are marked UNSTABLE
-  upstream. Generating them in layer 2 publishes API for operations layer 6 has
-  not implemented, and `gorelease` will hold the module to it. Defer them,
-  put them behind a build tag, or generate them and accept the surface — this
-  needs answering before layer 2 commits generated output. See
-  [design.md](./design.md#the-v1-schema-lane-only-which-is-not-the-same-as-stable).
 - **Where validation runs for large payloads.** Validating every inbound and
   outbound message is the correct default, but `session/update` arrives
   continuously for the whole of a turn. Whether that needs a fast path is a
   question for a benchmark, not for this document.
+- **Whether `Session` survives a reconnect.** `session/load` and
+  `session/resume` take a `SessionID` that outlives the connection it came from.
+  Whether a `*Session` can be rebound to a new `ClientConn`, or whether callers
+  keep the ID and ask for a fresh handle, decides how much state the handle
+  holds. Layer 6 work, but it constrains the handle, so it should not drift.
 
 ### Resolved
+
+- **v1's unstable subset.** Deferring it is not available, and the count is why.
+  Of the 52 UNSTABLE definitions, 38 are unstable as types and 14 are stable
+  types with unstable fields — including `SessionUpdate`, `PromptResponse`,
+  `ToolCall` and both capability structs. Following every `$ref` from the 26
+  method types layers 3–5 implement gives a closure of 156 of 265 definitions,
+  and 18 of the 38 type-level-unstable types are inside it. So generation scope
+  follows **reachability from implemented operations**, generated types are
+  generated whole, and the module's compatibility promise carves out
+  upstream-unstable symbols in writing before v1.0. See
+  [design.md](./design.md#the-v1-schema-lane-only-which-is-not-the-same-as-stable).
+
+  This reverses the recommendation offered before the numbers were computed.
 
 - **Union decode helper.** No generic `As[T]` initially. Type switches and type
   assertions are standard Go and sufficient; a helper earns its place only if

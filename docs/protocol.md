@@ -101,6 +101,28 @@ are an authority boundary. It is why
 derives what is advertised from what is implemented, in whatever grouping the
 capability type actually has.
 
+## Errors
+
+`ErrorCode` names eight values: the six JSON-RPC standard codes plus two ACP
+codes in the reserved implementation range.
+
+| Code | Meaning |
+| --- | --- |
+| `-32700` | Parse error |
+| `-32600` | Invalid request |
+| `-32601` | Method not found |
+| `-32602` | Invalid params |
+| `-32603` | Internal error |
+| `-32800` | Request cancelled |
+| `-32000` | Authentication required |
+| `-32002` | Resource not found |
+
+Two are control flow rather than failure. **`-32000`** is how an agent answers
+`session/new` to say the client must call `authenticate` first — a documented
+step in the lifecycle, not a fault. **`-32800`** is what a peer returns for a
+request killed by `$/cancel_request`, so it is the far side of a caller's own
+cancellation. [design.md](./design.md#errors) maps both to Go accordingly.
+
 ## The shape of a turn
 
 1. `initialize` — versions and capabilities.
