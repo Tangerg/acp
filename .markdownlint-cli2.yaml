@@ -16,4 +16,4 @@ config:
 globs:
   - "**/*.md"
   - "!**/node_modules/**"
-  - "!.docs/**"
+  - "!.tools/**"

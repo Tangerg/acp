@@ -217,19 +217,19 @@ jobs:
   docs:
     name: documentation
     runs-on: ubuntu-latest
-    # The Markdown toolchain installs into .docs so that its node_modules stays
+    # The Markdown toolchain installs into .tools so that its node_modules stays
     # out of the Go module rooted here; the scripts step back up to the root to
-    # check the prose. See .docs/package.json.
+    # check the prose. See .tools/package.json.
     defaults:
       run:
-        working-directory: .docs
+        working-directory: .tools
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: .docs/package-lock.json
+          cache-dependency-path: .tools/package-lock.json
       - run: npm ci
       - run: npm run docs:check
 

@@ -7,7 +7,7 @@ version: 2
 updates:
   - package-ecosystem: npm
     # The Markdown toolchain lives beside the Go module rather than on top of it.
-    directory: /.docs
+    directory: /.tools
     schedule:
       interval: monthly
     open-pull-requests-limit: 3
