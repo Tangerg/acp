@@ -10,9 +10,18 @@ One page per reader task:
 | --- | --- |
 | [protocol.md](./protocol.md) | What is ACP? What are the roles, the methods, and the shape of a turn? |
 | [design.md](./design.md) | What does it look like in Go, and why that and not something else? |
-| [design-review.md](./design-review.md) | Is the proposed Go design ready to implement, and what must change first? |
 | [repository.md](./repository.md) | How is this repository built, and what does each gate prove? |
 | [roadmap.md](./roadmap.md) | In what order does it get built? |
+
+The design was reviewed against the schema three times before any code was
+written, and each round changed it. The records are kept rather than folded in,
+because what a decision was corrected *from* is often the useful part:
+
+| Round | Verdict | What it turned over |
+| --- | --- | --- |
+| [design-review.md](./design-review.md) | Issues found | Union model, cancellation, capability inference, the missing extension API |
+| [design-review-2.md](./design-review-2.md) | Not ready to freeze the API | Three incompatible API sketches, lossy handles, an eight-valued `ErrorCode` that has nine |
+| [design-review-3.md](./design-review-3.md) | Approved for layer 1 | Throwaway spike, unreproducible oracle, omitted-vs-null, the missing agent side |
 
 ## Sources
 
@@ -78,6 +87,7 @@ each choice rather than just stating it.
 | `mcp/transport.go:52` | The `Transport` interface as shipped |
 | `mcp/content.go:22` | `Content` as a sealed interface with per-arm wire encoding |
 | `mcp/client.go` | `ClientOptions` — handler fields that imply capabilities |
+| `jsonrpc/jsonrpc.go:28` | `MakeID`, `EncodeMessage`, `DecodeMessage` — the minimum a public message type needs |
 
 ### The engineering setup
 

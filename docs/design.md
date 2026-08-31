@@ -167,10 +167,63 @@ So the codec has a stated shape:
   written.
 - Every inbound params or result is validated before it reaches user code.
 
-Round-trip tests split in two, because these are different promises: canonical
-valid values round-trip byte-identically, and the four open unions preserve their
-extension payload. A field that intentionally defaults on malformed input cannot
-also round-trip unchanged, and a test that asks for both will be wrong about one.
+### Omitted, null and present are three states, not two
+
+The schema distinguishes an absent property from one present as `null`, and it
+does so **357 times**: that is how many optional-and-nullable property
+occurrences are under `$defs`.
+
+Go's ordinary answer, a pointer with `omitempty`, has only two states — a nil
+pointer is both "absent" and "null" — so generated pointers cannot round-trip
+this part of the grammar. The generator emits a presence-aware wrapper instead:
+
+```go
+// Opt distinguishes absent, null and present. IsZero reports absent, which is
+// what the encoder's omitzero option consults, so an absent field emits nothing
+// while an explicit null emits null.
+type Opt[T any] struct { /* absent | null | present */ }
+
+func (Opt[T]) IsZero() bool
+func (Opt[T]) MarshalJSON() ([]byte, error)
+func (*Opt[T]) UnmarshalJSON([]byte) error
+```
+
+used as `` `json:"cwd,omitzero"` ``. This depends on `encoding/json`'s `omitzero`
+tag option, which consults `IsZero` and arrived in Go 1.24 — `omitempty` cannot
+express it, because a struct wrapper is never empty by `omitempty`'s definition.
+It is a second concrete reason the language floor is where
+[repository.md](./repository.md#the-language-floor-is-125-not-the-newest-release)
+puts it.
+
+A state is collapsed only where the schema itself says the two are equivalent —
+several capability fields document "omitted or `null` both mean not advertised" —
+and that collapse is then a generated decision with the schema quoted beside it,
+not a default.
+
+### What the round-trip tests actually promise
+
+An earlier draft promised that canonical valid values "round-trip
+byte-identically". That is not a property `encoding/json` has, nor one the
+TypeScript SDK has: whitespace, key order, number spelling and escapes may all
+change while the decoded value is identical. Worse, it contradicted itself —
+`x-deserialize-default-on-error` means a malformed field *must* come back as
+something else.
+
+So the promises are semantic, and there are four:
+
+1. Both SDKs accept the same valid input and produce semantically equivalent
+   JSON.
+2. Both SDKs apply schema-directed recovery to the same normalised value.
+3. Values constructed in Go encode to stable Go-owned golden output.
+4. `_meta` and the extra properties of an open union survive as equivalent JSON
+   values.
+
+Not byte identity, even for `_meta`. The TypeScript SDK parses `_meta` through
+`z.record(z.string(), z.unknown())` and reattaches parsed values, so the original
+bytes are gone on that side too and no cross-SDK test could assert them. Go may
+still hold `json.RawMessage` where that is the simplest lossless representation —
+but then raw retention is an implementation property, not a promise the schema or
+the oracle can back.
 
 ## The API
 
@@ -181,20 +234,33 @@ exclusive sketches in three sections, which
 caught. If prose and this table disagree, this table is wrong and must be fixed
 here rather than contradicted there.
 
+**Scope: authoritative through layer 5.** It shows every operation layers 1–5 of
+[roadmap.md](./roadmap.md) implement and deliberately no others — `ResumeSession`,
+`session/close`, `session/set_config_option`, `elicitation/*`, `providers/*` and
+the rest arrive with layer 6 and are added here then. A partial table cannot also
+be the final authority, so it says which surface it is final for. The exported
+API is not frozen until this table covers everything a release claims.
+
 ```go
 // Construction. Returns an error because the capability invariant is checked
-// here: a configuration whose advertisement exceeds its implementation is
-// rejected before it can accept a request it cannot serve.
+// here: a configuration whose advertisement exceeds its implementation, or that
+// omits a baseline handler, is rejected before it can accept a request it
+// cannot serve.
 func NewClient(*ClientConfig) (*Client, error)
 func NewAgent(*AgentConfig) (*Agent, error)
 
-// Connecting performs initialize; there is no public Initialize.
+// Client.Connect performs the handshake; Agent.Connect accepts one. The two are
+// not symmetric and their milestones are defined under "Connecting" below.
 func (*Client) Connect(context.Context, Transport) (*ClientConn, error)
 func (*Client) Conns() iter.Seq[*ClientConn]
 func (*Agent) Connect(context.Context, Transport) (*AgentConn, error)
 func (*Agent) Run(context.Context, Transport) error
+func (*Agent) Conns() iter.Seq[*AgentConn]
 
-func (*ClientConn) Initialized() *InitializeResult
+// Peer returns an immutable snapshot of what initialize negotiated. It is a
+// copy: the same value backs the capability gate, and a caller must not be able
+// to widen its own authority by mutating it.
+func (*ClientConn) Peer() PeerInfo
 func (*ClientConn) Authenticate(context.Context, *AuthenticateParams) (*AuthenticateResult, error)
 func (*ClientConn) NewSession(context.Context, *NewSessionParams) (*ClientSession, *NewSessionResult, error)
 func (*ClientConn) LoadSession(context.Context, *LoadSessionParams) (*ClientSession, *LoadSessionResult, error)
@@ -203,26 +269,39 @@ func (*ClientConn) Notify(context.Context, string, any) error      // extension 
 func (*ClientConn) Close() error
 func (*ClientConn) Wait() error
 
+// The agent side of a connection is not a mirror of the client side: it serves
+// rather than drives, so it has no session-creating methods. Sessions reach an
+// agent through its handlers.
+func (*AgentConn) Peer() PeerInfo
+func (*AgentConn) Call(context.Context, string, any, any) error
+func (*AgentConn) Notify(context.Context, string, any) error
+func (*AgentConn) Close() error
+func (*AgentConn) Wait() error
+
 // The conversation, as the client sees it. Binds SessionID and nothing else.
 func (*ClientSession) ID() SessionID
+func (*ClientSession) Conn() *ClientConn
 func (*ClientSession) Prompt(context.Context, *PromptParams) (*PromptResult, error)
 func (*ClientSession) Cancel(context.Context, *CancelParams) error
 func (*ClientSession) SetMode(context.Context, *SetModeParams) (*SetModeResult, error)
 
-// The same conversation as the agent sees it: a different set of operations,
-// so a different type.
+// The same conversation as the agent sees it: a different set of operations, so
+// a different type. Handlers receive it; see "How an agent gets a session".
 func (*AgentSession) ID() SessionID
+func (*AgentSession) Conn() *AgentConn
 func (*AgentSession) Update(context.Context, *SessionUpdateParams) error
 func (*AgentSession) RequestPermission(context.Context, *RequestPermissionParams) (*RequestPermissionResult, error)
 func (*AgentSession) ReadTextFile(context.Context, *ReadTextFileParams) (*ReadTextFileResult, error)
 func (*AgentSession) WriteTextFile(context.Context, *WriteTextFileParams) (*WriteTextFileResult, error)
 func (*AgentSession) CreateTerminal(context.Context, *CreateTerminalParams) (*Terminal, *CreateTerminalResult, error)
 
+// Every one of these is a JSON-RPC request whose schema response is an object
+// with optional _meta, so every one returns a result. See below.
 func (*Terminal) ID() TerminalID
 func (*Terminal) Output(context.Context, *TerminalOutputParams) (*TerminalOutputResult, error)
 func (*Terminal) WaitForExit(context.Context, *WaitForExitParams) (*WaitForExitResult, error)
-func (*Terminal) Kill(context.Context, *KillTerminalParams) error
-func (*Terminal) Release(context.Context, *ReleaseTerminalParams) error
+func (*Terminal) Kill(context.Context, *KillTerminalParams) (*KillTerminalResult, error)
+func (*Terminal) Release(context.Context, *ReleaseTerminalParams) (*ReleaseTerminalResult, error)
 ```
 
 Every operation takes `(ctx, *Params)` and returns `(*Result, error)`, with no
@@ -235,6 +314,16 @@ required today.
 with both method sets. A client never calls `RequestPermission`; an agent never
 calls `Prompt`. One type carrying both would make those calls compile and fail at
 runtime, which is a worse place to find out.
+
+**An empty-looking response is not a discardable one.** `Kill` and `Release`
+returned only `error` in the previous revision, and
+`KillTerminalResponse` and `ReleaseTerminalResponse` are objects carrying
+optional `_meta` — so that signature threw away peer data, breaking the
+"response is returned, not absorbed" rule two sections below it. Only
+notifications return a bare `error`: `session/cancel` and `session/update` have
+no response to return. Every request returns its generated result, however empty
+that result looks today, and every future empty-object response is held to the
+same rule.
 
 ## Why connections and sessions are different types
 
@@ -324,8 +413,15 @@ func (e *Error) Error() string
 func (e *Error) Is(target error) bool
 ```
 
-`ErrAuthRequired` and its siblings are `*Error` values carrying only a code;
-`(*Error).Is` is what makes them usable as sentinels. `-32000` is the one that
+Sentinels are `error` values backed by an unexported immutable type, not
+exported `*Error` structs — a package-level `var ErrAuthRequired = &Error{...}`
+is writable by any importer, and one that mutated it would silently change how
+every other importer's `errors.Is` behaved. Peer errors remain `*Error` and stay
+reachable with `errors.As`; `(*Error).Is` compares codes, which is what makes a
+sentinel match one. There is a sentinel only where control flow needs one —
+`ErrAuthRequired` today — because the `ErrorCode` constants plus `errors.As`
+already cover ordinary inspection, and a sentinel per code would be API surface
+nobody asked for. `-32000` is the one that
 matters, because it is not a failure — it is how an agent answers `session/new`
 to say "authenticate first", a documented step in the lifecycle:
 
@@ -373,16 +469,43 @@ application's problem:
 `session/cancel` is sent or received, every pending
 `session/request_permission` for that session must be answered with the
 `cancelled` outcome — while the user's handler may still be blocked on a dialog.
-The connection cancels those handler contexts, resolves each response exactly
-once, and wins the race against a late user decision. `Session.Cancel` returns
-before any of that has finished, so it cannot be the caller's job.
+When `Cancel` is called, the connection **synchronously claims** those pending
+requests — before the notification goes out and before `Cancel` returns — then
+cancels their handler contexts and resolves each response exactly once. Claiming
+first is what makes the race decidable: a user decision arriving afterwards finds
+the request already answered and is dropped, rather than racing a resolution that
+has not happened yet.
 
 **The agent side owns one context per turn.** Receiving `session/cancel` cancels
-the turn's context and nothing else on the connection; other sessions and
-unrelated calls are untouched. Receiving `$/cancel_request` cancels that request
-and work nested under it, but makes no promise about the `session/cancel` result
-shape. The context tree is: connection → session → turn → request, and each level
-is cancelled only by its own signal.
+the turn's context and the work descending from it; other sessions and unrelated
+calls are untouched. Receiving `$/cancel_request` cancels that request and work
+nested under it, but makes no promise about the `session/cancel` result shape.
+
+The tree is connection → session → turn → request, with ordinary Go semantics: a
+parent's cancellation cascades to its descendants, and a child's cancellation
+touches neither its parent nor its siblings. The previous revision wrote "each
+level is cancelled only by its own signal", which is not how `context` works and
+would have described a tree where cancelling a connection left its turns running.
+
+**Request cancellation is four steps, not one.** When a call's context finishes,
+the connection retires the local pending call, returns the exact `ctx.Err()`,
+sends `$/cancel_request` on an *independent bounded* context so an unresponsive
+peer cannot hold the caller past its own deadline, and discards any late response
+without reviving the retired call. That is the MCP SDK's behaviour
+(`go-sdk/mcp/transport.go:281`) and all four parts are load-bearing. The
+TypeScript SDK is cited above for *which message* per-request cancellation sends,
+not for returning locally: it settles its promise from the peer's response.
+
+**One prompt at a time per session.** `CancelNotification` carries only
+`sessionId` — no turn or request identifier — so the protocol has no way to say
+*which* turn a `session/cancel` means. That is only coherent if a session has at
+most one active turn, so a second concurrent `Prompt` on the same session is
+refused locally with a documented error rather than left to scheduling. Pending
+permission requests are then indexed by session without ambiguity.
+
+`ClientSession` and `AgentSession` are themselves safe for concurrent use; that
+is a separate question from whether two prompts may overlap, and the answer to
+the first is yes while the answer to the second is no.
 
 There is **no safe nil permission handler**. The wire outcome is either
 `cancelled` or a selected option ID, and an agent is not obliged to offer a
@@ -426,6 +549,14 @@ type ClientConfig struct {
 }
 ```
 
+Both configs carry a `Logger *slog.Logger`, because two paths have nowhere else
+to report: a handler error is deliberately not sent to the peer in full, and a
+notification handler has no response channel at all. **`nil` means discard** —
+`slog.New(slog.DiscardHandler)`, not "log somewhere sensible". The library never
+installs a default that writes to stdout, and this is not a style preference: an
+agent's stdout is the protocol stream, so a well-meant default logger would
+corrupt every connection it was supposed to help debug.
+
 `Capabilities` is a **complete replacement, never a merge**. A field-by-field
 merge would need to distinguish "set to false" from "not set", and the generated
 capability type has no third state for a scalar boolean to express that. So nil
@@ -453,6 +584,95 @@ it covers every method in `meta.json` and names no method that has been removed,
 so a schema bump that adds or drops a method fails loudly rather than silently
 leaving a hole in the gate. Each non-trivial predicate gets a test.
 
+## The agent side
+
+`ClientConfig` had a sketch and `AgentConfig` had none, which left half of a
+symmetric protocol undescribed. The agent's config is the mirror in structure and
+not in content: it serves rather than drives, so its fields are the operations a
+client calls on it.
+
+```go
+type AgentConfig struct {
+	Info    *Implementation
+	Meta    map[string]any
+	Logger  *slog.Logger // nil means discard; see below
+
+	// Baseline. NewAgent fails if any is nil, because an agent that cannot
+	// answer these cannot complete a connection.
+	Initialize func(context.Context, *InitializeRequest) (*InitializeResult, error)
+	NewSession func(context.Context, *NewSessionRequest) (*NewSessionResult, error)
+	Prompt     func(context.Context, *AgentSession, *PromptRequest) (*PromptResult, error)
+	Cancel     func(context.Context, *AgentSession, *CancelRequest)
+
+	// Gated. Setting one advertises the capability that gates it; the grouping
+	// follows the capability type, exactly as on the client side.
+	LoadSession func(context.Context, *AgentSession, *LoadSessionRequest) (*LoadSessionResult, error)
+	Auth        *AuthHandlers
+
+	// Extension methods the generated table does not name.
+	CallFallback   func(context.Context, *ExtRequest) (json.RawMessage, error)
+	NotifyFallback func(context.Context, *ExtNotification)
+
+	// nil: advertise what the handlers support. Non-nil: the complete desired
+	// advertisement. Never inferred from the client callbacks an agent happens
+	// to be able to make — what an agent advertises is what it implements.
+	Capabilities *AgentCapabilities
+}
+```
+
+`ClientConfig` gains the same `Logger`, `CallFallback` and `NotifyFallback`
+fields, so the extension contract is symmetric: both directions can send
+extension messages and both can receive them.
+
+### How an agent gets a session
+
+An agent never constructs an `*AgentSession`; the connection hands one to the
+handlers whose requests carry a `sessionId`, which is why `Prompt` and `Cancel`
+take one and `Initialize` does not. The handle is valid for as long as the
+session is, not merely for the handler call — an agent that spawns work for a
+turn keeps the handle to send `session/update` from it, and that is the ordinary
+case rather than an escape. What it must not outlive is the connection: calling
+through it after `Close` returns `ErrConnectionClosed`.
+
+`NewSession` does not receive a handle because it is the call that creates one.
+The connection builds the handle from the `sessionId` in the result the handler
+returns.
+
+## Connecting
+
+"Connecting performs initialize" was written once for both sides and cannot be
+true of both: a client initiates the handshake and an agent accepts it. The MCP
+SDK has the same asymmetry, and stating it is cheaper than discovering it.
+
+**`Client.Connect` returns only after** the transport connects, `initialize`
+succeeds, the negotiated protocol version is one this package implements, and the
+peer's capabilities are stored as an immutable snapshot. If any of those fails —
+including the context being cancelled mid-handshake — it closes the logical
+connection before returning, so a failed `Connect` never leaks a live transport
+or a half-initialized peer.
+
+**`Agent.Connect` returns once the read loop is running**, before any client has
+sent `initialize`. It cannot wait for a handshake it does not control. Until
+`initialize` arrives the connection answers every other method with
+`-32600 Invalid request`; the only legal inbound message before it is
+`initialize` itself, and a second `initialize` on the same connection is also
+`-32600`.
+
+The context passed to `Connect` scopes **setup only**, on both sides. It does not
+own the connection's lifetime — a caller who passed a five-second handshake
+timeout has not asked for the connection to die after five seconds. Lifetime is
+owned by `Close`, and observed by `Wait`. `Agent.Run` is the exception and says
+so: it is `Connect` then `Wait` then `Close`, and its context owns the whole run.
+
+`Wait` returns the connection's terminal error: nil for a local `Close` or a
+clean EOF, and the read or write failure otherwise. It is safe to call
+concurrently and from many goroutines, and every caller gets the same value every
+time — a terminal condition that reported differently depending on who asked
+first would be unusable for deciding whether to reconnect.
+
+`Peer()` returns a copy rather than the stored snapshot. The same value backs the
+capability gate, and a caller who could mutate it could widen its own authority.
+
 ## Extension methods, with standard names reserved
 
 The v1 schema defines `ExtRequest`, `ExtResponse` and `ExtNotification` in both
@@ -476,7 +696,17 @@ layout: `AgentRequest`, `ClientResponse` and the envelope types are JSON-RPC
 plumbing, and exporting them from `acp` would publish what the layout says is
 hidden and overlap the `jsonrpc` package. So the generator classifies output:
 
-- Method params, results, notifications and every domain type they reach are
+- Handle-facing **projections** — `PromptParams`, `TerminalOutputParams` — are
+  exported, together with every result and domain type reachable from a public
+  operation.
+- The **complete wire request** behind a projection stays unexported when its
+  identifiers can only come from a handle. Exporting both `PromptParams` and
+  `PromptRequest` would publish two types for one operation, one of which no
+  ordinary caller can validly construct. A complete request is exported only when
+  it is itself part of a public handler contract — `*PromptRequest` is what an
+  agent's handler receives — and cannot be replaced by a direction-specific
+  projection.
+- Other method results and notifications, and every domain type they reach, are
   exported from `acp`.
 - Envelopes and generated routing unions stay unexported.
 - Only the transport-facing message abstraction is exported from `jsonrpc`.
@@ -571,6 +801,23 @@ because it is an implementation detail, and a fork because the package is
 ACP's request cancellation is `$/cancel_request`, LSP's spelling rather than
 MCP's `notifications/cancelled`, so the fork's cancellation wiring is closer to
 what this needs than it was for MCP.
+
+The public `jsonrpc` package needs enough surface to be usable. Handing a
+transport an opaque `jsonrpc.Message` with no way to turn it into bytes is not an
+extension point; the MCP SDK exports `EncodeMessage`, `DecodeMessage` and
+`MakeID` beside its type aliases (`go-sdk/jsonrpc/jsonrpc.go:28`). This package
+exports the message type aliases and:
+
+```go
+func EncodeMessage(Message) ([]byte, error)
+func DecodeMessage([]byte) (Message, error)
+```
+
+and no more. A byte-stream transport frames and unframes; it does not mint
+request IDs, so `MakeID` is not exported until something needs it. Widening a
+package is a minor release; narrowing one is not, so the smaller set is the one
+to start from — but it has to be at least this large, or the `Transport`
+interface is decorative.
 
 ## The v1 schema lane only, which is not the same as stable
 

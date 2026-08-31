@@ -18,7 +18,26 @@ rewrite.
 ## 1. Wire-semantics spike
 
 Not a released layer — a question answered before the generator is written.
-Hand-write or generate a handful of representative types and prove the model:
+**It is the first slice of the real generator, not a throwaway.** An earlier
+draft said "hand-write or generate", which permits a hand-written experiment that
+proves an encoding idea the generator then cannot reproduce — and it plans code
+whose replacement is scheduled, which is the stopgap
+[AGENTS.md](../AGENTS.md) rules out. So layer 1 builds the permanent pieces on a
+deliberately tiny surface:
+
+- pin `schema.json`, `meta.json`, their provenance and upstream licence;
+- write the real schema traversal and the real generator command;
+- use a root manifest holding only the representative definitions — small by
+  scope, not by design;
+- put recovery, validation, union selection and JSON-value logic in the runtime
+  package the full generator will use;
+- generate the representative types and run the fixtures against them.
+
+Layer 2 grows the manifest and the coverage. It does not replace this
+architecture.
+
+The representative set has to cover every shape that could invalidate the
+model:
 
 - one closed string enumeration and one open string union;
 - one closed discriminated object union;
@@ -27,11 +46,16 @@ Hand-write or generate a handful of representative types and prove the model:
 - a required slice, which must encode as `[]` and never as `null`;
 - a field carrying `x-deserialize-default-on-error`;
 - an array carrying `x-deserialize-skip-invalid-items`;
-- a type with real numeric or string constraints.
+- a type with real numeric or string constraints;
+- an optional-and-nullable field, proving all three of omitted, `null` and
+  present — there are 357 such property occurrences, and a pointer with
+  `omitempty` collapses two of the three states;
+- a *required* field carrying `x-deserialize-default-on-error`, which recovers
+  from malformed input but must still fail when the property is absent, if that
+  is what the oracle does.
 
-**Done when** three distinct assertions hold, because "round-trips
-byte-identically" is not a property `encoding/json` has and was the wrong oracle
-to promise:
+**Done when** four assertions hold, because "round-trips byte-identically" is
+not a property `encoding/json` has and was the wrong oracle to promise:
 
 1. Valid input is accepted by both SDKs and normalises to semantically equivalent
    JSON. Whitespace, key order, number spelling and escapes may all differ while
@@ -40,12 +64,32 @@ to promise:
    both SDKs.
 3. The Go encoder matches golden output for values constructed in Go.
 
-Exact byte retention is asserted only where the schema makes it the contract: the
-payload of an open object-union arm, and `_meta`.
+4. `_meta` and open-union extra properties survive as equivalent JSON values —
+   *not* as identical bytes. The TypeScript SDK parses `_meta` through
+   `z.record(z.string(), z.unknown())` and reattaches parsed values, so its bytes
+   are gone too and no cross-SDK assertion could hold.
 
-The cross-check against the TypeScript SDK is the point of the layer. Two
-endpoints from one Go implementation can agree with each other and both be
-wrong.
+### The oracle has to be reproducible, and a sibling checkout is not
+
+The cross-check against the TypeScript SDK is the point of the layer — two
+endpoints from one Go implementation can agree with each other and both be wrong.
+But `~/Desktop/acp-typescript-sdk` is evidence for a review, not a CI dependency,
+and installing `@agentclientprotocol/sdk@1.4.0` does not fix that: the package's
+`exports` map reaches `dist/acp.js`, the experimental entry points and the raw
+schema JSON, and **nothing else**. The generated Zod validators and the
+schema-deserialisation helpers — the actual oracle — are not reachable from the
+published package.
+
+So layer 1 commits a **fixture corpus plus a pinned updater**: the updater builds
+the SDK from a recorded commit and writes the expected values, CI replays the
+committed fixtures with no network and no Node build, and a periodic job runs the
+updater to catch upstream drift. This keeps the normal build hermetic while
+keeping the oracle honest.
+
+Committed alongside: the SDK commit, the npm package version, the schema release
+tag, the Node version policy, and the single command that regenerates
+everything. Without those five, "the two SDKs agree" is an anecdote rather than
+release evidence.
 
 ## 2. Wire
 
@@ -64,6 +108,17 @@ The generator, for real.
   they are roots once `Error` is exported — and any extension marker types.
 - Copy upstream's UNSTABLE marker into the doc comment of every symbol that
   carries one — 18 of them are inside that closure and cannot be avoided.
+- Commit the **complete** capability table now, classifying every one of the 43
+  methods as baseline, gated by a named predicate, or not yet implemented. It
+  belonged in layer 5 in the previous draft, which was too late: layer 3 already
+  exchanges capabilities and reserves every standard method name, and layer 4
+  needs authentication and session gating — neither can enforce an invariant
+  whose classification does not exist yet. Later layers activate rows; they do
+  not invent the classification then. CI compares the table against every method
+  in `meta.json` even while most payload types are not yet generation roots,
+  because the schema has `x-method` and `x-side` but nothing linking a method to
+  a capability, so the table is hand-maintained and has to be checked rather than
+  trusted.
 - Regeneration and the cross-SDK fixture comparison are both CI checks.
 
 **Done when** the committed output is reproducible, the fixtures agree with the
@@ -121,10 +176,6 @@ bug they have and are not release evidence.
   booleans, so two independent handlers.
 - The terminal group: all five methods together, because
   `ClientCapabilities.terminal` is one boolean covering all of them.
-- The version-pinned capability table, with CI checking it covers every method in
-  `meta.json`. The schema has `x-method` and `x-side` but no annotation linking a
-  method to a capability, so the table is hand-maintained and has to be checked
-  rather than trusted.
 - The capability invariant enforced in both directions: construction fails if an
   advertised capability lacks its complete handler set, an inbound call to an
   unadvertised method is refused, and an outbound call the peer never advertised
