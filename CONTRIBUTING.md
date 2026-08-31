@@ -8,16 +8,20 @@ explains why the gate below is shaped the way it is.
 
 ## Requirements
 
-- Go 1.27 or newer. The module declares and independently tests that language
+- Go 1.25 or newer. The module declares and independently tests that language
   floor, so a local toolchain cannot hide a newer language dependency from a
   downstream user.
+
+  1.25 rather than the newest release, because a library's floor is a cost it
+  imposes on everyone who imports it and should be the lowest one it can
+  justify. The justification here is `testing/synctest`, stable since 1.25: the
+  connection layer's concurrency and shutdown contracts are tested with it
+  rather than with sleeps. Nothing in the design needs anything newer, and the
+  official MCP Go SDK declares 1.25 for comparable code.
 - `golangci-lint` v2 (CI pins v2.13.1), `deadcode` from `golang.org/x/tools`
-  (v0.49.0), `gofumpt` (`v0.11.1-0.20260820074422-a2bc6805583d`), `shfmt`
-  (v3.13.1), and `govulncheck` (v1.7.0). The release check pins
-  `golang.org/x/exp/cmd/gorelease` at `v0.0.0-20260820142414-ca536658362e`. The
-  gofumpt pseudo-version is the first upstream revision that understands Go 1.27
-  methods with type parameters; keep it exact until that support has a tagged
-  release.
+  (v0.49.0), `gofumpt` (v0.11.0), `shfmt` (v3.13.1), and `govulncheck` (v1.7.0).
+  The release check pins `golang.org/x/exp/cmd/gorelease` at
+  `v0.0.0-20260820142414-ca536658362e`.
 - Node.js 22.18 or newer when changing Markdown. The exact toolchain is in
   `.tools/package-lock.json`.
 - Tests written with the standard `testing` package.

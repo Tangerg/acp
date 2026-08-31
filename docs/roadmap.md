@@ -5,99 +5,134 @@ end before the next one starts, per [AGENTS.md](../AGENTS.md): "Start from the
 smallest version that works end to end, and add each new capability on top of a
 product that already works."
 
-The layers are not equal in size. Layer 3 is the one that makes the module worth
-publishing; layers 1 and 2 exist to make layer 3 possible, and layers 4 and 5 are
-addition rather than invention.
+This ordering was revised after
+[design-review.md](./design-review.md#recommended-roadmap-changes). The change
+that matters: what used to be one "wire" layer is now a spike followed by the
+full generator. The schema turned out to have five union classes, 378
+occurrences of `x-deserialize-default-on-error` and 35 of
+`x-deserialize-skip-invalid-items`, so "generate all 265 definitions" was hiding
+the possibility that the chosen Go representation cannot express the schema at
+all. Finding that out on eight types is cheap; finding it out on 265 is a
+rewrite.
 
-## 1. Wire
+## 1. Wire-semantics spike
 
-The vendored schema, the generator, the types, the method constants. No I/O.
+Not a released layer — a question answered before the generator is written.
+Hand-write or generate a handful of representative types and prove the model:
 
-- `schema/schema.json` pinned to `schema-v1.21.0`.
-- `internal/cmd/schemagen` emits the 265 definitions: structs, the 14 string
-  enumerations, and the 27 struct unions as sealed interfaces with an unknown arm
-  each.
-- Method name constants from `meta.json`, so no method string is written twice.
-- CI fails if regenerating changes the tree.
+- one closed string enumeration and one open string union;
+- one closed discriminated object union;
+- one of the four open object unions, including its `not` exclusion and its
+  retained extra payload;
+- a required slice, which must encode as `[]` and never as `null`;
+- a field carrying `x-deserialize-default-on-error`;
+- an array carrying `x-deserialize-skip-invalid-items`;
+- a type with real numeric or string constraints.
 
-**Done when** every type round-trips, an unknown union arm round-trips unchanged,
-and an unknown enumeration string survives decoding. Those three tests are the
-whole point of the layer: they are what makes a schema bump a diff rather than an
-incident. See [design.md](./design.md#unions).
+**Done when** accepted values, rejected values, default recovery and serialised
+output all match the TypeScript SDK run against the same inputs. That
+cross-check is the point: two endpoints from one Go implementation can agree
+with each other and both be wrong.
 
-## 2. Link
+## 2. Wire
+
+The generator, for real.
+
+- Vendor and pin both `schema.json` and `meta.json` at `schema-v1.21.0`.
+- Generate the public payload types, the internal routing and envelope types, the
+  method table, validation and codecs — with the visibility split in
+  [design.md](./design.md#what-is-generated-and-what-is-exported), because
+  `gorelease` will hold the module to whatever is exported at the first tag.
+- Regeneration and the cross-SDK fixture comparison are both CI checks.
+
+**Done when** the committed output is reproducible, the fixtures agree with the
+TypeScript SDK, and the unstable-subset question below has an answer.
+
+## 3. Link
 
 The connection machinery, with no ACP semantics in it.
 
-- `internal/jsonrpc2`, forked from `golang.org/x/tools/internal/jsonrpc2_v2`.
-- `Transport` and `Connection`.
-- `InMemoryTransport` first, because it is what the rest of the layers are tested
-  with and it keeps `os` out of the package.
-- `Client`, `Agent`, `ClientConn`, `AgentConn` as types that can carry a request
-  in either direction, and one internal dispatch handler so middleware can be
-  added later without an API break.
+- `internal/jsonrpc2`, forked from `golang.org/x/tools/internal/jsonrpc2_v2`,
+  upstream copyright and licence headers intact.
+- `Transport` and `Connection`, with the concurrency and shutdown contract in
+  [design.md](./design.md#transports) — not just the signatures.
+- The connection state machine, and request-level cancellation via
+  `$/cancel_request`.
+- `InMemoryTransport` first, because it is what the later layers are tested with
+  and it keeps `os` out of the package.
 
-**Done when** a client and an agent in one test complete `initialize` over an
-in-memory pipe and each sees the other's capabilities.
+**Done when** a client and an agent complete `initialize` over an in-memory pipe,
+and shutdown and cancellation are tested with `testing/synctest` rather than
+sleeps.
 
-## 3. Turn
+## 4. Turn
 
-The first release worth using: an editor can drive an agent and a user can
-approve a tool call.
+The first release worth using.
 
 - `session/new`, `session/prompt`, `session/update`,
   `session/request_permission`.
-- Cancellation as [design.md](./design.md#cancellation-is-not-ctxerr) describes
-  it — `Prompt` sends `session/cancel` and keeps reading until the agent answers
-  with `StopReason` `cancelled`.
-- `StdioTransport` and `CommandTransport`, which is what makes it real against a
-  published agent rather than only against itself.
+- Turn cancellation as its own operation, separate from request cancellation —
+  see [design.md](./design.md#two-cancellations-kept-apart).
+- `StdioTransport` and `CommandTransport`.
 
-**Done when** an example agent and an example client complete a full turn with a
-permission prompt in the middle, and a cancelled turn still delivers the agent's
-final updates. Tag `v0.1.0` here.
+**Done when** this SDK interoperates with a TypeScript SDK process over stdio: a
+full turn with a permission prompt in the middle, and a cancelled turn whose
+final updates still arrive after the original caller has stopped waiting. Tag
+`v0.1.0` only after that. Two Go endpoints talking to each other share any wire
+bug they have and are not release evidence.
 
-## 4. Workspace
+## 5. Workspace
 
-The capability-gated methods that let an agent actually do work.
+- `fs/read_text_file` and `fs/write_text_file` — two independent capability
+  booleans, so two independent handlers.
+- The terminal group: all five methods together, because
+  `ClientCapabilities.terminal` is one boolean covering all of them.
+- The capability invariant enforced in both directions: construction fails if an
+  advertised capability lacks its complete handler set, an inbound call to an
+  unadvertised method is refused, and an outbound call the peer never advertised
+  fails locally.
 
-- `fs/read_text_file`, `fs/write_text_file`.
-- `terminal/create`, `output`, `wait_for_exit`, `kill`, `release`, behind the
-  `*Terminal` handle.
-- Capability inference from handler fields, verified in both directions: a method
-  whose capability was not advertised must be refused, and an advertised
-  capability must have a handler.
+## 6. The rest
 
-**Done when** the SDK interoperates with a real published agent over
-`CommandTransport` — the first evidence that comes from outside this repository.
+`session/load` and `session/resume`, modes and config options, `elicitation/*`,
+the `mcp/*` passthrough, `providers/*`, `document/*`, `nes/*` — each only once
+its capability-to-handler grouping is defined.
 
-## 5. The rest
-
-Addition, in whatever order demand arrives: `session/load` and `session/resume`,
-modes and config options, `elicitation/*`, the `mcp/*` passthrough,
-`providers/*`, `document/*`, `nes/*`.
+The extension boundary (`Call`, `Notify`, fallback handlers for `ExtRequest` /
+`ExtNotification`) lands with layer 3, not here: it is how anyone implements an
+ACP extension at all, and leaving it out would make the SDK a ceiling.
 
 Not in this list, and deliberately:
 
-- **Middleware.** The extension point stays unexposed until something needs it.
-- **HTTP and WebSocket transports.** Work in progress upstream; implementing a
-  moving target means implementing it twice.
-- **Schema v2.** Unstable upstream (`schema-v2.0.0-alpha.3`). If it is needed
-  before it stabilises it goes in a separate package whose name says so. See
-  [design.md](./design.md#stable-only).
+- **Middleware.** The internal dispatch seam exists from layer 3 so it can be
+  added without an API break. It stays unexposed until something needs it.
+- **HTTP and WebSocket transports.** Work in progress upstream.
+- **Schema v2.** Unstable upstream (`schema-v2.0.0-alpha.3`). If needed before it
+  stabilises it goes in a separate package whose name says so.
 
 ## Open questions
 
 Things that are not decided, listed so they are not mistaken for decided.
 
-- **Union decode ergonomics.** The sealed interface plus a type switch is
-  settled. Whether to also ship a generic `As[T](SessionUpdate) (T, bool)` helper
-  is not. It shapes every generated union, so it is worth answering before the
-  generator is written rather than after.
-- **How strictly to refuse an ungated method.** A peer that calls a method whose
-  capability was never advertised is misbehaving, but returning an error is not
-  obviously better than serving it. The strict reading is likely right; it needs
-  checking against what real agents do.
-- **Whether `Agent.Run` should own signal handling.** Convenient for the
-  overwhelmingly common stdio agent, and the kind of thing a library usually
-  should not take from its caller.
+- **v1's unstable subset.** 52 of the 265 definitions are marked UNSTABLE
+  upstream. Generating them in layer 2 publishes API for operations layer 6 has
+  not implemented, and `gorelease` will hold the module to it. Defer them,
+  put them behind a build tag, or generate them and accept the surface — this
+  needs answering before layer 2 commits generated output. See
+  [design.md](./design.md#the-v1-schema-lane-only-which-is-not-the-same-as-stable).
+- **Where validation runs for large payloads.** Validating every inbound and
+  outbound message is the correct default, but `session/update` arrives
+  continuously for the whole of a turn. Whether that needs a fast path is a
+  question for a benchmark, not for this document.
+
+### Resolved
+
+- **Union decode helper.** No generic `As[T]` initially. Type switches and type
+  assertions are standard Go and sufficient; a helper earns its place only if
+  real callers show repeated logic it materially improves.
+- **Ungated methods.** Refuse them, in both directions. Capabilities are an
+  authority boundary, not presentation metadata. Extension methods stay on their
+  own explicit fallback path.
+- **Signals in `Agent.Run`.** A library does not own operating-system signals.
+  `Run` stops when its context is cancelled or its transport ends; a `main`
+  package owns `signal.NotifyContext`.

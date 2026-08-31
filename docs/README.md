@@ -10,6 +10,7 @@ One page per reader task:
 | --- | --- |
 | [protocol.md](./protocol.md) | What is ACP? What are the roles, the methods, and the shape of a turn? |
 | [design.md](./design.md) | What does it look like in Go, and why that and not something else? |
+| [design-review.md](./design-review.md) | Is the proposed Go design ready to implement, and what must change first? |
 | [repository.md](./repository.md) | How is this repository built, and what does each gate prove? |
 | [roadmap.md](./roadmap.md) | In what order does it get built? |
 
@@ -33,8 +34,12 @@ unstable line is `schema-v2.0.0-alpha.3`.
 ### The reference implementation
 
 `~/Desktop/acp-typescript-sdk` — `@agentclientprotocol/sdk` v1.4.0, by Zed
-Industries, Apache-2.0. Upstream at
+Industries, Apache-2.0, at commit
+`5dac09aaae3ebde1eaaf4a11840f7543f4806e20`. Upstream at
 <https://github.com/agentclientprotocol/typescript-sdk>.
+
+Line numbers below are pinned to that commit; both SDKs move them often, so check
+the surrounding code rather than the number if they disagree.
 
 The files these notes lean on:
 
@@ -53,7 +58,8 @@ The files these notes lean on:
 ### The model for the Go shape
 
 `~/Desktop/go-sdk` — `github.com/modelcontextprotocol/go-sdk`, the official MCP
-SDK written by the Go team. Upstream at
+SDK written by the Go team, at commit
+`21c18c6229e1c6d1d53d9a57475a2f65cc508cf3`. Upstream at
 <https://github.com/modelcontextprotocol/go-sdk>.
 
 It matters because it is the same problem already solved once in Go: a

@@ -70,74 +70,107 @@ types every caller touches and so the ones most worth checking.
 
 ## Unions
 
-Go has no sum type and the schema has 41 unions. They are not one problem; they
-are two, and conflating them is how this goes wrong.
+Go has no sum type and the schema has 41 unions. An earlier draft of this page
+split them into "14 open string enumerations and 27 discriminated struct unions"
+and gave every struct union an unknown arm. Both halves of that were wrong, and
+[design-review.md](./design-review.md#1-the-union-model-disagrees-with-the-v1-schema)
+is why this section was rewritten. The correction matters because it inverts the
+forward-compatibility rule: the schema, not this package, decides which unions
+are open.
 
-### The 14 string enumerations stay open
+Classified by actual wire shape, the 41 are:
 
-`StopReason`, `ToolKind`, `ToolCallStatus`, `Role`, `PlanEntryPriority` and the
-rest are a closed set of strings on the wire.
+| Class | Count | Examples |
+| --- | --- | --- |
+| Closed string enumerations | 14 | `StopReason`, `ToolKind`, `ToolCallStatus`, `Role` |
+| Open string unions — const arms plus a bare `string` | 3 | `LlmProtocol`, `CompactionStatus`, `SessionConfigOptionCategory` |
+| Closed discriminated object unions | 16 | `SessionUpdate`, `ContentBlock`, `ToolCallContent` |
+| Open object unions, with a schema `not` catch-all | 4 | `CreateElicitationRequest`, `CreateElicitationResponse`, `ElicitationPropertySchema`, `MultiSelectItems` |
+| Primitive, value and mixed unions | 4 | `RequestId` (`string`\|integer\|`null`), `ErrorCode` (integer), `ElicitationContentValue`, `SessionConfigSelectOptions` |
+
+The schema says which is which, explicitly, and the TypeScript generator already
+honours it. `zStopReason` is five `z.literal` arms and nothing else;
+`zLlmProtocol` is five literals **plus `z.string()`**
+(`acp-typescript-sdk/src/schema/zod.gen.ts:2075` and `:1671`). Exactly four
+unions carry the `not` catch-all that makes an object union open.
+
+So:
 
 ```go
+// StopReason is closed: the schema lists these five and no others.
 type StopReason string
 
 const (
-	StopReasonEndTurn   StopReason = "end_turn"
-	StopReasonMaxTokens StopReason = "max_tokens"
-	StopReasonRefusal   StopReason = "refusal"
-	StopReasonCancelled StopReason = "cancelled"
+	StopReasonEndTurn         StopReason = "end_turn"
+	StopReasonMaxTokens       StopReason = "max_tokens"
+	StopReasonMaxTurnRequests StopReason = "max_turn_requests"
+	StopReasonRefusal         StopReason = "refusal"
+	StopReasonCancelled       StopReason = "cancelled"
 )
+
+// LlmProtocol is open: the schema's last arm is a bare string, so a value
+// outside this list is valid and is kept as received.
+type LlmProtocol string
 ```
 
-A named string, not an integer with a mapping table. A peer on a later protocol
-revision will send a value not in this list, and a decoder that rejects it turns
-"your editor is older than the agent" into "the connection is broken."
-Unmarshalling keeps the unknown string; a `switch` handles what it knows and has
-a `default`. This is why `.golangci.yml` sets
-`exhaustive.default-signifies-exhaustive`.
+Decoding a value the schema does not permit is an error, not a value to keep.
+Being more permissive than the published grammar is the local dialect
+[AGENTS.md](../AGENTS.md) forbids — and it is not even safe permissiveness: a
+`StopReason` this package invented would flow into caller `switch` statements
+that the schema promised were exhaustive.
 
-### The 27 struct unions get a sealed interface and an unknown arm
-
-These carry a discriminator and a payload. `SessionUpdate` is the one that
-matters: 15 arms tagged by a `sessionUpdate` field, and it is the message the
-agent sends continuously for the whole of a turn.
+`SessionUpdate` is a **closed** 15-arm union in v1. It gets the sealed interface,
+as the MCP SDK does for `Content` (`go-sdk/mcp/content.go:22`) —
 
 ```go
 // A SessionUpdate is one of [UserMessageChunk], [AgentMessageChunk],
-// [AgentThoughtChunk], [ToolCallStart], [ToolCallProgress], [PlanUpdate], … or
-// [UnknownSessionUpdate].
+// [AgentThoughtChunk], [ToolCallStart], [ToolCallProgress], [PlanUpdate], …
 type SessionUpdate interface {
 	isSessionUpdate()
 }
 ```
 
-An interface rather than one flat struct with fifteen optional field groups. The
-flat struct makes every unrepresentable combination constructible and pushes the
-"which of these is set?" question onto every reader; a type switch answers it
-once, and the compiler helps. This is what the MCP SDK does for `Content`
-(`go-sdk/mcp/content.go:22`), and it reserves the flat-struct form for small
-unions where the arms genuinely share fields.
+— and an unrecognised `sessionUpdate` discriminator is a decode error. The
+`UnknownSessionUpdate` arm the earlier draft proposed is deleted: inventing a
+catch-all the schema does not define is inventing wire behaviour.
 
-The interface is sealed with an unexported method, because the arms are the
-protocol's and not the caller's. Sealing has a cost, and it is the important part
-of this section:
+The four genuinely open object unions get a raw arm, because there the schema
+asks for one: the `not` clause defines what falls through, and the payload has to
+survive intact.
 
-```go
-// UnknownSessionUpdate is a variant from a protocol revision this package does
-// not implement. It keeps the message intact so that a client which forwards or
-// records updates does not silently drop one a newer agent sent.
-type UnknownSessionUpdate struct {
-	Kind string
-	Raw  json.RawMessage
-}
-```
+The forward-compatibility worry that motivated the wrong design is real, but it
+is upstream's to answer. If ACP wants `SessionUpdate` to tolerate a future arm,
+that is a schema change — and the schema already shows it knows how to express
+one.
 
-Without that arm, a sealed union means an editor built against `schema-v1.21.0`
-silently discards whatever `schema-v1.22.0` adds. ACP adds arms — `SessionUpdate`
-did not start at fifteen — so this is a certainty, not a hypothetical.
-TypeScript gets the property free from structural typing; Go has to choose it.
-Every struct union gets an unknown arm, and round-tripping an unknown arm
-unchanged is a test rather than a hope.
+## Validation is part of the codec, not an afterthought
+
+`encoding/json` checks JSON syntax and Go field types. It does not implement this
+schema. The v1 schema uses two extension keywords heavily —
+**378 occurrences of `x-deserialize-default-on-error`** and **35 of
+`x-deserialize-skip-invalid-items`** — and neither has any meaning to a plain
+decoder. `ClientCapabilities.fs` carries both a default and
+`x-deserialize-default-on-error`, so a malformed `fs` object must become
+`{readTextFile:false, writeTextFile:false}` rather than fail the message.
+
+Also unenforced by plain decoding: required fields, constants, enum membership,
+numeric bounds, lengths, formats, the difference between omitted / `null` /
+present where it matters, required slices (a nil Go slice encodes as `null`,
+which is invalid where an array is required), and the `not` rules of the four
+open unions.
+
+So the codec has a stated shape:
+
+- Generated unmarshalling performs schema-directed recovery and union selection.
+- Generated validation rejects what recovery does not cover.
+- Every outbound request, response and notification is validated before it is
+  written.
+- Every inbound params or result is validated before it reaches user code.
+
+Round-trip tests split in two, because these are different promises: canonical
+valid values round-trip byte-identically, and the four open unions preserve their
+extension payload. A field that intentionally defaults on malformed input cannot
+also round-trip unchanged, and a test that asks for both will be wrong about one.
 
 ## Client and agent
 
@@ -180,44 +213,6 @@ spec adds an optional field to a request, a params struct absorbs it and a
 positional signature cannot. Passing `nil` params stays valid for any method that
 currently needs none.
 
-## Handlers are fields, and they imply capabilities
-
-The TypeScript SDK declares `interface Client` with fourteen methods, twelve
-optional (`acp-typescript-sdk/src/acp.ts:3723`). Go has no optional interface
-methods, and the transliteration — fourteen methods where twelve may return
-"unsupported" — makes every caller write stubs and makes capability advertisement
-a second list to keep in step by hand.
-
-Instead, the MCP SDK's pattern (`go-sdk/mcp/client.go`, `ClientOptions`), which
-fits ACP better than it fits MCP:
-
-```go
-type ClientConfig struct {
-	// Required. The agent may call these on any connection.
-	RequestPermission func(context.Context, *RequestPermissionRequest) (*RequestPermissionResult, error)
-	SessionUpdate     func(context.Context, *SessionUpdateRequest) error
-
-	// Optional. Setting one advertises the capability that gates it.
-	ReadTextFile   func(context.Context, *ReadTextFileRequest) (*ReadTextFileResult, error)
-	WriteTextFile  func(context.Context, *WriteTextFileRequest) error
-	CreateTerminal func(context.Context, *CreateTerminalRequest) (*CreateTerminalResult, error)
-
-	// Capabilities overrides what the handlers imply.
-	Capabilities *ClientCapabilities
-}
-```
-
-The capability and the code that honours it become one decision. Advertising
-`fs.readTextFile` with no reader, or writing a reader the agent is never told
-about, both stop being expressible. `Capabilities` remains the escape hatch for
-the case where the two genuinely differ.
-
-It fits ACP better than MCP because ACP gates almost everything: past four
-baseline methods, every one of the remaining 39 is behind a capability.
-
-This is a `Config` struct with useful zero values rather than functional options,
-per [AGENTS.md](../AGENTS.md).
-
 ## Terminals are a handle
 
 `terminal/create` returns an ID that four more methods take. Five free functions
@@ -238,32 +233,144 @@ The TypeScript SDK reached the same conclusion with `TerminalHandle`
 obligation somewhere to live: a terminal that is never released leaks a process
 on the client, and a type with a `Release` method is where `defer` goes.
 
-## Cancellation is not `ctx.Err()`
+## Two cancellations, kept apart
 
-The subtlety most likely to be got wrong, and worth settling before any code
-exists. The protocol requirement is in
-[protocol.md](./protocol.md#cancellation): `session/cancel` does not end a turn.
-The agent must still answer the outstanding `session/prompt` with `StopReason`
-`cancelled`, and the client must keep reading `session/update` until it does.
+ACP has two independent operations and an earlier draft of this page fused them.
+`$/cancel_request` cancels one JSON-RPC request. `session/cancel` cancels a
+*turn*, and obliges the agent to finish the outstanding `session/prompt` with
+`StopReason` `cancelled`.
 
-So `Prompt` cannot be a normal context-cancelled call:
+That draft mapped `Prompt`'s context cancellation onto `session/cancel` and then
+ignored the cancelled context and waited for the peer. It was wrong twice:
+`ctx` is the caller's only bounded way to stop waiting, and taking it away leaves
+no way to give up on an unresponsive agent short of dropping the connection. Both
+reference implementations do the opposite —
+`acp-typescript-sdk/src/jsonrpc.ts:99` ("Aborting this signal sends
+`$/cancel_request` for the outgoing request"), and the MCP Go SDK returns
+`ctx.Err()` and sends the protocol notification on a separate
+`context.WithoutCancel` with its own timeout so a slow peer cannot hold the
+caller past its deadline (`go-sdk/mcp/transport.go:281`).
+
+So the two stay separate:
 
 ```go
-// Prompt runs one turn and blocks until it ends.
+// Prompt runs one turn. Cancelling ctx cancels the request: Prompt sends
+// $/cancel_request and returns ctx.Err(), like any other Go call that does I/O.
 //
-// If ctx is cancelled, Prompt sends session/cancel and keeps reading. The turn
-// is over when the agent answers, not when the caller stops waiting: updates
-// sent between the two are part of the turn's record, and the agent's own
-// answer is what says how the turn ended. Prompt then returns a result whose
-// StopReason is "cancelled", and a nil error — the cancellation succeeded.
-//
-// To stop without waiting, close the connection.
+// It does not cancel the turn. To do that, call Cancel — see the note below on
+// why the two are not the same thing.
 func (*ClientConn) Prompt(context.Context, *PromptParams) (*PromptResult, error)
+
+// Cancel ends the current turn. The agent answers the outstanding Prompt with
+// StopReason "cancelled" after it has finished reporting; a caller that wants
+// that final result keeps its Prompt context alive and waits.
+func (*ClientConn) Cancel(context.Context, *CancelParams) error
 ```
 
-Returning `ctx.Err()` at cancellation is the idiomatic-looking choice and would
-drop the tail of every cancelled turn. The rule here is that the protocol's
-semantics win and the doc comment carries the surprise.
+The protocol's requirement — that the tail of a cancelled turn is still
+delivered — is met by where the read loop lives, not by making `Prompt` block.
+The connection dispatches inbound messages independently of whoever is waiting on
+a call, so `session/update` notifications keep reaching handlers and the eventual
+response is still consumed even if the original caller has walked away. That is
+the property to test: cancel a turn, drop the waiter, and assert the updates
+still arrive.
+
+## Handlers are fields, and capabilities are derived from complete groups
+
+The TypeScript SDK declares `interface Client` with fourteen methods, twelve
+optional (`acp-typescript-sdk/src/acp.ts:3723`). Go has no optional interface
+methods, and the transliteration — fourteen methods where twelve may return
+"unsupported" — makes every caller write stubs and makes capability advertisement
+a second list to keep in step by hand.
+
+So handlers are fields on a `Config`, following `go-sdk/mcp/client.go`'s
+`ClientOptions`. But the unit is the **capability group**, not the individual
+handler, because ACP's capabilities are not one-to-one with methods:
+
+```go
+type ClientConfig struct {
+	// fs.readTextFile and fs.writeTextFile are separate booleans in the schema,
+	// so these are separate fields.
+	ReadTextFile  func(context.Context, *ReadTextFileRequest) (*ReadTextFileResult, error)
+	WriteTextFile func(context.Context, *WriteTextFileRequest) error
+
+	// ClientCapabilities.terminal is one boolean meaning "supports all
+	// terminal* methods", so the five arrive together or not at all.
+	Terminal *TerminalHandlers
+
+	// Capabilities may refine or disable what the handlers imply. It may not
+	// enable an operation that has no implementation.
+	Capabilities *ClientCapabilities
+}
+```
+
+`terminal` is the case that kills per-handler inference: the schema field is a
+plain boolean documented as "Whether the Client support all `terminal*` methods".
+A non-nil `CreateTerminal` cannot imply that `Output`, `WaitForExit`, `Kill` and
+`Release` exist, so a group is the only honest unit. `fs` genuinely is two
+booleans, so those stay separate. Elicitation, auth, session and NES have their
+own nesting and each gets whatever grouping its capability type actually has.
+
+Three rules make the invariant hold rather than merely be claimed:
+
+- **Construction validates.** Every advertised capability must have its complete
+  handler set, checked when the `Client` or `Agent` is built, not when a request
+  arrives.
+- **The override may narrow, never widen.** An earlier draft said advertising a
+  capability without a handler was inexpressible and then supplied a
+  `Capabilities` field that made it expressible again. `Capabilities` can refine
+  or switch a capability off; enabling one with nothing behind it is a
+  construction error.
+- **Capabilities are an authority boundary.** They decide whether an agent may
+  read a file or run a command, so an inbound call to an unadvertised method is
+  refused, and an outbound call the peer never advertised fails locally rather
+  than going out to be rejected.
+
+Required behaviour gets safe zero meanings where one exists: a nil
+`SessionUpdate` handler is a no-op, a nil permission handler denies. Where no
+safe default exists, construction fails and says so.
+
+This is a `Config` struct with useful zero values rather than functional options,
+per [AGENTS.md](../AGENTS.md).
+
+## Extension methods
+
+The v1 schema defines `ExtRequest`, `ExtResponse` and `ExtNotification` in both
+directions, and the TypeScript SDK exposes generic call, notify and handler
+registration for them. Hiding every method string and JSON-RPC envelope is right
+for the standard operations and wrong here: without an escape hatch, an ACP
+extension cannot be implemented through this package at all.
+
+The boundary is narrow and deliberately unglamorous — no middleware, no builder:
+
+```go
+func (*ClientConn) Call(ctx context.Context, method string, params, result any) error
+func (*ClientConn) Notify(ctx context.Context, method string, params any) error
+```
+
+plus fallback request and notification handlers on the `Config` for methods
+outside the generated table. Params and results are `json.RawMessage` or a
+caller-supplied decode target. Standard methods stay strongly typed and never
+expose their method strings through ordinary use.
+
+## What is generated, and what is exported
+
+Generating all 265 definitions as exported types would contradict the package
+layout above: `AgentRequest`, `ClientResponse` and the protocol error types are
+JSON-RPC routing and envelope plumbing, and exporting them from `acp` would both
+publish the plumbing and overlap the `jsonrpc` package.
+
+The generator reads every definition and classifies where the output goes:
+
+- Method params, results, notifications and every domain type they reach are
+  exported from `acp`.
+- Envelopes and generated routing unions stay unexported.
+- Only the transport-facing message abstraction is exported from `jsonrpc`.
+- Method-name constants used by generated dispatch stay unexported; the
+  extension API takes an explicit string instead.
+
+This has to be settled before the first generated API is committed, because from
+that point `gorelease` treats it as a promise.
 
 ## Transports
 
@@ -286,9 +393,38 @@ type Connection interface {
 - `CommandTransport` — the client side: start the agent and frame ndjson over its
   stdin and stdout.
 - `StdioTransport` — the agent side.
-- `IOTransport` — any `io.Reader`/`io.Writer` pair.
+- `IOTransport` — a closeable stream pair, not bare `io.Reader`/`io.Writer`:
+  without a way to close the reader, a pending `Read` and the goroutine blocked
+  in it cannot be stopped.
 - `InMemoryTransport` — a client and an agent in one test with no subprocess. The
   reason the rest of the package never touches `os`.
+
+The signatures are the easy half. In the MCP SDK the requirements that matter
+live in the comments, and this package has to state its own, because they are
+what a custom transport is being asked to promise:
+
+- A transport is connected at most once.
+- `Write` may be called concurrently.
+- `Read` may run concurrently with `Close`.
+- `Close` is idempotent and safe to call concurrently, and it unblocks a pending
+  `Read`.
+- A failed read or write closes the logical connection.
+- Every goroutine the connection owns has a defined exit condition.
+- `Wait` returns the connection's terminal error, consistently, to every caller.
+
+Untested concurrency contracts are not contracts, so these are tested with
+`testing/synctest` rather than with sleeps.
+
+### Who owns initialization
+
+`initialize` must happen once, before anything else, and its result is
+connection-wide state. `Client.Connect` therefore performs it and returns a
+`ClientConn` that is already initialized, with an accessor for the result.
+
+The alternative — a public `Initialize` method — makes three failure modes the
+API has to define and test: a call before initialization, a second
+initialization, and two concurrent ones. Doing it in `Connect` makes all three
+unrepresentable, which is cheaper than defining them.
 
 HTTP and WebSocket are work in progress upstream and are not implemented until
 they settle.
@@ -313,14 +449,33 @@ ACP's request cancellation is `$/cancel_request`, LSP's spelling rather than
 MCP's `notifications/cancelled`, so the fork's cancellation wiring is closer to
 what this needs than it was for MCP.
 
-## Stable only
+## The v1 schema lane only, which is not the same as stable
 
 Upstream ships v1 (`schema.json`, tag `schema-v1.21.0`) and an unstable v2
 (`schema/v2/schema.unstable.json`, tag `schema-v2.0.0-alpha.3`), and the
-TypeScript SDK carries both. This module implements v1 and nothing else until v2
-stabilises. Two type sets in one package would double the generated surface and
-grow every union arms that exist only in a draft. If v2 becomes necessary before
-it is stable it goes in a separate package whose name says so.
+TypeScript SDK carries both. This module implements the v1 lane and nothing else
+until v2 stabilises. Two type sets in one package would double the generated
+surface and grow every union arms that exist only in a draft.
+
+That is a statement about lanes, not about stability. **52 of the v1 schema's 265
+definitions are themselves marked UNSTABLE** — providers, ACP-carried MCP,
+document synchronisation, NES, session forking, compaction — each carrying "This
+capability is not part of the spec yet, and may be removed or changed at any
+point." An earlier heading here read "Stable only" and invited exactly the wrong
+inference.
+
+Two consequences, both unresolved:
+
+- Generating types for v1's unstable operations in the wire layer publishes
+  public API for operations the roadmap does not implement until layer 5, and
+  `gorelease` will hold this module to them from the first tag.
+- Whatever the answer, the Go documentation has to carry the upstream instability
+  marker rather than quietly dropping it.
+
+Deferring generation of the unstable subset, or generating it behind a build tag,
+or generating it and accepting the compatibility surface, are all defensible.
+Choosing is layer 2 work; it is listed in
+[roadmap.md](./roadmap.md#open-questions).
 
 ## What is deliberately not copied from the TypeScript SDK
 
