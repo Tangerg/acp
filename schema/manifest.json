@@ -4,14 +4,22 @@
     "AuthenticateRequest",
     "AuthenticateResponse",
     "CancelNotification",
+    "CloseSessionRequest",
+    "CloseSessionResponse",
     "CreateTerminalRequest",
     "CreateTerminalResponse",
+    "DeleteSessionRequest",
+    "DeleteSessionResponse",
     "InitializeRequest",
     "InitializeResponse",
     "KillTerminalRequest",
     "KillTerminalResponse",
+    "ListSessionsRequest",
+    "ListSessionsResponse",
     "LoadSessionRequest",
     "LoadSessionResponse",
+    "LogoutRequest",
+    "LogoutResponse",
     "NewSessionRequest",
     "NewSessionResponse",
     "PromptRequest",
@@ -22,7 +30,11 @@
     "ReleaseTerminalResponse",
     "RequestPermissionRequest",
     "RequestPermissionResponse",
+    "ResumeSessionRequest",
+    "ResumeSessionResponse",
     "SessionNotification",
+    "SetSessionConfigOptionRequest",
+    "SetSessionConfigOptionResponse",
     "SetSessionModeRequest",
     "SetSessionModeResponse",
     "TerminalOutputRequest",
@@ -134,6 +146,20 @@
         "terminalId"
       ],
       "why": "A Terminal binds both identifiers."
+    },
+    "CloseParams": {
+      "from": "CloseSessionRequest",
+      "without": [
+        "sessionId"
+      ],
+      "why": "A ClientSession binds the session identifier. Close still takes params because the request carries _meta too."
+    },
+    "SetConfigOptionParams": {
+      "from": "SetSessionConfigOptionRequest",
+      "without": [
+        "sessionId"
+      ],
+      "why": "A ClientSession binds the session identifier."
     }
   }
 }

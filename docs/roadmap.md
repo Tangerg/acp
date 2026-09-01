@@ -328,10 +328,27 @@ All three hold, and the outbound half is refused locally rather than sent: the
 peer's answer would be the same, and asking wastes a round trip while making a
 developer read a wire trace to find out what they forgot.
 
-## 6. The rest
+## 6. The rest — done, except elicitation
 
-`session/resume`, session lifecycle operations, config options, logout and
-`elicitation/*` — each only once its capability-to-handler grouping is defined.
+`session/resume`, `session/list`, `session/delete`, `session/close`,
+`session/set_config_option` and `logout` are served. Each is gated on the
+capability the schema names for it and advertised by setting its handler, so an
+agent says what it can do by being able to do it.
+
+`session/close` is the only one of them the schema puts an obligation on: the
+agent "**must** cancel any ongoing work related to the session (treat it as if
+`session/cancel` was called) and then free up any resources". The connection keeps
+that, not the application — the outstanding prompt still owes the client the
+cancelled stop reason — and it is also the one point at which a session handle can
+be reclaimed, which is what stops the population being one-way.
+
+`elicitation/create` and `elicitation/complete` remain. They are a layer rather
+than an addition: the request carries a mode (form or URL) and a scope (session or
+request) as two flattened unions, a request-scoped elicitation is tied to a
+JSON-RPC request before any session exists, URL mode answers asynchronously
+through a second correlation identifier, and form mode hands the client a JSON
+Schema to render — which raises whether validating the answer belongs in this
+module at all.
 
 The extension boundary (`Call`, `Notify`, fallback handlers for `ExtRequest` /
 `ExtNotification`) lands with layer 3, not here: it is how anyone implements an

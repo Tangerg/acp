@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -101,4 +102,22 @@ func (m authenticationMethods) accepts(methodID AuthMethodID) error {
 	}
 	return newError(ErrorCodeInvalidParams,
 		"%s is not one of the authentication methods advertised in the initialize response", methodID)
+}
+
+// Logout ends the authentication a client established, without ending the
+// connection.
+//
+// Gated on agentCapabilities.auth.logout.
+func (c *ClientConn) Logout(ctx context.Context, params *LogoutRequest) (*LogoutResponse, error) {
+	if params == nil {
+		params = &LogoutRequest{}
+	}
+	if err := c.Peer().permits(methodLogout); err != nil {
+		return nil, err
+	}
+	response := new(LogoutResponse)
+	if err := c.call(ctx, methodLogout, params, response); err != nil {
+		return nil, err
+	}
+	return response, nil
 }

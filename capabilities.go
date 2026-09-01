@@ -152,14 +152,8 @@ var gates = gateTable{
 	methodTerminalKill:        terminalGate,
 	methodTerminalRelease:     terminalGate,
 
-	// -- Not implemented yet --------------------------------------------------
-	//
-	// Each of these has a capability-to-handler grouping to work out before it can
-	// be served, and the row is here so that the table is complete rather than as
-	// far as the work has got.
-
 	methodLogout: {
-		gating:     gatingUnimplemented,
+		gating:     gatingCapability,
 		capability: "agentCapabilities.auth.logout",
 		owner:      sideAgent,
 		advertised: func(peer PeerInfo) bool { return hasCapability(peer.AgentCapabilities.Auth.Logout) },
@@ -170,9 +164,18 @@ var gates = gateTable{
 	methodSessionResume: sessionCapability("resume", func(s SessionCapabilities) bool { return hasCapability(s.Resume) }),
 	methodSessionClose:  sessionCapability("close", func(s SessionCapabilities) bool { return hasCapability(s.Close) }),
 	methodSessionSetConfigOption: {
-		gating: gatingUnimplemented,
-		why:    "gated by data, like session/set_mode: an agent offers config options by returning them",
+		gating: gatingBaseline,
+		why: "gated by data rather than by a capability, like session/set_mode: an agent offers " +
+			"config options by returning them, and an agent that offers none has nothing to set",
 	},
+
+	// -- Not implemented yet --------------------------------------------------
+	//
+	// The row is here so that the table is complete rather than as far as the work
+	// has got. Elicitation is one group and not two methods: a request carries a
+	// mode and a scope as two flattened unions, url mode answers asynchronously
+	// through elicitation/complete under an identifier of its own, and form mode
+	// hands the client a JSON Schema to render. That is a layer, not an addition.
 
 	methodElicitationCreate: {
 		gating:     gatingUnimplemented,
@@ -194,7 +197,7 @@ var gates = gateTable{
 // capability object.
 func sessionCapability(name string, set func(SessionCapabilities) bool) methodGate {
 	return methodGate{
-		gating:     gatingUnimplemented,
+		gating:     gatingCapability,
 		capability: "agentCapabilities.sessionCapabilities." + name,
 		owner:      sideAgent,
 		advertised: func(peer PeerInfo) bool { return set(peer.AgentCapabilities.SessionCapabilities) },

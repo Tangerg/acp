@@ -163,8 +163,12 @@ func TestTheTerminalCapabilityCoversAllFiveMethods(t *testing.T) {
 // checked, so a peer could advertise an unsupported method and the inbound gate
 // would then refuse a method the peer had been told was there.
 func TestAdvertisingAnUnimplementedMethodIsRefusedAtConstruction(t *testing.T) {
+	// These are implementable now, so what the construction check catches is an
+	// advertisement with no handler behind it rather than one this package could
+	// never serve.
 	agentCases := map[string]*AgentCapabilities{
 		"session listing": {SessionCapabilities: SessionCapabilities{List: OptValue(SessionListCapabilities{})}},
+		"session closing": {SessionCapabilities: SessionCapabilities{Close: OptValue(SessionCloseCapabilities{})}},
 		"logout":          {Auth: AgentAuthCapabilities{Logout: OptValue(LogoutCapabilities{})}},
 	}
 	for name, capabilities := range agentCases {
@@ -254,8 +258,21 @@ func TestBaselineIsAllowedAndUnimplementedIsNot(t *testing.T) {
 			t.Errorf("the baseline method %q was refused", name)
 		}
 	}
-	for _, name := range []string{methodLogout, methodSessionList, methodElicitationCreate} {
+	// Gated: refused until the peer that serves them says they are there.
+	for _, name := range []string{methodLogout, methodSessionList, methodSessionClose} {
 		if silent.permits(name) == nil {
+			t.Errorf("%q is gated but the gate allowed it unadvertised", name)
+		}
+	}
+	// Not implemented: refused however much a peer advertises, which is what keeps
+	// an unimplemented row from reading as a gated one.
+	var loud PeerInfo
+	loud.ClientCapabilities.Elicitation = OptValue(ElicitationCapabilities{
+		Form: OptValue(ElicitationFormCapabilities{}),
+		URL:  OptValue(ElicitationURLCapabilities{}),
+	})
+	for _, name := range []string{methodElicitationCreate, methodElicitationComplete} {
+		if loud.permits(name) == nil {
 			t.Errorf("%q is not implemented yet but the gate allowed it", name)
 		}
 	}

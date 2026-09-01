@@ -42,6 +42,17 @@ both directions.
   local subprocess, and `acp.NewIOTransport` for any closeable stream pair. A
   custom transport implements `acp.Transport`; the concurrency and shutdown
   contract it is being asked to promise is in the interface's own documentation.
+- **The session lifecycle.** `logout`, `session/list`, `session/delete`,
+  `session/resume`, `session/close` and `session/set_config_option`, each gated on
+  the capability the schema names and advertised by setting its handler.
+  `ClientConn` gains `Logout`, `ListSessions`, `DeleteSession` and
+  `ResumeSession`; `ClientSession` gains `Close` and `SetConfigOption`.
+  `AgentConfig` gains the matching handlers. Closing a session cancels the work
+  still running in it before the handler frees anything, because the schema makes
+  that the agent's obligation rather than the application's — an outstanding
+  `Prompt` still answers with the cancelled stop reason. A closed or deleted
+  session is also forgotten, which is the only way the handle population shrinks.
+  `elicitation/*` is still not served, and the README says so.
 - **Bounded appetite.** A message's size and the time this side will wait were
   already bounded; its count was not, and count is what a peer controls for free.
   A connection now holds at most 1024 messages read but not yet delivered, 1024

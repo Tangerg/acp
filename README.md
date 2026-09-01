@@ -37,6 +37,26 @@ cancellations. That last one is the evidence that matters — two Go endpoints
 talking to each other share any wire bug they have — and
 [docs/roadmap.md](./docs/roadmap.md#4-turn) says how it is recorded and replayed.
 
+### What is served, and what is not
+
+Every method the schema defines is classified, and the two that are not served yet
+are refused rather than silently absent: a peer calling one is answered
+`method not found`, and an agent that tried to advertise one is refused at
+construction.
+
+Served: `initialize`, `authenticate`, `logout`, `session/new`, `session/load`,
+`session/resume`, `session/list`, `session/delete`, `session/close`,
+`session/prompt`, `session/cancel`, `session/set_mode`,
+`session/set_config_option`, `session/update`, `session/request_permission`,
+`fs/read_text_file`, `fs/write_text_file`, the five `terminal/*` methods, and
+`$/cancel_request`.
+
+Not served: `elicitation/create` and `elicitation/complete`. They are one feature
+rather than two methods — a request carries a mode and a scope as two flattened
+unions, URL mode answers asynchronously under an identifier of its own, and form
+mode hands the client a JSON Schema to render — so they are a layer of their own
+rather than an addition to this one.
+
 ## A turn
 
 ```go

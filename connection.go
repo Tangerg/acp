@@ -232,11 +232,12 @@ func (h *handshake) whenPublished() <-chan struct{} { return h.published }
 
 // sessions is one handle per identifier per connection.
 //
-// One rather than one per lookup, because the rules a handle keeps are the
-// session's: two handles for one session would each believe they were the only
-// turn, and the one-prompt-at-a-time rule would hold for neither. That is also
-// why a handle is never evicted, and why the population needs a bound instead:
-// see limits.go.
+// One rather than one per lookup because a handle is a caller-visible identity:
+// two for one session would be two objects a caller could not tell apart. The
+// turn invariant does not depend on it — that lives on the connection, keyed by
+// identifier — so a handle can be forgotten once the protocol says the session is
+// gone, which is the only thing that keeps the population from being one-way. See
+// limits.go for the bound that covers everything else.
 type sessions[Handle any] struct {
 	mu   sync.Mutex
 	byID map[SessionID]*Handle
@@ -261,6 +262,14 @@ func (s *sessions[Handle]) lookup(id SessionID, open func(SessionID) *Handle) (*
 	}
 	s.byID[id] = handle
 	return handle, true
+}
+
+// forget drops a session the protocol says is over, so that a long-lived
+// connection reclaims what session/close and session/delete free.
+func (s *sessions[Handle]) forget(id SessionID) {
+	s.mu.Lock()
+	delete(s.byID, id)
+	s.mu.Unlock()
 }
 
 // registry lists the connections a client or agent has opened and not closed.

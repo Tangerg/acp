@@ -49,6 +49,44 @@ type AgentConfig struct {
 	// nil handler here means it offers none.
 	SetMode func(ctx context.Context, session *AgentSession, request *SetSessionModeRequest) (*SetSessionModeResponse, error)
 
+	// SetConfigOption sets one of the session configuration options this agent
+	// offered. Gated by data exactly as SetMode is.
+	SetConfigOption func(
+		ctx context.Context,
+		session *AgentSession,
+		request *SetSessionConfigOptionRequest,
+	) (*SetSessionConfigOptionResponse, error)
+
+	// Logout ends the authenticated session. Setting it advertises
+	// agentCapabilities.auth.logout.
+	Logout func(ctx context.Context, request *LogoutRequest) (*LogoutResponse, error)
+
+	// The session lifecycle, each gated on its own property of
+	// agentCapabilities.sessionCapabilities and each advertised by being set.
+	//
+	// ListSession and DeleteSession take no handle: the schema describes deletion
+	// as removing a session "from session/list", so both name sessions this
+	// connection may never have opened, and minting a handle for one would spend
+	// the connection's session budget on a session nobody is in.
+	ListSessions  func(ctx context.Context, request *ListSessionsRequest) (*ListSessionsResponse, error)
+	DeleteSession func(ctx context.Context, request *DeleteSessionRequest) (*DeleteSessionResponse, error)
+
+	// ResumeSession reopens a session without replaying it, which is what the
+	// schema says distinguishes it from session/load.
+	ResumeSession func(
+		ctx context.Context,
+		session *AgentSession,
+		request *ResumeSessionRequest,
+	) (*ResumeSessionResponse, error)
+
+	// CloseSession frees what a session holds. The connection has already
+	// cancelled the session's turn by the time this runs; see [AgentConn.serve].
+	CloseSession func(
+		ctx context.Context,
+		session *AgentSession,
+		request *CloseSessionRequest,
+	) (*CloseSessionResponse, error)
+
 	// CallFallback and NotifyFallback receive extension methods, exactly as on the
 	// client side: the extension contract is symmetric because both directions can
 	// send extension messages and both can receive them.
@@ -135,6 +173,21 @@ func (c *AgentConn) authenticate(ctx context.Context, request *jsonrpc.Request) 
 
 func (config *AgentConfig) resolveCapabilities() (AgentCapabilities, error) {
 	derived := AgentCapabilities{LoadSession: config.LoadSession != nil}
+	if config.Logout != nil {
+		derived.Auth.Logout = OptValue(LogoutCapabilities{})
+	}
+	if config.ListSessions != nil {
+		derived.SessionCapabilities.List = OptValue(SessionListCapabilities{})
+	}
+	if config.DeleteSession != nil {
+		derived.SessionCapabilities.Delete = OptValue(SessionDeleteCapabilities{})
+	}
+	if config.ResumeSession != nil {
+		derived.SessionCapabilities.Resume = OptValue(SessionResumeCapabilities{})
+	}
+	if config.CloseSession != nil {
+		derived.SessionCapabilities.Close = OptValue(SessionCloseCapabilities{})
+	}
 	if config.Capabilities == nil {
 		return derived, nil
 	}
@@ -160,6 +213,18 @@ func (config *AgentConfig) implements(method string) bool {
 		return config.LoadSession != nil
 	case methodSessionSetMode:
 		return config.SetMode != nil
+	case methodSessionSetConfigOption:
+		return config.SetConfigOption != nil
+	case methodLogout:
+		return config.Logout != nil
+	case methodSessionList:
+		return config.ListSessions != nil
+	case methodSessionDelete:
+		return config.DeleteSession != nil
+	case methodSessionResume:
+		return config.ResumeSession != nil
+	case methodSessionClose:
+		return config.CloseSession != nil
 	default:
 		return false
 	}
@@ -363,6 +428,18 @@ func (c *AgentConn) serve(ctx context.Context, request *jsonrpc.Request) (any, e
 		return dispatchSessionCall(ctx, c, request, config.LoadSession)
 	case methodSessionSetMode:
 		return dispatchSessionCall(ctx, c, request, config.SetMode)
+	case methodSessionSetConfigOption:
+		return dispatchSessionCall(ctx, c, request, config.SetConfigOption)
+	case methodLogout:
+		return dispatchCall(ctx, request, config.Logout)
+	case methodSessionList:
+		return dispatchCall(ctx, request, config.ListSessions)
+	case methodSessionDelete:
+		return dispatchCall(ctx, request, config.DeleteSession)
+	case methodSessionResume:
+		return dispatchSessionCall(ctx, c, request, config.ResumeSession)
+	case methodSessionClose:
+		return c.closeSession(ctx, request)
 	case methodSessionPrompt:
 		return c.prompt(ctx, request)
 	case methodSessionCancel:

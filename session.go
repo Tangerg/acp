@@ -175,6 +175,54 @@ func (s *ClientSession) SetMode(ctx context.Context, params *SetModeParams) (*Se
 	return response, nil
 }
 
+// SetConfigOption sets one of the session configuration options the agent
+// offered. Which options exist, and which values they take, come from the agent:
+// session/new returns them and every answer here returns the full set again.
+func (s *ClientSession) SetConfigOption(
+	ctx context.Context,
+	params *SetConfigOptionParams,
+) (*SetSessionConfigOptionResponse, error) {
+	if params == nil {
+		return nil, errors.New("acp: SetConfigOption needs params: the option and its value are in them")
+	}
+	request := &SetSessionConfigOptionRequest{
+		SessionID: s.id,
+		ConfigID:  params.ConfigID,
+		Value:     params.Value,
+		Meta:      params.Meta,
+	}
+	response := new(SetSessionConfigOptionResponse)
+	if err := s.conn.call(ctx, methodSessionSetConfigOption, request, response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+// Close ends the session and frees what the agent holds for it.
+//
+// The agent must cancel any work still running for the session before it frees
+// anything, so an outstanding [ClientSession.Prompt] answers with the cancelled
+// stop reason rather than being abandoned. This handle is spent afterwards: the
+// connection forgets it, and naming the same identifier again would produce a new
+// one for a session the agent no longer has.
+//
+// Gated on agentCapabilities.sessionCapabilities.close.
+func (s *ClientSession) Close(ctx context.Context, params *CloseParams) (*CloseSessionResponse, error) {
+	if err := s.conn.Peer().permits(methodSessionClose); err != nil {
+		return nil, err
+	}
+	request := &CloseSessionRequest{SessionID: s.id}
+	if params != nil {
+		request.Meta = params.Meta
+	}
+	response := new(CloseSessionResponse)
+	if err := s.conn.call(ctx, methodSessionClose, request, response); err != nil {
+		return nil, err
+	}
+	s.conn.sessions.forget(s.id)
+	return response, nil
+}
+
 // NewSession creates a conversation.
 //
 // It returns three things because the response carries more than an identifier —
@@ -228,6 +276,81 @@ func (c *ClientConn) LoadSession(
 		return nil, nil, err
 	}
 	return c.session(params.SessionID), response, nil
+}
+
+// ResumeSession reopens a session the agent still has, without replaying it.
+//
+// That is what the schema says separates it from [ClientConn.LoadSession]: resume
+// is for an agent that can continue a conversation but does not implement handing
+// its history back.
+//
+// Gated on agentCapabilities.sessionCapabilities.resume.
+func (c *ClientConn) ResumeSession(
+	ctx context.Context,
+	params *ResumeSessionRequest,
+) (*ClientSession, *ResumeSessionResponse, error) {
+	if params == nil {
+		return nil, nil, errors.New("acp: ResumeSession needs params: the session to resume is in them")
+	}
+	if err := c.Peer().permits(methodSessionResume); err != nil {
+		return nil, nil, err
+	}
+	response := new(ResumeSessionResponse)
+	if err := c.call(ctx, methodSessionResume, params, response); err != nil {
+		return nil, nil, err
+	}
+	return c.session(params.SessionID), response, nil
+}
+
+// ListSessions reports the sessions the agent has stored.
+//
+// It is paginated: a response carrying NextCursor has more behind it, and passing
+// that cursor back asks for the next page. The pages are the agent's own — this
+// does not gather them, because a caller that wants one page should not pay for
+// all of them.
+//
+// Gated on agentCapabilities.sessionCapabilities.list.
+func (c *ClientConn) ListSessions(
+	ctx context.Context,
+	params *ListSessionsRequest,
+) (*ListSessionsResponse, error) {
+	if params == nil {
+		params = &ListSessionsRequest{}
+	}
+	if err := c.Peer().permits(methodSessionList); err != nil {
+		return nil, err
+	}
+	response := new(ListSessionsResponse)
+	if err := c.call(ctx, methodSessionList, params, response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+// DeleteSession removes a stored session, which the schema describes as removing
+// it from [ClientConn.ListSessions].
+//
+// It takes an identifier rather than a handle because the session it names is one
+// this connection may never have opened. If it did, the handle is forgotten: it
+// would otherwise name a session the agent no longer has.
+//
+// Gated on agentCapabilities.sessionCapabilities.delete.
+func (c *ClientConn) DeleteSession(
+	ctx context.Context,
+	params *DeleteSessionRequest,
+) (*DeleteSessionResponse, error) {
+	if params == nil {
+		return nil, errors.New("acp: DeleteSession needs params: the session to delete is in them")
+	}
+	if err := c.Peer().permits(methodSessionDelete); err != nil {
+		return nil, err
+	}
+	response := new(DeleteSessionResponse)
+	if err := c.call(ctx, methodSessionDelete, params, response); err != nil {
+		return nil, err
+	}
+	c.sessions.forget(params.SessionID)
+	return response, nil
 }
 
 // Authenticate performs the authentication an agent asked for.
@@ -363,14 +486,51 @@ func (c *AgentConn) newSession(ctx context.Context, request *jsonrpc.Request) (a
 	return response, nil
 }
 
+// closeSession serves session/close, whose obligation is the schema's rather than
+// the application's: "the agent **must** cancel any ongoing work related to the
+// session (treat it as if `session/cancel` was called) and then free up any
+// resources associated with the session".
+//
+// The cancellation is the connection's because the turn is: an application that
+// had to remember to cancel its own turn before freeing it would forget, and the
+// prompt still owes the client the cancelled stop reason. The application's own
+// Cancel handler is deliberately not invoked — it is about to be told something
+// strictly more specific, and one event should not arrive twice.
+//
+// The handle is forgotten only after the handler returns, because the handler is
+// given it, and only when the handler succeeded, because a close that failed
+// closed nothing.
+func (c *AgentConn) closeSession(ctx context.Context, request *jsonrpc.Request) (any, error) {
+	params, err := decodeParams[CloseSessionRequest](request)
+	if err != nil {
+		return nil, err
+	}
+	if c.agent.config.CloseSession == nil {
+		return nil, newError(ErrorCodeMethodNotFound, "%s is not implemented here", request.Method)
+	}
+	c.cancelTurn(params.SessionID)
+
+	response, err := c.agent.config.CloseSession(ctx, c.session(params.SessionID), params)
+	if err != nil {
+		return nil, err
+	}
+	if response == nil {
+		return nil, newError(ErrorCodeInternalError, "the handler for %s returned nothing", request.Method)
+	}
+	c.sessions.forget(params.SessionID)
+	return response, nil
+}
+
 // A sessionRequest is a request that names the session it belongs to, which is
 // what lets one dispatch path hand a handle to every handler that needs one.
 type sessionRequest interface {
 	sessionID() SessionID
 }
 
-func (x *LoadSessionRequest) sessionID() SessionID    { return x.SessionID }
-func (x *SetSessionModeRequest) sessionID() SessionID { return x.SessionID }
+func (x *LoadSessionRequest) sessionID() SessionID            { return x.SessionID }
+func (x *SetSessionModeRequest) sessionID() SessionID         { return x.SessionID }
+func (x *SetSessionConfigOptionRequest) sessionID() SessionID { return x.SessionID }
+func (x *ResumeSessionRequest) sessionID() SessionID          { return x.SessionID }
 
 // dispatchSessionCall serves a request whose handler takes a session handle.
 func dispatchSessionCall[Request sessionRequest, Response any](
