@@ -1,0 +1,247 @@
+# Written by internal/cmd/schemagen. Do not edit.
+#
+# Every exported Go name generation produces, one per line, sorted. The
+# transitive $ref closure of manifest.json is 168 of the schema's
+# definitions; exported_test.go holds the package's exports against this list.
+#
+# A name marked UNSTABLE comes from a definition carrying upstream's UNSTABLE
+# marker. Those symbols are exempt from this module's compatibility guarantee,
+# so a gorelease finding against one is reviewed rather than blocking.
+AgentAuthCapabilities
+AgentCapabilities
+AgentMessageChunk
+AgentThoughtChunk
+Annotations
+AudioContent
+AuthCapabilities
+AuthMethod
+AuthMethodAgent
+AuthMethodID
+AuthMethodTerminal
+AuthenticateRequest
+AuthenticateResponse
+AvailableCommand
+AvailableCommandInput
+AvailableCommandsUpdate
+BlobResourceContents
+BooleanConfigOptionCapabilities
+CancelNotification
+CancelParams
+ClientCapabilities
+ClientNesCapabilities
+ClientSessionCapabilities
+CompactionCapabilities	UNSTABLE
+CompactionID	UNSTABLE
+CompactionStatus	UNSTABLE
+CompactionStatusCancelled	UNSTABLE
+CompactionStatusCompleted	UNSTABLE
+CompactionStatusFailed	UNSTABLE
+CompactionStatusInProgress	UNSTABLE
+CompactionSummaryChunk	UNSTABLE
+CompactionUpdate	UNSTABLE
+ConfigOptionUpdate
+Content
+ContentBlock
+ContentChunk
+Cost
+CreateTerminalParams
+CreateTerminalRequest
+CreateTerminalResponse
+CurrentModeUpdate
+Diff
+ElicitationCapabilities
+ElicitationFormCapabilities
+ElicitationURLCapabilities
+EmbeddedResource
+EmbeddedResourceResource
+EnumOption
+EnvVariable
+Error
+ErrorCode
+ErrorCodeAuthenticationRequired
+ErrorCodeInternalError
+ErrorCodeInvalidParams
+ErrorCodeInvalidRequest
+ErrorCodeMethodNotFound
+ErrorCodeParseError
+ErrorCodeRequestCancelled
+ErrorCodeResourceNotFound
+FileSystemCapabilities
+HTTPHeader
+ImageContent
+Implementation
+InitializeRequest
+InitializeResponse
+KillTerminalParams
+KillTerminalRequest
+KillTerminalResponse
+LoadSessionRequest
+LoadSessionResponse
+LogoutCapabilities
+McpCapabilities
+McpServer
+McpServerAcp	UNSTABLE
+McpServerAcpID	UNSTABLE
+McpServerHTTP
+McpServerSse
+McpServerStdio
+MessageID
+MultiSelectItems
+MultiSelectItemsOther
+NesCapabilities
+NesContextCapabilities
+NesDiagnosticsCapabilities
+NesDocumentDidChangeCapabilities
+NesDocumentDidCloseCapabilities
+NesDocumentDidFocusCapabilities
+NesDocumentDidOpenCapabilities
+NesDocumentDidSaveCapabilities
+NesDocumentEventCapabilities
+NesEditHistoryCapabilities
+NesEventCapabilities
+NesJumpCapabilities
+NesOpenFilesCapabilities
+NesRecentFilesCapabilities
+NesRelatedSnippetsCapabilities
+NesRenameCapabilities
+NesSearchAndReplaceCapabilities
+NesUserActionsCapabilities
+NewSessionRequest
+NewSessionResponse
+PermissionOption
+PermissionOptionID
+PermissionOptionKind
+PermissionOptionKindAllowAlways
+PermissionOptionKindAllowOnce
+PermissionOptionKindRejectAlways
+PermissionOptionKindRejectOnce
+Plan
+PlanCapabilities	UNSTABLE
+PlanEntry
+PlanEntryPriority
+PlanEntryPriorityHigh
+PlanEntryPriorityLow
+PlanEntryPriorityMedium
+PlanEntryStatus
+PlanEntryStatusCompleted
+PlanEntryStatusInProgress
+PlanEntryStatusPending
+PlanFile	UNSTABLE
+PlanID	UNSTABLE
+PlanItems	UNSTABLE
+PlanMarkdown	UNSTABLE
+PlanRemoved	UNSTABLE
+PlanUpdate	UNSTABLE
+PlanUpdateContent	UNSTABLE
+PositionEncodingKind
+PositionEncodingKindUtf16
+PositionEncodingKindUtf32
+PositionEncodingKindUtf8
+PromptCapabilities
+PromptParams
+PromptRequest
+PromptResponse
+ProtocolVersion
+ProvidersCapabilities	UNSTABLE
+ReadTextFileParams
+ReadTextFileRequest
+ReadTextFileResponse
+ReleaseTerminalParams
+ReleaseTerminalRequest
+ReleaseTerminalResponse
+RequestPermissionOutcome
+RequestPermissionOutcomeCancelled
+RequestPermissionParams
+RequestPermissionRequest
+RequestPermissionResponse
+ResourceLink
+Role
+RoleAssistant
+RoleUser
+SelectedPermissionOutcome
+SessionAdditionalDirectoriesCapabilities
+SessionCapabilities
+SessionCloseCapabilities
+SessionConfigBoolean
+SessionConfigGroupID
+SessionConfigID
+SessionConfigOption
+SessionConfigOptionCategory
+SessionConfigOptionCategoryMode
+SessionConfigOptionCategoryModel
+SessionConfigOptionCategoryModelConfig
+SessionConfigOptionCategoryThoughtLevel
+SessionConfigOptionValue
+SessionConfigOptionsCapabilities
+SessionConfigSelect
+SessionConfigSelectGroup
+SessionConfigSelectOption
+SessionConfigSelectOptions
+SessionConfigSelectOptionsGrouped
+SessionConfigSelectOptionsUngrouped
+SessionConfigValueID
+SessionDeleteCapabilities
+SessionForkCapabilities	UNSTABLE
+SessionID
+SessionInfoUpdate
+SessionListCapabilities
+SessionMode
+SessionModeID
+SessionModeState
+SessionNotification
+SessionResumeCapabilities
+SessionUpdate
+SessionUpdateParams
+SetModeParams
+SetSessionModeRequest
+SetSessionModeResponse
+StopReason
+StopReasonCancelled
+StopReasonEndTurn
+StopReasonMaxTokens
+StopReasonMaxTurnRequests
+StopReasonRefusal
+StringMultiSelectItems
+Terminal
+TerminalExitStatus
+TerminalID
+TerminalOutputParams
+TerminalOutputRequest
+TerminalOutputResponse
+TextContent
+TextDocumentSyncKind
+TextDocumentSyncKindFull
+TextDocumentSyncKindIncremental
+TextResourceContents
+TitledMultiSelectItems
+ToolCall
+ToolCallContent
+ToolCallID
+ToolCallLocation
+ToolCallStatus
+ToolCallStatusCompleted
+ToolCallStatusFailed
+ToolCallStatusInProgress
+ToolCallStatusPending
+ToolCallUpdate
+ToolKind
+ToolKindDelete
+ToolKindEdit
+ToolKindExecute
+ToolKindFetch
+ToolKindMove
+ToolKindOther
+ToolKindRead
+ToolKindSearch
+ToolKindSwitchMode
+ToolKindThink
+UnstructuredCommandInput
+Usage	UNSTABLE
+UsageUpdate
+UserMessageChunk
+WaitForTerminalExitParams
+WaitForTerminalExitRequest
+WaitForTerminalExitResponse
+WriteTextFileParams
+WriteTextFileRequest
+WriteTextFileResponse

@@ -5,6 +5,7 @@
   "files": [
     "*.md",
     "docs/**/*.md",
+    "schema/*.md",
     "NOTICE"
   ],
   "ignorePaths": [
@@ -27,6 +28,7 @@
     "dependabot",
     "deserialisation",
     "deserialize",
+    "nondeterministically",
     "discardable",
     "dupl",
     "elicitation",
@@ -59,6 +61,7 @@
     "misspelled",
     "modelcontextprotocol",
     "ndjson",
+    "nondeterministically",
     "normalised",
     "normalises",
     "normalizes",
@@ -73,6 +76,8 @@
     "pkg",
     "predicate",
     "predicates",
+    "preempter",
+    "preemption",
     "Println",
     "reachability",
     "rebound",

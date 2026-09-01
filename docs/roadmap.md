@@ -15,7 +15,10 @@ the possibility that the chosen Go representation cannot express the schema at
 all. Finding that out on eight types is cheap; finding it out on 265 is a
 rewrite.
 
-## 1. Wire-semantics spike
+## 1. Wire-semantics spike — done
+
+**Delivered.** The four assertions below hold, and what the layer actually turned
+up is recorded under "What the spike found".
 
 Not a released layer — a question answered before the generator is written.
 **It is the first slice of the real generator, not a throwaway.** An earlier
@@ -54,6 +57,12 @@ model:
   from malformed input but must still fail when the property is absent, if that
   is what the oracle does.
 
+Every one of those is covered by the manifest's six roots and the 30-definition
+closure they pull in. `NewSessionRequest` and `PromptRequest` are payload roots and
+carry most of the list between them; the four probes cover what no payload root
+reaches yet, and [schema/manifest.json](../schema/manifest.json) records which
+shape each is there to prove.
+
 **Done when** four assertions hold, because "round-trips byte-identically" is
 not a property `encoding/json` has and was the wrong oracle to promise:
 
@@ -91,23 +100,91 @@ tag, the Node version policy, and the single command that regenerates
 everything. Without those five, "the two SDKs agree" is an anecdote rather than
 release evidence.
 
-## 2. Wire
+All five are in `scripts/update-fixtures.sh`, which refuses to run against a
+checkout that is not the pinned commit or a package that is not the pinned
+version, and cross-checks the schema tag against `schema/README.md` so the pins
+cannot disagree quietly. `scripts/oracle.ts` runs inside that checkout and writes
+each fixture's outcome; `go test` replays the answers.
 
-The generator, for real.
+### What the spike found
 
-- Vendor and pin both `schema.json` and `meta.json` at `schema-v1.21.0`.
+The layer existed to find out whether the chosen Go representation can express the
+schema at all. It can, and it changed four things while proving it. Each is
+written up in [design.md](./design.md); this is the index.
+
+- **The discriminant belongs to the union, not to the arm.** `ContentChunk` is the
+  payload of three `SessionUpdate` arms and `ToolCallUpdate` is both an arm and an
+  ordinary property elsewhere, so no payload type can own its tag. The union's
+  codec splices it in, and arm naming follows from the same counting. See
+  [The discriminant belongs to the union](./design.md#the-discriminant-belongs-to-the-union-not-to-the-arm).
+- **Recovery has three fallbacks, and the schema states none of them.** The
+  declared default, an empty array for an array that cannot be null, or nothing.
+  Read off the reference implementation, because the promise is about behaviour.
+  See [What recovery recovers to](./design.md#what-recovery-recovers-to).
+- **Validation is not a separate pass.** It is inside `MarshalJSON` and
+  `UnmarshalJSON`, which is what makes "every outbound message is validated" true
+  rather than aspirational, and gets a caller who never touches the connection
+  layer checked too. See
+  [Validation is part of the codec](./design.md#validation-is-part-of-the-codec-not-an-afterthought).
+- **`Opt` is needed less often than 357 occurrences suggests.** A property with a
+  declared default has one state, not three, and an optional array has two that a
+  slice already spells. See
+  [Omitted, null and present](./design.md#omitted-null-and-present-are-three-states-not-two).
+
+Two things the corpus caught that a Go-only test would not have: a `null`
+discriminant was being read as the empty-string tag, because `json.Unmarshal`
+accepts `null` into a string and reports nothing; and the same trap applies to
+every non-nullable property, which is why decoding one goes through a check that
+refuses `null` explicitly.
+
+### What layer 1 hands to layer 2
+
+The generator refuses what it does not implement rather than emitting something
+that merely compiles, so its refusals are layer 2's work list rather than a
+surprise. The manifest's 30-definition closure does not reach:
+
+- an arm needing a generated wrapper type — `SessionUpdate`'s three chunk arms, and
+  the arms with no payload at all;
+- a declared default that is not a scalar — `ClientCapabilities.fs` and
+  `AgentCapabilities`;
+- an object that is also a union, which is how the schema flattens a union into
+  `ElicitationFormMode`, `CreateElicitationResponse` and two others;
+- the primitive and value unions — `RequestId`, `ElicitationContentValue`,
+  `SessionConfigSelectOptions`;
+- an inline object type, and a map;
+- a numeric bound the Go type chosen from the `format` does not already enforce.
+
+Each of those stops generation with a message naming the definition, so growing
+the manifest is a loop rather than an audit.
+
+## 2. Wire — done
+
+**Delivered.** The generator plans 259 of the schema's 265 definitions; the six it
+does not are the JSON-RPC envelopes, excluded by decision and named in a test.
+What the layer turned up is under "What layer 2 found".
+
+The generator, for real. Three of the bullets below are what layer 1 built on a
+deliberately tiny surface, and are struck through rather than deleted: what layer 2
+adds is coverage, and reading the list is how the difference stays visible.
+
+- ~~Vendor and pin both `schema.json` and `meta.json` at `schema-v1.21.0`.~~ Done.
 - Generate the public payload types, the internal routing and envelope types, the
   method table, validation and codecs — with the visibility split in
   [design.md](./design.md#what-is-generated-and-what-is-exported), because
-  `gorelease` will hold the module to whatever is exported at the first tag.
-- Drive generation from a committed **root manifest**, not from a count written
-  into prose. CI computes the `$ref` closure from the manifest and fails if the
-  exported set differs, so growing the API is a diff in one file. The manifest
-  names implemented payloads, the plumbing they need — `Error` and `ErrorCode`
-  are reached from response envelopes rather than from any method's params, so
-  they are roots once `Error` is exported — and any extension marker types.
-- Copy upstream's UNSTABLE marker into the doc comment of every symbol that
-  carries one — 18 of them are inside that closure and cannot be avoided.
+  `gorelease` will hold the module to whatever is exported at the first tag. The
+  payload types, validation and codecs exist for the manifest's closure; the
+  routing and envelope types and the method table are new here, and so is every
+  shape in
+  ["What layer 1 hands to layer 2"](#what-layer-1-hands-to-layer-2).
+- ~~Drive generation from a committed **root manifest**, not from a count written
+  into prose.~~ Done, including both gates: the generator's `-check` mode and the
+  test that holds the package's exports against `schema/exported.txt`. What
+  remains is growing the roots, and emptying the `probes` list as the payload
+  roots come to reach the same shapes.
+- ~~Copy upstream's UNSTABLE marker into the doc comment of every symbol that
+  carries one~~ — done, and the generator also marks them in
+  `schema/exported.txt` so the compatibility review can find them without reading
+  265 doc comments.
 - Commit the **complete** capability table now, classifying every one of the 43
   methods as baseline, gated by a named predicate, or not yet implemented. It
   belonged in layer 5 in the previous draft, which was too late: layer 3 already
@@ -119,12 +196,44 @@ The generator, for real.
   because the schema has `x-method` and `x-side` but nothing linking a method to
   a capability, so the table is hand-maintained and has to be checked rather than
   trusted.
-- Regeneration and the cross-SDK fixture comparison are both CI checks.
+- ~~Regeneration and the cross-SDK fixture comparison are both CI checks.~~ Done.
 
 **Done when** the committed output is reproducible, the fixtures agree with the
-TypeScript SDK, and the exported set equals the computed closure.
+TypeScript SDK, and the exported set equals the computed closure — for every
+operation layers 3 to 5 implement, rather than for the spike's representative set.
 
-## 3. Link
+### What layer 2 found
+
+- **The schema has 42 methods, not 43.** `mcp/message` is listed under both
+  directions, so the directory has 43 entries and 42 distinct names — and it is
+  consequently the only method that is both a request and a notification.
+  [protocol.md](./protocol.md#methods) said 43 and now says both numbers.
+- **This SDK and the reference implementation disagree about integers.** The
+  reference implementation validates an `int64` or `int32` property as a plain
+  number, so most of its integer properties accept `1.5`; the schema types them
+  `integer`. The schema wins, and the corpus records the disagreement as a
+  divergence rather than hiding it. See
+  [design.md](./design.md#what-the-round-trip-tests-actually-promise).
+- **The envelopes should not be generated at all**, not merely kept unexported:
+  `internal/jsonrpc2` owns JSON-RPC's grammar, and a second set of types for it
+  would be two sources of truth. See
+  [design.md](./design.md#the-method-table-is-generated-the-envelope-is-not).
+- **Two union shapes the arm model had to bend for** — value unions, whose arms
+  are different JSON shapes, and flattened unions, which are an object and a union
+  at once. See
+  [design.md](./design.md#two-union-shapes-the-arm-model-has-to-bend-for).
+- **Not every generated type can be exported.** A published type whose field a
+  caller cannot name is worse than no type, so the manifest's internal list is
+  checked closed under what reaches it. See
+  [design.md](./design.md#some-generated-types-are-not-exported).
+
+One bug the corpus caught that a Go-only test would not have: a union of two
+differently-typed arrays was being decoded as if the interface could decode into
+itself, so every `select` config option was silently dropped from a
+`session/update`. Value unions were not marked as needing their generated
+selector.
+
+## 3. Link — done
 
 The connection machinery, with no ACP semantics in it.
 
@@ -139,9 +248,25 @@ The connection machinery, with no ACP semantics in it.
 
 **Done when** a client and an agent complete `initialize` over an in-memory pipe,
 and shutdown and cancellation are tested with `testing/synctest` rather than
-sleeps.
+sleeps. All three hold.
 
-## 4. Turn
+### What layer 3 found
+
+- **Only the message layer was worth forking.** Upstream's connection machinery is
+  a framer, a dialer, a server, a binder and a preempter; this module's
+  `Transport` already stands where the framer would, and the rest is a speculative
+  abstraction nothing here uses. See
+  [design.md](./design.md#json-rpc).
+- **Inbound messages need an ordering contract, and the design had none.** A
+  notification is a stream and a response must not overtake one; an inbound
+  request must not be blocked by either. Getting this wrong showed up
+  immediately as a turn whose last chunk arrived after the turn ended. See
+  [design.md](./design.md#what-order-inbound-messages-are-served-in).
+- **An `Initialize` handler would have been two sources of truth.** Everything the
+  response carries is already in the config, so the connection answers it — which
+  is also the one place a second initialize can be refused.
+
+## 4. Turn — done
 
 The first release worth using.
 
@@ -170,7 +295,28 @@ final updates still arrive after the original caller has stopped waiting. Tag
 `v0.1.0` only after that. Two Go endpoints talking to each other share any wire
 bug they have and are not release evidence.
 
-## 5. Workspace
+**All of it holds, including the evidence.** `scripts/interop.sh` runs this
+module's client against an agent built on the reference SDK — a real subprocess,
+speaking newline-delimited JSON — through four scenarios: a full turn with a
+permission prompt, a cancelled turn whose final updates still arrive after the
+cancellation, authentication as control flow, and every capability-gated workspace
+method. It commits what crossed the wire, and `interop_test.go` replays those
+transcripts with no network and no Node.
+
+The replay is the same arrangement as the fixture corpus, for the same reason: an
+oracle that runs on every build is a network dependency and a Node toolchain in a
+Go module's CI. The recorded bytes are the reference implementation's, so replaying
+them still checks this package against another implementation rather than against
+itself — and the transcript records what the client made of the exchange as well as
+the exchange, so a client that read the right bytes and drew the wrong conclusion
+fails too.
+
+What replaying gives up is precise and worth stating: it cannot notice the
+reference implementation changing. Re-recording is what notices that, which is why
+the updater is pinned to a commit and meant to be run on the schedule that catches
+drift.
+
+## 5. Workspace — done
 
 - `fs/read_text_file` and `fs/write_text_file` — two independent capability
   booleans, so two independent handlers.
@@ -180,6 +326,10 @@ bug they have and are not release evidence.
   advertised capability lacks its complete handler set, an inbound call to an
   unadvertised method is refused, and an outbound call the peer never advertised
   fails locally.
+
+All three hold, and the outbound half is refused locally rather than sent: the
+peer's answer would be the same, and asking wastes a round trip while making a
+developer read a wire trace to find out what they forgot.
 
 ## 6. The rest
 

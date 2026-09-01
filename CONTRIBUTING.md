@@ -42,6 +42,7 @@ While iterating:
 
 ```sh
 gofumpt -w .
+go generate ./...
 go test ./...
 ```
 
@@ -58,6 +59,7 @@ golangci-lint run ./...
 govulncheck ./...
 scripts/check-reachability.sh
 go mod tidy -diff
+go run ./internal/cmd/schemagen -check
 (cd .tools && npm ci && npm run docs:check)
 ```
 
@@ -78,6 +80,40 @@ holds and for how long.
 
 Where this implementation and the published schema disagree, the schema is right and
 the disagreement is a bug. Say which schema version a wire-affecting change follows.
+
+### The protocol types are generated
+
+Do not edit `schema.gen.go` or `schema/exported.txt`. `internal/cmd/schemagen`
+writes both from `schema/schema.json`, and CI regenerates and compares, so a hand
+edit is reverted by the next `go generate` and reported by the gate before that.
+
+- To widen the API, add a root to [`schema/manifest.json`](./schema/manifest.json)
+  and regenerate. Scope is the transitive `$ref` closure of that file.
+- To change how a shape is generated, change the generator. It refuses a construct
+  it does not implement rather than emitting something that merely compiles, so a
+  new shape usually announces itself as a generation failure naming the definition.
+- To move the schema pin, follow [`schema/README.md`](./schema/README.md). It is a
+  reviewable commit, never a build step.
+
+### Changing wire behaviour needs the oracle
+
+`testdata/fixtures` records what the TypeScript SDK makes of each input, and
+`go test` replays it with no network and no Node. It is the check that this
+implementation follows the schema rather than this repository's reading of it: two
+endpoints built from one Go implementation can agree with each other and both be
+wrong.
+
+There is a second corpus for the same reason: `testdata/interop` holds what crossed
+the wire between this module's client and an agent built on the reference SDK, and
+`scripts/interop.sh` records it by running that agent as a real subprocess. A
+scenario is added in `scripts/interop-agent.ts` and `internal/cmd/interop`, and then
+recorded — never written by hand.
+
+Add a fixture case by writing its `name`, `why` and `input`, then running
+`scripts/update-fixtures.sh` to fill in the outcome. It needs Node and either the
+network or `ACP_TYPESCRIPT_SDK` pointing at a checkout of the pinned commit, and it
+refuses anything that is not that commit. Never write an expected outcome by hand:
+the point is that the answer comes from somewhere else.
 
 ## Public API changes
 

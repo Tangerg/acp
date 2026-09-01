@@ -180,10 +180,11 @@ jobs:
         run: govulncheck ./...
 
   # The committed seed corpus runs as part of `go test`, which only replays inputs
-  # somebody already found. A message framer whose answer depends on where the read
-  # split is the defect this job exists to catch, and it is the kind a fuzzer finds
-  # in seconds and a case table never does. The generator runs on every push and
-  # not only when someone remembers.
+  # somebody already found. The defects this job exists to catch are the kind a
+  # fuzzer finds in seconds and a case table never does: a recovery fallback whose
+  # output the encoder writes differently, so a relayed message drifts on every
+  # hop, and later a message framer whose answer depends on where the read split.
+  # The generator runs on every push and not only when someone remembers.
   fuzz:
     runs-on: ubuntu-latest
     steps:
@@ -267,10 +268,32 @@ jobs:
       - name: shfmt
         run: shfmt -d scripts
 
+      # The interoperability transcripts and the fixture corpus are both produced
+      # by a pinned Node toolchain and replayed by `go test`, so neither needs a
+      # gate here. What does need one is the pins agreeing: two oracles recorded
+      # against different revisions of the reference implementation would be two
+      # different claims presented as one.
+      - name: the two oracles are pinned to one revision
+        run: |
+          set -euo pipefail
+          commit=$(grep -o 'SDK_COMMIT="[a-f0-9]*"' scripts/update-fixtures.sh)
+          grep -q "$commit" scripts/interop.sh
+
       # go.mod is the module's dependency promise, and a promise nothing checks
       # drifts.
       - name: go mod tidy is a no-op
         run: go mod tidy -diff
+
+      # The protocol types are generated from the vendored schema and committed,
+      # so that go get needs no generator and pkg.go.dev has something to
+      # document. This is what keeps the committed output honest: the same promise
+      # as go mod tidy -diff, applied to schema.gen.go and to the exported-surface
+      # list the manifest's closure produces.
+      #
+      # It also proves the generator is deterministic. Go map iteration is not,
+      # and a generator that depended on it would pass locally and fail here.
+      - name: the generator is a no-op
+        run: go run ./internal/cmd/schemagen -check
 
   cross:
     name: cross-compile

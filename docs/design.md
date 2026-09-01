@@ -16,18 +16,23 @@ differs from MCP, this page says so and says what changed.
 
 - **265 definitions** means the wire types are generated, not written. Nobody
   hand-maintains that against a moving upstream.
-- **14 of 43 methods run agent → client**, so this is not a client library with a
-  server mode bolted on. Both directions are the same machinery seen from
-  opposite ends, and the package is built that way from the first commit.
+- **14 of the 43 directory entries run agent → client**, so this is not a client
+  library with a server mode bolted on. Both directions are the same machinery
+  seen from opposite ends, and the package is built that way from the first
+  commit.
 
 ## Package layout
 
 ```text
 github.com/Tangerg/acp                        package acp — the whole user-facing API
 github.com/Tangerg/acp/jsonrpc                message types, for custom transports only
+github.com/Tangerg/acp/internal/wire          the runtime the generated codecs are written against
 github.com/Tangerg/acp/internal/jsonrpc2      the connection machinery
 github.com/Tangerg/acp/internal/cmd/schemagen the generator
-schema/schema.json                            the vendored upstream schema
+schema/schema.json  schema/meta.json          the vendored upstream schema
+schema/manifest.json                          the generation roots
+schema/exported.txt                           what their closure became, for the gate to check
+schema.gen.go  methods.gen.go                 the generated types, and the method table
 ```
 
 One package for the API, as `net/http`, `net/rpc` and the MCP SDK all do
@@ -46,6 +51,15 @@ method that crosses the seam.
 it carries. Nothing else about JSON-RPC appears in the API: not request IDs, not
 the envelope, not the method strings. Those are plumbing, and a caller who has to
 know them has been handed the plumbing.
+
+`internal/wire` is where the schema's decoding semantics live: splitting an
+object so one property can fail on its own, the two array decoders that
+`x-deserialize-skip-invalid-items` needs, the discriminant reader and splicer,
+retained catch-all properties, and JSON pointer paths for failures. It names no
+method, no capability and no message type, and it imports nothing from `acp` —
+which is what lets the generated code, which names all of those, sit in the
+exported package and still share one runtime. The alternative was 265 restatements
+of the same six rules.
 
 ## The wire types are generated
 
@@ -123,8 +137,8 @@ that the schema promised were exhaustive.
 as the MCP SDK does for `Content` (`go-sdk/mcp/content.go:22`) —
 
 ```go
-// A SessionUpdate is one of [UserMessageChunk], [AgentMessageChunk],
-// [AgentThoughtChunk], [ToolCallStart], [ToolCallProgress], [PlanUpdate], …
+// A SessionUpdate is one of [*UserMessageChunk], [*AgentMessageChunk],
+// [*AgentThoughtChunk], [*ToolCall], [*ToolCallUpdate], [*Plan], …
 type SessionUpdate interface {
 	isSessionUpdate()
 }
@@ -142,6 +156,85 @@ The forward-compatibility worry that motivated the wrong design is real, but it
 is upstream's to answer. If ACP wants `SessionUpdate` to tolerate a future arm,
 that is a schema change — and the schema already shows it knows how to express
 one.
+
+### The discriminant belongs to the union, not to the arm
+
+Writing an object union needs a decision the previous revision never made: which
+type writes the `"sessionUpdate": "tool_call"` property. Counting settles it.
+
+**`ContentChunk` is the payload of three different `SessionUpdate` arms** —
+`user_message_chunk`, `agent_message_chunk` and `agent_thought_chunk` — so a
+payload that wrote its own tag could not serve all three. **`ToolCallUpdate` is
+both a `SessionUpdate` arm and an ordinary property of
+`RequestPermissionRequest`**, so a payload that wrote a tag would corrupt the
+second use. Either case alone rules the idea out.
+
+So the union's codec writes the tag, by splicing it as the first property of the
+arm's encoded object, and reads it before selecting an arm. Splicing is safe
+without re-parsing the arm's output because the generator refuses to emit an arm
+whose payload declares a property with the discriminant's name — the check is at
+generation time, not on every message.
+
+That leaves arm naming, which follows from the same counting:
+
+- **An arm is its payload's own Go type** when it carries exactly one `$ref`
+  payload, declares nothing of its own but the discriminant, and no other arm
+  anywhere in the schema shares that payload. This is the ordinary case, and it
+  is what makes `ContentBlock`'s arms `TextContent` and `ImageContent` rather than
+  something invented.
+- **Otherwise the arm gets a generated type**, named after the arm — its `title`,
+  or its discriminant value — and qualified by the union's name when that is
+  already taken. `SessionUpdate`'s three chunk arms become `UserMessageChunk`,
+  `AgentMessageChunk` and `AgentThoughtChunk`; `MultiSelectItems`'s catch-all
+  becomes `MultiSelectItemsOther`, because `ElicitationPropertySchema` has a
+  catch-all titled `other` too.
+
+Names are allocated over the **whole** schema, not over the manifest's closure.
+Otherwise growing the manifest would rename a type that was already published,
+and the rename would arrive as a surprise in a compatibility report rather than
+as a decision.
+
+### Selecting an arm
+
+One algorithm covers all four union shapes, and it is the reference
+implementation's:
+
+1. Read the discriminant. A property that is present but **not a string is not a
+   discriminant** — including `null`, which `json.Unmarshal` would otherwise
+   accept into a string and turn into the empty-string tag.
+2. A discriminant a known arm claims selects that arm, and a payload that does
+   not match it **fails**. It does not fall through. This is the `not` clause of
+   the open unions' catch-all arm, and it holds for closed unions too.
+3. A discriminant no arm claims lands in the catch-all if the union has one.
+4. Otherwise the arms that declare no discriminant are tried in schema order,
+   first match wins, which is what `anyOf` asks for. `EmbeddedResourceResource`
+   has only these: its two arms are told apart by which property they require.
+5. Nothing left to try is a decode error.
+
+### Two union shapes the arm model has to bend for
+
+Twenty-three unions in the implemented closure are the discriminated object kind
+above. Two others are not, and each needs a rule of its own.
+
+**A value union's arms are different JSON shapes**, so there is no discriminant to
+read: `RequestId` is null, an integer or a string, and
+`SessionConfigSelectOptions` is one of two differently-typed arrays. The arms are
+still Go types — only a named type can implement the union's interface — and a
+value is offered to each in schema order, first match wins. The null arm goes
+first, because every other arm's decoder refuses null.
+
+Their arms are named `<Union><Arm>` rather than `<Arm>`, unlike an object union's.
+An object union's arms are named after domain concepts and stand alone;
+a value union's titles are shape words — `Ungrouped`, `Str`, `Number` — which
+would be poor names in a package of their own and would collide with the next
+schema release that wanted one.
+
+**A flattened union is an object and a union at once**: `SessionConfigOption` has
+five properties of its own plus one of two kind-specific shapes, all in the same
+JSON object. A Go struct cannot be several shapes at once, so the struct holds the
+choice in a `Value` field of a generated `<Struct>Value` interface, and the
+encoder splices the two halves back into one object. The name is generated because
+the schema gives this construct none: it is an object and a `oneOf` side by side.
 
 ## Validation is part of the codec, not an afterthought
 
@@ -167,6 +260,59 @@ So the codec has a stated shape:
   written.
 - Every inbound params or result is validated before it reaches user code.
 
+The last two are **not a separate pass**, and that is what makes them true rather
+than aspirational. Validation is inside `MarshalJSON` and `UnmarshalJSON`, on the
+type that owns the rule, so it happens wherever a value crosses the boundary:
+
+- A closed enumeration checks membership in both directions. Decoding cannot
+  produce an undefined value, and encoding cannot send one — which matters,
+  because building one in Go is the only way to have one.
+- A required property's absence is a decode failure, and a required array encodes
+  as `[]` rather than the `null` a nil Go slice would produce.
+- A union refuses a nil arm rather than sending `null` where an object is
+  required, and a catch-all arm refuses a discriminant a known arm reserves.
+- A numeric bound is enforced by the Go type the schema's `format` picks, so
+  `ProtocolVersion` is a `uint16` and its declared range of 0 to 65535 needs no
+  check. Every `minimum` in the schema is the low bound of an unsigned format and
+  the single `maximum` is a `uint16`'s, so the generator asserts this rather than
+  assuming it: a bound the Go type does not already guarantee stops generation.
+
+A caller who never touches the connection layer therefore still gets checked, and
+there is no second code path that could disagree with the first.
+
+### What recovery recovers to
+
+`x-deserialize-default-on-error` says a malformed property does not fail the
+message, but not what it becomes. The schema does not say either, and the answer
+is three rules — read off the reference implementation, because "the same
+normalised value" is a promise about behaviour and not about intent:
+
+1. The declared `default`, if the property has one. `ClientCapabilities.fs`
+   becomes `{readTextFile: false, writeTextFile: false}`.
+2. Otherwise an empty array, if the property is an array that cannot be null.
+3. Otherwise nothing: the property arrives absent.
+
+A declared `default` is also what an **absent** property becomes, which is a
+separate rule and applies whether or not the property recovers. It is why a
+defaulted optional property needs no `Opt`: absence already has a value.
+
+Rule 2 says "cannot be null" where the reference implementation tests whether
+`type` is the single name `"array"` — a nullable array's `["array", "null"]` fails
+that test. The two readings agree on every property in the schema, and this one is
+the honest version of the same rule: an array that may be null has somewhere else
+to go.
+
+### Two property shapes with no type to speak of
+
+`AuthMethodTerminal.env` is `additionalProperties` carrying a schema, which is a
+map: `map[string]string`. There is no key type to resolve, because JSON object
+keys are strings.
+
+`Error.data` has no `type` at all, which admits every JSON value including null.
+It is `json.RawMessage`, and it is treated as nullable however the schema spells
+that — which is not at all — because a property that admits everything admits
+null, and null there is a value rather than an absence.
+
 ### Omitted, null and present are three states, not two
 
 The schema distinguishes an absent property from one present as `null`, and it
@@ -178,12 +324,15 @@ pointer is both "absent" and "null" — so generated pointers cannot round-trip
 this part of the grammar. The generator emits a presence-aware wrapper instead:
 
 ```go
-// Opt distinguishes absent, null and present. IsZero reports absent, which is
-// what the encoder's omitzero option consults, so an absent field emits nothing
-// while an explicit null emits null.
+// Opt distinguishes absent, null and present. The zero Opt is absent.
 type Opt[T any] struct { /* absent | null | present */ }
 
-func (Opt[T]) IsZero() bool
+func OptValue[T any](v T) Opt[T] // present
+func OptNull[T any]() Opt[T]     // present as null
+
+func (Opt[T]) Get() (T, bool) // the value, and whether there is one
+func (Opt[T]) IsZero() bool   // absent; what omitzero consults
+func (Opt[T]) IsNull() bool   // present as null
 func (Opt[T]) MarshalJSON() ([]byte, error)
 func (*Opt[T]) UnmarshalJSON([]byte) error
 ```
@@ -199,6 +348,12 @@ A state is collapsed only where the schema itself says the two are equivalent �
 several capability fields document "omitted or `null` both mean not advertised" —
 and that collapse is then a generated decision with the schema quoted beside it,
 not a default.
+
+An `Opt` is also not reached for where a plain Go type already has the states the
+property has. A property that cannot be null and has a declared default takes that
+default when absent, so it has one state and is a plain `T`. An optional array
+that cannot be null has two, and a slice already spells them: nil is absent and
+empty is present, which `omitzero` encodes correctly and `omitempty` could not.
 
 ### What the round-trip tests actually promise
 
@@ -217,6 +372,21 @@ So the promises are semantic, and there are four:
 3. Values constructed in Go encode to stable Go-owned golden output.
 4. `_meta` and the extra properties of an open union survive as equivalent JSON
    values.
+
+And one thing the corpus cannot promise, because it turned out not to be true:
+that this package and the reference implementation agree on everything the schema
+states. **They disagree about integers.** The reference implementation validates
+an `int64` or `int32` property as a plain number, reaching for an integer check
+only where the schema also states a minimum — so most of its integer properties
+accept `1.5`. The schema types them `integer`, so this package refuses the value,
+and [AGENTS.md](../AGENTS.md) settles which is right: the schema wins, and the
+difference belongs upstream rather than in a local dialect.
+
+So a fixture may carry a **divergence**: what this package does instead, and the
+schema clause that decides it. The mechanism is deliberately awkward to use — the
+divergence has to be a real one and has to name a clause, or the test refuses it —
+because a way to make any failing case pass by asserting that this package is
+right would be worse than no oracle at all.
 
 Not byte identity, even for `_meta`. The TypeScript SDK parses `_meta` through
 `z.record(z.string(), z.unknown())` and reattaches parsed values, so the original
@@ -246,6 +416,10 @@ API is not frozen until this table covers everything a release claims.
 // here: a configuration whose advertisement exceeds its implementation, or that
 // omits a baseline handler, is rejected before it can accept a request it
 // cannot serve.
+// Construction. Returns an error because the capability invariant is checked
+// here: a configuration whose advertisement exceeds its implementation, or that
+// omits a baseline handler, is rejected before it can accept a request it
+// cannot serve.
 func NewClient(*ClientConfig) (*Client, error)
 func NewAgent(*AgentConfig) (*Agent, error)
 
@@ -261,9 +435,9 @@ func (*Agent) Conns() iter.Seq[*AgentConn]
 // copy: the same value backs the capability gate, and a caller must not be able
 // to widen its own authority by mutating it.
 func (*ClientConn) Peer() PeerInfo
-func (*ClientConn) Authenticate(context.Context, *AuthenticateParams) (*AuthenticateResult, error)
-func (*ClientConn) NewSession(context.Context, *NewSessionParams) (*ClientSession, *NewSessionResult, error)
-func (*ClientConn) LoadSession(context.Context, *LoadSessionParams) (*ClientSession, *LoadSessionResult, error)
+func (*ClientConn) Authenticate(context.Context, *AuthenticateRequest) (*AuthenticateResponse, error)
+func (*ClientConn) NewSession(context.Context, *NewSessionRequest) (*ClientSession, *NewSessionResponse, error)
+func (*ClientConn) LoadSession(context.Context, *LoadSessionRequest) (*ClientSession, *LoadSessionResponse, error)
 func (*ClientConn) Call(context.Context, string, any, any) error   // extension methods only
 func (*ClientConn) Notify(context.Context, string, any) error      // extension methods only
 func (*ClientConn) Close() error
@@ -281,30 +455,45 @@ func (*AgentConn) Wait() error
 // The conversation, as the client sees it. Binds SessionID and nothing else.
 func (*ClientSession) ID() SessionID
 func (*ClientSession) Conn() *ClientConn
-func (*ClientSession) Prompt(context.Context, *PromptParams) (*PromptResult, error)
+func (*ClientSession) Prompt(context.Context, *PromptParams) (*PromptResponse, error)
 func (*ClientSession) Cancel(context.Context, *CancelParams) error
-func (*ClientSession) SetMode(context.Context, *SetModeParams) (*SetModeResult, error)
+func (*ClientSession) SetMode(context.Context, *SetModeParams) (*SetSessionModeResponse, error)
 
 // The same conversation as the agent sees it: a different set of operations, so
 // a different type. Handlers receive it; see "How an agent gets a session".
 func (*AgentSession) ID() SessionID
 func (*AgentSession) Conn() *AgentConn
 func (*AgentSession) Update(context.Context, *SessionUpdateParams) error
-func (*AgentSession) RequestPermission(context.Context, *RequestPermissionParams) (*RequestPermissionResult, error)
-func (*AgentSession) ReadTextFile(context.Context, *ReadTextFileParams) (*ReadTextFileResult, error)
-func (*AgentSession) WriteTextFile(context.Context, *WriteTextFileParams) (*WriteTextFileResult, error)
-func (*AgentSession) CreateTerminal(context.Context, *CreateTerminalParams) (*Terminal, *CreateTerminalResult, error)
+func (*AgentSession) RequestPermission(context.Context, *RequestPermissionParams) (*RequestPermissionResponse, error)
+func (*AgentSession) ReadTextFile(context.Context, *ReadTextFileParams) (*ReadTextFileResponse, error)
+func (*AgentSession) WriteTextFile(context.Context, *WriteTextFileParams) (*WriteTextFileResponse, error)
+func (*AgentSession) CreateTerminal(context.Context, *CreateTerminalParams) (*TerminalHandle, *CreateTerminalResponse, error)
 
 // Every one of these is a JSON-RPC request whose schema response is an object
 // with optional _meta, so every one returns a result. See below.
-func (*Terminal) ID() TerminalID
-func (*Terminal) Output(context.Context, *TerminalOutputParams) (*TerminalOutputResult, error)
-func (*Terminal) WaitForExit(context.Context, *WaitForExitParams) (*WaitForExitResult, error)
-func (*Terminal) Kill(context.Context, *KillTerminalParams) (*KillTerminalResult, error)
-func (*Terminal) Release(context.Context, *ReleaseTerminalParams) (*ReleaseTerminalResult, error)
+func (*TerminalHandle) ID() TerminalID
+func (*TerminalHandle) Session() *AgentSession
+func (*TerminalHandle) Output(context.Context, *TerminalOutputParams) (*TerminalOutputResponse, error)
+func (*TerminalHandle) WaitForExit(context.Context, *WaitForTerminalExitParams) (*WaitForTerminalExitResponse, error)
+func (*TerminalHandle) Kill(context.Context, *KillTerminalParams) (*KillTerminalResponse, error)
+func (*TerminalHandle) Release(context.Context, *ReleaseTerminalParams) (*ReleaseTerminalResponse, error)
+
+// Transports. A connection is established over one of these, and a caller may
+// implement its own: the contract is in "Transports" below.
+func NewInMemoryTransports() (client, agent Transport)
+func NewStdioTransport() Transport
+func NewIOTransport(io.ReadCloser, io.WriteCloser) Transport
+func NewCommandTransport(*CommandConfig) Transport
 ```
 
-Every operation takes `(ctx, *Params)` and returns `(*Result, error)`, with no
+Two spellings in the previous revision did not survive contact with the schema,
+and the schema wins both. A response type is `…Response` and not `…Result`,
+because that is what the schema calls it. And the handle for a terminal is
+`TerminalHandle`, because `Terminal` is already the name of a definition — the
+payload of a tool call's terminal content — and the schema's names are not this
+package's to reassign.
+
+Every operation takes `(ctx, *Params)` and returns `(*Response, error)`, with no
 convenience overloads, because when the spec adds an optional field a params
 struct absorbs it and a positional signature cannot
 (`go-sdk/design/design.md:371`). `nil` params stays valid wherever none are
@@ -371,7 +560,7 @@ over it, not a replacement for it.
 carries `modes`, `configOptions` and `_meta` besides `sessionId`, so returning
 only a handle would make three fields unreachable — the TypeScript SDK keeps the
 whole response on its `ActiveSession` (`src/acp.ts:768`). Hence
-`(*ClientSession, *NewSessionResult, error)`. Three results is mildly ugly and
+`(*ClientSession, *NewSessionResponse, error)`. Three results is mildly ugly and
 strictly lossless, and the alternative of hanging typed accessors off the handle
 does not survive `LoadSession` and `ResumeSession` returning different result
 types.
@@ -531,16 +720,22 @@ independent booleans:
 type ClientConfig struct {
 	// Identifies this client during initialize, which Connect performs.
 	Info *Implementation
-	Meta map[string]any
+	Meta Meta
+	// nil means discard. See below.
+	Logger *slog.Logger
 
 	// A notification has no response, so its handler returns nothing. A request
-	// handler returns a result and an error, which becomes the peer's error.
-	SessionUpdate     func(context.Context, *SessionUpdateRequest)
-	RequestPermission func(context.Context, *RequestPermissionRequest) (*RequestPermissionResult, error)
+	// handler returns a response and an error, which becomes the peer's error.
+	SessionUpdate     func(context.Context, *SessionNotification)
+	RequestPermission func(context.Context, *RequestPermissionRequest) (*RequestPermissionResponse, error)
 
-	ReadTextFile  func(context.Context, *ReadTextFileRequest) (*ReadTextFileResult, error)
-	WriteTextFile func(context.Context, *WriteTextFileRequest) (*WriteTextFileResult, error)
+	ReadTextFile  func(context.Context, *ReadTextFileRequest) (*ReadTextFileResponse, error)
+	WriteTextFile func(context.Context, *WriteTextFileRequest) (*WriteTextFileResponse, error)
 	Terminal      *TerminalHandlers // all five, or none
+
+	// Extension methods the generated table does not name.
+	CallFallback   func(context.Context, *ExtRequest) (json.RawMessage, error)
+	NotifyFallback func(context.Context, *ExtNotification)
 
 	// nil: advertise exactly what the handlers above support.
 	// non-nil: the complete desired advertisement, not a patch. Construction
@@ -593,23 +788,27 @@ client calls on it.
 
 ```go
 type AgentConfig struct {
-	Info    *Implementation
-	Meta    map[string]any
-	Logger  *slog.Logger // nil means discard; see below
+	Info   *Implementation
+	Meta   Meta
+	Logger *slog.Logger
+
+	// What an agent offers a client that must authenticate. Empty says none is
+	// needed.
+	AuthMethods []AuthMethod
 
 	// Baseline. NewAgent fails if any is nil, because an agent that cannot
-	// answer these cannot complete a connection.
-	Initialize func(context.Context, *InitializeRequest) (*InitializeResult, error)
-	NewSession func(context.Context, *NewSessionRequest) (*NewSessionResult, error)
-	Prompt     func(context.Context, *AgentSession, *PromptRequest) (*PromptResult, error)
-	Cancel     func(context.Context, *AgentSession, *CancelRequest)
+	// answer these cannot complete a turn.
+	NewSession func(context.Context, *NewSessionRequest) (*NewSessionResponse, error)
+	Prompt     func(context.Context, *AgentSession, *PromptRequest) (*PromptResponse, error)
+	Cancel     func(context.Context, *AgentSession, *CancelNotification)
 
-	// Gated. Setting one advertises the capability that gates it; the grouping
-	// follows the capability type, exactly as on the client side.
-	LoadSession func(context.Context, *AgentSession, *LoadSessionRequest) (*LoadSessionResult, error)
-	Auth        *AuthHandlers
+	// Optional or gated. Setting LoadSession advertises the capability that
+	// gates it; the grouping follows the capability type, exactly as on the
+	// client side.
+	Authenticate func(context.Context, *AuthenticateRequest) (*AuthenticateResponse, error)
+	LoadSession  func(context.Context, *AgentSession, *LoadSessionRequest) (*LoadSessionResponse, error)
+	SetMode      func(context.Context, *AgentSession, *SetSessionModeRequest) (*SetSessionModeResponse, error)
 
-	// Extension methods the generated table does not name.
 	CallFallback   func(context.Context, *ExtRequest) (json.RawMessage, error)
 	NotifyFallback func(context.Context, *ExtNotification)
 
@@ -619,6 +818,14 @@ type AgentConfig struct {
 	Capabilities *AgentCapabilities
 }
 ```
+
+**There is no `Initialize` handler**, and the previous revision's listing one was
+two sources of truth for one answer. Everything the initialize response carries —
+the version, the capabilities, the auth methods, the identification — is already
+in this struct, so a handler for it could only return what the struct says or
+contradict it. The connection answers initialize itself, which is also the one place a second
+initialize can be refused. An agent that wants to see what the client
+advertised asks `Peer()`.
 
 `ClientConfig` gains the same `Logger`, `CallFallback` and `NotifyFallback`
 fields, so the extension contract is symmetric: both directions can send
@@ -673,6 +880,39 @@ first would be unusable for deciding whether to reconnect.
 `Peer()` returns a copy rather than the stored snapshot. The same value backs the
 capability gate, and a caller who could mutate it could widen its own authority.
 
+## What order inbound messages are served in
+
+The connection makes two ordering promises, and both are load-bearing.
+
+**A notification is served in arrival order, one at a time.** `session/update` is
+a stream — message chunks, tool calls, plans, in the order the agent produced
+them — so handling two of them concurrently would deliver a turn's output
+scrambled.
+
+**A response is delivered only after every notification that arrived before it.**
+Without that, `Prompt` could return while the last chunk of the turn it describes
+was still queued, and a caller would see a turn end before hearing how it ended.
+The specification puts those updates before the response on the wire on purpose;
+this keeps them there. It is also what the reference implementation does, by being
+a single event loop.
+
+**An inbound request is served concurrently, and is not in that queue.** It has
+to be: an agent waiting for a permission answer still has to be cancellable, and a
+client asked for permission has to be able to answer while updates are still
+arriving. `$/cancel_request` goes further and is handled in the read loop itself,
+because a cancellation queued behind the work it was meant to stop is the same as
+no cancellation.
+
+The consequence for a handler is worth stating plainly, because it is the one
+thing this design asks of an application: **a notification handler must not make a
+call on the same connection and wait for it.** Its own response would be queued
+behind it. Spawning the work instead is what the session handle being valid beyond
+the handler call is for.
+
+The queue is unbounded rather than a channel with a size, because a slow handler
+must not stall the read loop: the request that would unblock it may be the next
+message on the wire.
+
 ## Extension methods, with standard names reserved
 
 The v1 schema defines `ExtRequest`, `ExtResponse` and `ExtNotification` in both
@@ -713,6 +953,75 @@ hidden and overlap the `jsonrpc` package. So the generator classifies output:
 - Method-name constants used by generated dispatch stay unexported; the extension
   API takes an explicit string, checked against the reserved set.
 
+### The method table is generated; the envelope is not
+
+`meta.json` is the method directory, and the generated table is what the extension
+API reserves and what dispatch looks a method up in. Every name in it is
+unexported, because a caller of this package names a method by calling the
+operation for it.
+
+Neither source is sufficient alone, so both are read. `meta.json` lists the
+methods and which peer serves each; it says nothing about whether a method expects
+a response. The schema's `x-method` and `x-side` annotations say that — a method
+with a `…Response` payload is a request, one with a `…Notification` payload is a
+notification — but they are spread across 74 definitions. Generation cross-checks
+the two and stops on a disagreement, which is the check
+[roadmap.md](./roadmap.md#2-wire) asks CI for, made structural rather than
+periodic.
+
+**Counting them turned up an error in these pages.** There are **42 distinct
+method names and 43 directory entries**: `mcp/message` is listed under both
+directions, which is how the schema says either peer may send it, and it is
+consequently the one method whose shape is *either* — request or notification.
+`protocol.md` said 43 methods and now says both numbers.
+
+**The envelopes are not generated at all**, and the previous revision's
+"envelopes and generated routing unions stay unexported" understated it.
+`AgentRequest`, `ClientResponse` and their four siblings are JSON-RPC's grammar —
+an id, a method name, params — which `internal/jsonrpc2` owns; generating a second
+set of types for it would be two sources of truth for one thing. The routing
+unions inside them, "every request an agent can send", are of no use either: a
+connection dispatches on the method name, not by trying fifteen arms. Those six
+definitions are the only ones in the schema the generator does not plan, and a
+test names them so that the boundary is a decision rather than an omission.
+
+### Some generated types are not exported
+
+The manifest has an `internal` list, and a definition on it is generated with an
+unexported name. `RequestId` and `CancelRequestNotification` are on it: a caller
+cancels by cancelling a context and never names a request identifier.
+
+The rule that makes this safe is checked at generation time — **no exported type
+may name an unexported one**. Such a type compiles and is unusable: an importer
+can hold the value but cannot write the field's type, construct one, or switch on
+it, and a published type whose field a caller cannot name is worse than no type.
+So the internal list has to be closed under what reaches it, and the generator
+refuses to emit a tree where it is not.
+
+A generated helper is named after the exported spelling even when its type is not
+— `unmarshalRequestID` for `requestID` — because a lower-cased type name spliced
+into a helper's name is neither readable nor conventional.
+
+### The capability table is complete before it is needed
+
+Every one of the 42 methods has a row, classified as baseline, gated by a named
+predicate, or not implemented yet. It is hand-maintained because it has to be: the
+schema has `x-method` and `x-side` and **no annotation linking a method to a
+capability**, so those links exist only in prose. Each row quotes the schema's own
+words beside the classification, and a test holds the table against the generated
+method table in both directions — a method with no row, and a row naming a method
+the schema no longer has.
+
+"Not implemented yet" is a classification rather than an omission. The alternative
+was a table that covers as far as the work has got, which cannot tell a method
+nobody has classified from one deliberately refused.
+
+The third piece design.md promised for each row — the complete handler group
+required to advertise it — arrives with the handlers themselves. What exists now is
+the fact each group is derived from: `clientCapabilities.terminal` is one boolean
+whose row is shared by five methods, and `clientCapabilities.fs` is two booleans
+with a row each.
+
 ### A root manifest, not a number in three documents
 
 Scope is the transitive `$ref` closure of what is implemented. The previous
@@ -727,11 +1036,53 @@ So the roots are a committed manifest, naming separately:
 - protocol plumbing those operations need — `Error` and `ErrorCode` are reached
   from response envelopes rather than from any method's params, so they are roots
   in their own right the moment `Error` is exported;
-- marker types the extension boundary requires.
+- marker types the extension boundary requires;
 
-CI computes the closure from the manifest and fails if the exported set differs.
-The count becomes an output to check rather than a fact to maintain, and adding
-an operation shows up as a diff in exactly one file.
+plus, until the payload roots reach them, the definitions rooted only to exercise
+a wire shape — the layer-1 spike's probes, each recording which shape it proves.
+
+The closure's size is an output. The generator writes every exported name it
+produces to `schema/exported.txt`, marking the ones whose definition carries
+upstream's UNSTABLE marker, and two gates read it: regenerating in `-check` mode
+proves the file matches the manifest, and a test parses the package's own
+declarations and holds them against it in both directions. So a generated name
+that vanished and a type added by hand to a surface meant to be generated are both
+failures, and the hand-written exports are a closed list with a reason beside each
+one.
+
+### Names are the schema's, put through Go's initialism rule
+
+A generated type keeps the schema's name; what changes is capitalisation, and only
+because the linter that reads Go's convention insists. `SessionId` becomes
+`SessionID` and `HttpHeader` becomes `HTTPHeader`, using **revive's own initialism
+list verbatim** rather than one this repository invented: a capitalisation the
+linter accepts and a Go programmer does not is the failure mode, and using the
+linter's list is what keeps the rule from drifting.
+
+This produced one collision worth recording. The schema defines a
+`ProtocolVersion` type, and the package already had a `ProtocolVersion` constant.
+The schema's name wins — [AGENTS.md](../AGENTS.md) says the wire grammar is not
+ours to design, and that extends to what it calls things — so the constant is
+`CurrentProtocolVersion`, typed as the schema's `ProtocolVersion`.
+
+### The doc comments are the specification's prose
+
+A generated doc comment is the schema's `description`, reproduced rather than
+rewritten, including upstream's `**UNSTABLE**` marker. Two things are added, both
+punctuation:
+
+- The symbol's name and an em dash, prefixed to the first line, because Go's
+  convention and the linter that enforces it both want a doc comment to begin with
+  the name it documents. An em dash rather than a rewrite: turning "Content blocks
+  represent displayable information" into "ContentBlock is content blocks
+  represent displayable information" would be a sentence the specification does
+  not contain.
+- A full stop, where the last line has none — several descriptions end in a link.
+
+The alternative was switching the comment linters off for the one file whose
+comments are most worth checking. A union's first line is generated rather than
+quoted, because it has to name the union's arms and the schema's description does
+not.
 
 ## Transports
 
@@ -792,11 +1143,28 @@ so the collision is visible in the code.
 Fork `golang.org/x/tools/internal/jsonrpc2_v2` into `internal/jsonrpc2`, which is
 what the MCP SDK did (`go-sdk/design/design.md:45`: "The Go team has a
 battle-tested JSON-RPC implementation that we use for gopls, our Go LSP server"),
-with upstream's copyright and licence headers intact. It is already
-bidirectional and already handles request lifetime, async calls and cancellation
-— the three things a hand-rolled version gets wrong first. It is `internal`
-because it is an implementation detail, and a fork because the package is
-`internal` upstream and cannot be imported.
+with upstream's copyright and licence headers intact. It is `internal` because it
+is an implementation detail, and a fork because the package is `internal` upstream
+and cannot be imported.
+
+**The fork is the message layer only**, and that is narrower than the previous
+revision said. Upstream is 2,700 lines in nine files, and what it offers beyond
+messages is a byte-stream framer, a dialer, a server, a binder and a preempter.
+The first of those is where this module's `Transport` already stands: a transport
+hands over whole messages, so framing is the transport author's business. Carrying
+the rest would have meant a dialer, an idle timeout and a preemption hook that
+nothing here uses — the speculative abstraction [AGENTS.md](../AGENTS.md) rules
+out — and the connection is written against the message types instead.
+
+What is forked is `messages.go` and `wire.go`: request identifiers, the envelope,
+and the result-or-error discrimination. Those are exactly the parts a hand-written
+implementation gets wrong first, and they are stable. Two things were removed and
+`internal/jsonrpc2/doc.go` says why: an indented encoder nothing in a protocol
+stream wants, and upstream's non-standard error sentinels — it uses `-32000` for
+"overloaded" and `-32002` for "server is closing", which the Agent Client Protocol
+defines as authentication required and resource not found. Two meanings for one
+code in one binary is a bug waiting to be found by somebody debugging a live
+connection.
 
 ACP's request cancellation is `$/cancel_request`, LSP's spelling rather than
 MCP's `notifications/cancelled`, so the fork's cancellation wiring is closer to
@@ -818,6 +1186,35 @@ request IDs, so `MakeID` is not exported until something needs it. Widening a
 package is a minor release; narrowing one is not, so the smaller set is the one
 to start from — but it has to be at least this large, or the `Transport`
 interface is decorative.
+
+## Interoperability is recorded, not simulated
+
+Everything else in this module's tests could pass while the wire was wrong, because
+both ends would be this implementation. So the evidence is a real subprocess built
+on the reference SDK, and what crossed the wire between them is committed.
+
+The arrangement is the fixture corpus's, and so is the reasoning.
+`scripts/interop.sh` runs it against a pinned SDK commit and writes the
+transcripts; `go test` replays them with no network and no Node. Four scenarios,
+each chosen for what it exercises rather than for realism: a turn with a permission
+prompt in the middle, because that is the only shape where a peer is caller and
+callee at once; a cancelled turn whose final updates still arrive, because that is
+the obligation the protocol places on both sides; authentication, because -32000 is
+control flow rather than failure; and the workspace methods, because they are every
+capability-gated call a client may be asked for.
+
+Two details of the replay are decisions rather than mechanics. **Request
+identifiers are mapped, not compared** — this client mints its own, and insisting
+they match the recording would be asserting an implementation detail instead of the
+protocol. And **the transcript records what the client made of the exchange, not
+only the exchange**: the messages prove the two implementations exchanged what they
+exchanged, and the observations prove this package drew the right conclusions from
+them. A client that read the right bytes and reported the wrong updates fails the
+second check.
+
+What replaying gives up: it cannot notice the reference implementation changing.
+Re-recording notices that, which is why the updater is pinned and scheduled rather
+than run once.
 
 ## The v1 schema lane only, which is not the same as stable
 

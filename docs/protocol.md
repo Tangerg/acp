@@ -29,13 +29,18 @@ as a subprocess and speaks newline-delimited JSON over its stdin and stdout.
 Remote agents over HTTP or WebSocket are described upstream as work in progress.
 
 Both directions carry requests. This is not a client calling a server: 14 of the
-43 methods run from the agent to the client.
+43 directory entries run from the agent to the client.
 
 ## Methods
 
 Counted from `schema/meta.json` at schema release `schema-v1.21.0`: **28 agent
-methods, 14 client methods, and one protocol method — 43 in total.** The
-`protocolVersion` that `initialize` negotiates is `1`.
+methods, 14 client methods, and one protocol method — 43 directory entries, and
+42 distinct method names.** The two numbers differ because `mcp/message` is listed
+under both directions: either peer may send it, and it is the only method that
+carries both a request payload and a notification payload. Earlier revisions of
+this page said 43 methods, which was one too many.
+
+The `protocolVersion` that `initialize` negotiates is `1`.
 
 ### Client → agent
 
