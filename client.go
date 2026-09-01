@@ -1,0 +1,459 @@
+package acp
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"iter"
+	"log/slog"
+	"maps"
+	"slices"
+	"sync"
+
+	"github.com/Tangerg/acp/jsonrpc"
+)
+
+// A ClientConfig is everything a client is built from.
+//
+// The handlers are fields rather than an interface's methods. The reference
+// implementation declares an interface with fourteen methods, twelve of them
+// optional; Go has no optional interface methods, so that transliteration would
+// make every caller write stubs and would leave capability advertisement as a
+// second list to maintain by hand.
+//
+// The unit is the capability group, not the method, because the specification's
+// capabilities are not one-to-one with methods: terminal is one boolean
+// documented as covering all five terminal methods, and fs is two independent
+// booleans.
+type ClientConfig struct {
+	// Info identifies this client during initialize. Optional: the schema lets a
+	// peer stay anonymous.
+	Info *Implementation
+	// Meta is attached to this client's initialize request.
+	Meta Meta
+	// Logger is where the two paths that have nowhere else to report go: a handler
+	// error, which is deliberately not sent to the peer in full, and a
+	// notification handler's failure, which has no response channel at all.
+	//
+	// nil means discard, and never "log somewhere sensible". An agent's stdout is
+	// the protocol stream, so a default logger writing there would corrupt every
+	// connection it was supposed to help debug.
+	Logger *slog.Logger
+
+	// SessionUpdate receives the agent's running commentary for a turn. Baseline:
+	// a client that cannot accept these cannot watch a turn happen.
+	SessionUpdate func(ctx context.Context, notification *SessionNotification)
+
+	// RequestPermission asks the user to approve a tool call. Baseline, and
+	// required: there is no safe nil handler for it.
+	//
+	// The wire outcome is either cancelled or a selected option identifier, and an
+	// agent is not obliged to offer a reject option — so there is no universal
+	// "deny" to synthesise for a client that will not answer. A missing handler
+	// therefore fails construction rather than inventing an outcome the protocol
+	// does not define.
+	RequestPermission func(ctx context.Context, request *RequestPermissionRequest) (*RequestPermissionResponse, error)
+
+	// ReadTextFile and WriteTextFile are gated on two independent capability
+	// booleans, so they are two independent handlers.
+	ReadTextFile  func(ctx context.Context, request *ReadTextFileRequest) (*ReadTextFileResponse, error)
+	WriteTextFile func(ctx context.Context, request *WriteTextFileRequest) (*WriteTextFileResponse, error)
+
+	// Terminal is all five methods or none, because the capability that gates them
+	// is one boolean covering all five.
+	Terminal *TerminalHandlers
+
+	// CallFallback and NotifyFallback receive extension methods: names outside the
+	// set the specification defines. A standard method never reaches them, however
+	// it is spelled.
+	CallFallback   func(ctx context.Context, request *ExtRequest) (json.RawMessage, error)
+	NotifyFallback func(ctx context.Context, notification *ExtNotification)
+
+	// Capabilities is the complete desired advertisement, never a patch.
+	//
+	// nil advertises exactly what the handlers above support. Non-nil is taken as
+	// stated, and construction fails if it claims anything the handlers do not
+	// implement — capabilities are an authority boundary, and advertising one this
+	// client cannot serve is a promise it will break.
+	//
+	// It is a replacement rather than a merge because a field-by-field merge would
+	// need to distinguish "set to false" from "not set", and a scalar boolean has
+	// no third state to express that.
+	Capabilities *ClientCapabilities
+}
+
+// TerminalHandlers is the terminal capability's complete handler set. All five or
+// none: ClientCapabilities.terminal is one boolean documented as "Whether the
+// Client support all terminal/* methods".
+type TerminalHandlers struct {
+	Create      func(ctx context.Context, request *CreateTerminalRequest) (*CreateTerminalResponse, error)
+	Output      func(ctx context.Context, request *TerminalOutputRequest) (*TerminalOutputResponse, error)
+	WaitForExit func(ctx context.Context, request *WaitForTerminalExitRequest) (*WaitForTerminalExitResponse, error)
+	Kill        func(ctx context.Context, request *KillTerminalRequest) (*KillTerminalResponse, error)
+	Release     func(ctx context.Context, request *ReleaseTerminalRequest) (*ReleaseTerminalResponse, error)
+}
+
+// A Client is a code editor's side of the protocol: it owns the workspace, the
+// terminals, the user, and the authority to say yes to anything that touches
+// them.
+//
+// One client may hold many connections. The client holds the handlers and the
+// advertisement; a connection is one logical link, and a session is one
+// conversation on it.
+type Client struct {
+	config       ClientConfig
+	capabilities ClientCapabilities
+
+	mu    sync.Mutex
+	conns []*ClientConn
+}
+
+// NewClient builds a client, or reports why the configuration cannot be served.
+//
+// It returns an error because the capability invariant is checked here: a
+// configuration whose advertisement exceeds its implementation, or that omits a
+// baseline handler, is rejected before it can accept a request it cannot serve.
+func NewClient(config *ClientConfig) (*Client, error) {
+	if config == nil {
+		config = &ClientConfig{}
+	}
+	if config.SessionUpdate == nil {
+		return nil, errors.New("acp: a client needs a SessionUpdate handler: " +
+			"accepting a turn's output is baseline client behaviour")
+	}
+	if config.RequestPermission == nil {
+		return nil, errors.New("acp: a client needs a RequestPermission handler: " +
+			"the protocol defines no outcome a client may assume, so there is nothing to synthesise")
+	}
+	if err := checkTerminalHandlers(config.Terminal); err != nil {
+		return nil, err
+	}
+
+	capabilities, err := config.resolveCapabilities()
+	if err != nil {
+		return nil, err
+	}
+	return &Client{config: config.clone(), capabilities: capabilities}, nil
+}
+
+func checkTerminalHandlers(handlers *TerminalHandlers) error {
+	if handlers == nil {
+		return nil
+	}
+	missing := make([]string, 0, 5)
+	for name, present := range map[string]bool{
+		"Create":      handlers.Create != nil,
+		"Kill":        handlers.Kill != nil,
+		"Output":      handlers.Output != nil,
+		"Release":     handlers.Release != nil,
+		"WaitForExit": handlers.WaitForExit != nil,
+	} {
+		if !present {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	slices.Sort(missing)
+	return fmt.Errorf("acp: the terminal capability is one boolean covering all five methods, "+
+		"so its handlers are all or none; these are missing: %v", missing)
+}
+
+// resolveCapabilities derives the advertisement, or checks the stated one.
+func (config *ClientConfig) resolveCapabilities() (ClientCapabilities, error) {
+	derived := ClientCapabilities{
+		Fs: FileSystemCapabilities{
+			ReadTextFile:  config.ReadTextFile != nil,
+			WriteTextFile: config.WriteTextFile != nil,
+		},
+		Terminal: config.Terminal != nil,
+	}
+	if config.Capabilities == nil {
+		return derived, nil
+	}
+
+	stated := deepCopy(*config.Capabilities)
+	exceeded := checkAdvertisement(
+		PeerInfo{ClientCapabilities: stated}, sideClient, config.implements)
+	if len(exceeded) > 0 {
+		return ClientCapabilities{}, fmt.Errorf(
+			"acp: the stated capabilities advertise what this client cannot serve: %v", exceeded)
+	}
+	return stated, nil
+}
+
+// implements reports whether this configuration has the handler that serves a
+// client method.
+//
+// It is the other half of the capability table: the table says which capability
+// gates which method, and this says which methods this configuration can actually
+// serve. Neither is derivable from the other, so both are written out and the
+// check is their intersection.
+func (config *ClientConfig) implements(method string) bool {
+	switch method {
+	case methodSessionUpdate, methodSessionRequestPermission:
+		return true // baseline, and NewClient has already refused a nil handler
+	case methodFsReadTextFile:
+		return config.ReadTextFile != nil
+	case methodFsWriteTextFile:
+		return config.WriteTextFile != nil
+	case methodTerminalCreate, methodTerminalOutput, methodTerminalWaitForExit,
+		methodTerminalKill, methodTerminalRelease:
+		return config.Terminal != nil
+	default:
+		return false
+	}
+}
+
+// clone copies every mutable value the library keeps reading after construction.
+//
+// Without it a caller's slice, map or handler set stays aliased: mutating it
+// afterwards would change what this client advertises, or what it serves, without
+// going back through the check that made it valid — and would race a connection
+// already reading it.
+func (config *ClientConfig) clone() ClientConfig {
+	copied := *config
+	copied.Info = deepCopy(config.Info)
+	copied.Meta = deepCopy(config.Meta)
+	copied.Capabilities = deepCopy(config.Capabilities)
+	if config.Terminal != nil {
+		handlers := *config.Terminal
+		copied.Terminal = &handlers
+	}
+	return copied
+}
+
+// Connect performs the handshake and returns a connection that is already
+// initialized.
+//
+// It returns only after the transport connects, initialize succeeds, the
+// negotiated version is one this package implements, and the peer's capabilities
+// are stored. If any of those fails — including the context being cancelled
+// mid-handshake — the logical connection is closed before returning, so a failed
+// Connect never leaks a live transport or a half-initialized peer.
+//
+// There is no public Initialize for the same reason: it would make three failure
+// modes this API has to define and test — a call before initialization, a second
+// one, and two concurrent ones — and doing it here makes all three
+// unrepresentable.
+//
+// The context scopes setup only. A caller who passed a five-second handshake
+// timeout has not asked for the connection to die after five seconds; lifetime is
+// owned by [ClientConn.Close] and observed by [ClientConn.Wait].
+func (c *Client) Connect(ctx context.Context, transport Transport) (*ClientConn, error) {
+	stream, err := transport.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	connection := &ClientConn{client: c}
+	connection.conn = newConn(stream, connection.serve, connection.registerInbound, c.config.Logger)
+	connection.conn.run()
+
+	if err := connection.initialize(ctx); err != nil {
+		// Close before returning: a half-initialized connection is not something
+		// to hand back and hope nobody uses.
+		_ = connection.conn.close()
+		return nil, err
+	}
+
+	c.mu.Lock()
+	c.conns = append(c.conns, connection)
+	c.mu.Unlock()
+	return connection, nil
+}
+
+// Conns iterates the connections this client has opened and not closed.
+func (c *Client) Conns() iter.Seq[*ClientConn] {
+	c.mu.Lock()
+	open := make([]*ClientConn, 0, len(c.conns))
+	for _, connection := range c.conns {
+		if !connection.conn.ended() {
+			open = append(open, connection)
+		}
+	}
+	c.conns = open
+	c.mu.Unlock()
+	return slices.Values(open)
+}
+
+// A ClientConn is one logical connection to an agent, after initialize.
+//
+// It is named for the connection and not the session because the specification
+// already means something by "session": session/new returns a session
+// identifier, a session is a conversation with its own history, and one
+// connection carries many. Calling the connection a session too would have put
+// NewSession on a type called ClientSession.
+type ClientConn struct {
+	client *Client
+	conn   *conn
+
+	peerMu sync.Mutex
+	peer   PeerInfo
+	// initialized opens inbound dispatch. The read loop starts before the
+	// handshake completes, because the answer to initialize arrives on it, and
+	// anything else that arrives first would reach application code before there
+	// was a negotiated peer for it to be judged against.
+	initialized bool
+
+	sessionsMu sync.Mutex
+	sessions   map[SessionID]*ClientSession
+
+	// turns is this client's per-session turn state: the permission requests it is
+	// waiting on, and whether a cancellation is in progress. One lock rather than
+	// two maps, because the race it settles is between them. See cancel.go.
+	turnsMu sync.Mutex
+	turns   map[SessionID]*clientTurn
+}
+
+// initialize performs the handshake.
+func (c *ClientConn) initialize(ctx context.Context) error {
+	request := &InitializeRequest{
+		ProtocolVersion:    CurrentProtocolVersion,
+		ClientCapabilities: c.client.capabilities,
+	}
+	if info := c.client.config.Info; info != nil {
+		request.ClientInfo = OptValue(*info)
+	}
+	if len(c.client.config.Meta) > 0 {
+		request.Meta = OptValue(maps.Clone(c.client.config.Meta))
+	}
+
+	var response InitializeResponse
+	if err := c.conn.call(ctx, methodInitialize, request, &response); err != nil {
+		return err
+	}
+
+	// A protocol number identifies a grammar, not a feature level whose minimum is
+	// automatically safe. This package speaks version 1 and nothing else, so an
+	// answer of anything else — higher or lower — is an agent asking to be spoken
+	// to in a grammar this side does not have, and the connection cannot proceed.
+	if response.ProtocolVersion != CurrentProtocolVersion {
+		return fmt.Errorf("acp: the agent answered initialize with protocol version %d, "+
+			"and this package implements %d and no other",
+			response.ProtocolVersion, CurrentProtocolVersion)
+	}
+
+	// The schema calls the agent's positionEncoding "the position encoding
+	// selected by the agent from the client's supported encodings". One this
+	// client never offered is not a selection, and accepting it would leave the
+	// two peers reading every character offset they exchange differently — which
+	// is a disagreement about the meaning of the data rather than about a feature.
+	if encoding, selected := response.AgentCapabilities.PositionEncoding.Get(); selected {
+		if !slices.Contains(c.client.capabilities.PositionEncodings, encoding) {
+			return fmt.Errorf("acp: the agent selected the position encoding %q, which this client "+
+				"did not offer; it offered %v", encoding, c.client.capabilities.PositionEncodings)
+		}
+	}
+
+	c.peerMu.Lock()
+	c.peer = PeerInfo{
+		ProtocolVersion:    response.ProtocolVersion,
+		ClientCapabilities: deepCopy(c.client.capabilities),
+		ClientInfo:         request.ClientInfo,
+		ClientMeta:         request.Meta,
+		AgentCapabilities:  response.AgentCapabilities,
+		AgentInfo:          response.AgentInfo,
+		AgentMeta:          response.Meta,
+		AuthMethods:        response.AuthMethods,
+	}
+	c.initialized = true
+	c.peerMu.Unlock()
+	return nil
+}
+
+func (c *ClientConn) isInitialized() bool {
+	c.peerMu.Lock()
+	defer c.peerMu.Unlock()
+	return c.initialized
+}
+
+// Peer reports what initialize negotiated.
+//
+// It is a copy. The same value backs the capability gate, and a caller who could
+// mutate it could widen its own authority.
+func (c *ClientConn) Peer() PeerInfo {
+	c.peerMu.Lock()
+	defer c.peerMu.Unlock()
+	return c.peer.clone()
+}
+
+// Call sends an extension request and decodes its result.
+//
+// Extension methods only. A method the specification defines is refused, because
+// it has exactly one path through the typed codec and the capability gate, and
+// this is not it.
+func (c *ClientConn) Call(ctx context.Context, method string, params, result any) error {
+	return extensionCall(ctx, c.conn, method, params, result)
+}
+
+// Notify sends an extension notification. Extension methods only; see [ClientConn.Call].
+func (c *ClientConn) Notify(ctx context.Context, method string, params any) error {
+	return extensionNotify(ctx, c.conn, method, params)
+}
+
+// Close ends the connection. It is idempotent and safe to call concurrently.
+func (c *ClientConn) Close() error {
+	return c.conn.close()
+}
+
+// Wait blocks until the connection has ended and reports its terminal error: nil
+// for a local Close or a clean end of stream, and the read or write failure
+// otherwise.
+func (c *ClientConn) Wait() error {
+	return c.conn.wait()
+}
+
+// serve dispatches the requests an agent makes of a client.
+func (c *ClientConn) serve(ctx context.Context, request *jsonrpc.Request) (any, error) {
+	config := &c.client.config
+
+	// Nothing is served before initialize has been answered and accepted. The read
+	// loop is running by then only because the answer arrives on it; a peer that
+	// sends anything else first is asking for work to be done under capabilities
+	// nobody has exchanged, and the handlers would see it before Connect returned.
+	if !c.isInitialized() {
+		return nil, newError(ErrorCodeInvalidRequest,
+			"%s arrived before initialize was answered", request.Method)
+	}
+
+	// The capability gate first, and in this direction too. Capabilities are an
+	// authority boundary, so a method this client never advertised is refused
+	// rather than served — the agent was told it was not there.
+	if isStandardMethod(request.Method) {
+		if allowed, capability := allowsMethod(c.Peer(), request.Method); !allowed {
+			return nil, methodRefusal(request.Method, capability)
+		}
+	}
+
+	switch request.Method {
+	case methodSessionUpdate:
+		return nil, dispatchNotificationContext(ctx, request, config.SessionUpdate)
+	case methodSessionRequestPermission:
+		return c.requestPermission(ctx, request)
+	case methodFsReadTextFile:
+		return dispatchCall(ctx, request, config.ReadTextFile)
+	case methodFsWriteTextFile:
+		return dispatchCall(ctx, request, config.WriteTextFile)
+	case methodTerminalCreate:
+		return dispatchCall(ctx, request, config.Terminal.Create)
+	case methodTerminalOutput:
+		return dispatchCall(ctx, request, config.Terminal.Output)
+	case methodTerminalWaitForExit:
+		return dispatchCall(ctx, request, config.Terminal.WaitForExit)
+	case methodTerminalKill:
+		return dispatchCall(ctx, request, config.Terminal.Kill)
+	case methodTerminalRelease:
+		return dispatchCall(ctx, request, config.Terminal.Release)
+	}
+
+	if isStandardMethod(request.Method) {
+		// A method the specification defines, addressed to the wrong peer or not
+		// implemented here. Either way the honest answer is that it is not found.
+		return nil, newError(ErrorCodeMethodNotFound,
+			"%s is not a method this client serves", request.Method)
+	}
+	return dispatchExtension(ctx, request, config.CallFallback, config.NotifyFallback)
+}

@@ -1,8 +1,12 @@
 # Documentation
 
-Design notes for a Go implementation of the Agent Client Protocol. Nothing here
-is implemented yet; these are the decisions made before writing code, recorded so
-that they can be argued with now rather than discovered later.
+Design notes for a Go implementation of the Agent Client Protocol. Most of these
+are decisions made before writing code, recorded so that they can be argued with
+now rather than discovered later.
+
+[roadmap.md](./roadmap.md) says how much is built. Where implementation changed a
+decision — and the wire-semantics spike changed four — the page that stated it
+says so, and [roadmap.md](./roadmap.md#what-the-spike-found) indexes them.
 
 One page per reader task:
 

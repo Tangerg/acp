@@ -1,0 +1,165 @@
+{
+  "$comment": "Recorded by internal/cmd/interop against an agent built on the reference implementation. Written by scripts/interop.sh; replayed by interop_test.go. Do not edit.",
+  "scenario": "a cancelled turn whose final updates still arrive",
+  "provenance": {
+    "sdkCommit": "5dac09aaae3ebde1eaaf4a11840f7543f4806e20",
+    "sdkVersion": "1.4.0",
+    "schemaRelease": "schema-v1.21.0"
+  },
+  "observed": {
+    "updates": [
+      "agent_message_chunk:working",
+      "agent_message_chunk:stopping"
+    ],
+    "permissionRequests": 0,
+    "stopReason": "cancelled",
+    "filesRead": null,
+    "filesWritten": null,
+    "terminalsCreated": 0,
+    "authRequired": false,
+    "authenticated": false
+  },
+  "messages": [
+    {
+      "from": "client",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": 1,
+          "clientCapabilities": {
+            "fs": {
+              "readTextFile": true,
+              "writeTextFile": true
+            },
+            "terminal": true,
+            "auth": {
+              "terminal": false
+            }
+          },
+          "clientInfo": {
+            "name": "acp-go-interop",
+            "version": "0.0.0"
+          }
+        }
+      }
+    },
+    {
+      "from": "agent",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentCapabilities": {
+            "loadSession": false
+          },
+          "authMethods": [
+            {
+              "id": "interop",
+              "name": "Interoperability"
+            }
+          ],
+          "agentInfo": {
+            "name": "interop-agent",
+            "version": "0.0.0"
+          }
+        }
+      }
+    },
+    {
+      "from": "client",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "session/new",
+        "params": {
+          "cwd": "/w",
+          "mcpServers": []
+        }
+      }
+    },
+    {
+      "from": "agent",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "sessionId": "interop-session"
+        }
+      }
+    },
+    {
+      "from": "client",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "session/prompt",
+        "params": {
+          "sessionId": "interop-session",
+          "prompt": [
+            {
+              "type": "text",
+              "text": "cancel"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "from": "agent",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "interop-session",
+          "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {
+              "type": "text",
+              "text": "working"
+            }
+          }
+        }
+      }
+    },
+    {
+      "from": "client",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/cancel",
+        "params": {
+          "sessionId": "interop-session"
+        }
+      }
+    },
+    {
+      "from": "agent",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "interop-session",
+          "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {
+              "type": "text",
+              "text": "stopping"
+            }
+          }
+        }
+      }
+    },
+    {
+      "from": "agent",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "stopReason": "cancelled"
+        }
+      }
+    }
+  ]
+}

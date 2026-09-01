@@ -1,0 +1,124 @@
+package main
+
+import (
+	"strings"
+)
+
+// docComment renders a schema description as Go comment lines.
+//
+// The description is the specification's prose and is reproduced rather than
+// rewritten — including upstream's **UNSTABLE** marker, which the module's
+// compatibility promise carves out and which therefore has to be visible in
+// godoc. Two mechanical changes are made, both punctuation:
+//
+// When symbol is not empty the first line is prefixed with "symbol — ", because
+// Go's convention and the linter that enforces it both want a doc comment to
+// begin with the name it documents. An em dash rather than a rewrite: turning
+// "Content blocks represent displayable information" into "ContentBlock is
+// content blocks represent displayable information" would be a sentence the
+// specification does not contain.
+//
+// A full stop is appended when the last line has no terminal punctuation, which
+// several descriptions ending in a link do not. That is a change to punctuation
+// and not to prose, and the alternative is switching off the comment linter for
+// the file whose comments are most worth checking.
+func docComment(symbol, description string) []string {
+	description = strings.TrimSpace(description)
+	if description == "" {
+		if symbol == "" {
+			return nil
+		}
+		return []string{symbol + " is a protocol type the schema defines without a description."}
+	}
+
+	lines := strings.Split(description, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(line, " \t")
+	}
+	last := len(lines) - 1
+	for last > 0 && lines[last] == "" {
+		last--
+	}
+	lines = lines[:last+1]
+	if !strings.HasSuffix(lines[last], ".") &&
+		!strings.HasSuffix(lines[last], "!") &&
+		!strings.HasSuffix(lines[last], "?") &&
+		!strings.HasSuffix(lines[last], ":") {
+		lines[last] += "."
+	}
+	if symbol != "" {
+		lines[0] = symbol + " — " + lines[0]
+	}
+	return lines
+}
+
+// unionDoc renders the doc comment of a union interface. Unlike a struct's, its
+// first line is generated rather than quoted: the arms are the one thing a
+// caller needs and the schema's description does not name them.
+func unionDoc(symbol string, arms []string, description string) []string {
+	lines := []string{"A " + symbol + " is one of " + joinArms(arms) + "."}
+	if body := docComment("", description); len(body) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, body...)
+	}
+	return lines
+}
+
+func joinArms(arms []string) string {
+	links := make([]string, len(arms))
+	for i, arm := range arms {
+		links[i] = "[*" + arm + "]"
+	}
+	switch len(links) {
+	case 0:
+		return "no arms at all"
+	case 1:
+		return links[0]
+	case 2:
+		return links[0] + " or " + links[1]
+	default:
+		return strings.Join(links[:len(links)-1], ", ") + " or " + links[len(links)-1]
+	}
+}
+
+// wrap breaks generated prose at a width that reads in a terminal.
+//
+// Only prose this generator writes is wrapped. A schema description keeps the
+// line breaks upstream gave it, because those are part of the text — several
+// carry Markdown lists — and reflowing them would make the Go documentation and
+// the specification disagree about where a paragraph ends.
+func wrap(width int, text string) []string {
+	var lines []string
+	line := ""
+	for word := range strings.FieldsSeq(text) {
+		switch {
+		case line == "":
+			line = word
+		case len(line)+1+len(word) <= width:
+			line += " " + word
+		default:
+			lines = append(lines, line)
+			line = word
+		}
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// comment renders lines as a Go comment block at the given indentation.
+func comment(indent string, lines []string) string {
+	var out strings.Builder
+	for _, line := range lines {
+		out.WriteString(indent)
+		if line == "" {
+			out.WriteString("//\n")
+			continue
+		}
+		out.WriteString("// ")
+		out.WriteString(line)
+		out.WriteString("\n")
+	}
+	return out.String()
+}

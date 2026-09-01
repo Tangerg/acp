@@ -74,6 +74,11 @@ pipefail` that reports "this package has no fuzz targets yet" as a failed build.
 oolong never hit it because oolong has fuzz targets. The job now says so and
 exits 0.
 
+There are targets now — the codec's, asserting that normalisation is a fixed
+point, which is the property schema-directed recovery can quietly break and the
+one no case table finds. The guard stays: having no targets is a fact about how
+far the package has grown, and it should not read as a broken build.
+
 Related: `actions/setup-go` fails outright on a `cache-dependency-path` that
 matches no file, and a module with no dependencies has no `go.sum`. The cache key
 is `go.mod`.
@@ -85,13 +90,20 @@ is `go.mod`.
 | `test` | Builds, vets and passes `-race` on Linux, macOS and Windows, at the language floor and the current patch release. |
 | `floor` | The declared `go` directive is honest — tested with `GOTOOLCHAIN=local`, so it cannot borrow a newer toolchain. |
 | `quality` | ~80 linters on three platforms, plus `deadcode` reachability and `govulncheck`. |
-| `tidy` | `gofumpt`, `shfmt` and `go mod tidy -diff` are all no-ops. |
+| `tidy` | `gofumpt`, `shfmt`, `go mod tidy -diff` and the generator are all no-ops. |
 | `cross` | Vets and builds for six more `GOOS`/`GOARCH` pairs, including `wasip1` and `js`. |
 | `fuzz` | Every fuzz target runs for 30s on every push, not only when someone remembers. |
 | `docs` | `npm audit`, cspell and markdownlint over the prose. |
 | `compatibility` | On a tag: `gorelease` against the preceding immutable tag. |
 
-Three of these deserve a note.
+Four of these deserve a note.
+
+**The generator belongs in `tidy` rather than in a job of its own**, because it is
+the same kind of promise as `go mod tidy -diff`: a committed artifact derived from
+another committed artifact, with nothing to prove beyond being current.
+`go run ./internal/cmd/schemagen -check` regenerates in memory and compares, so it
+also catches a generator that is not deterministic — Go map iteration is not, and
+one that depended on it would pass locally and fail here.
 
 **The race detector is the point of running the tests at all.** A connection will
 read, write and dispatch from separate goroutines; the ownership rules only stay
@@ -113,12 +125,19 @@ a protocol SDK exists to be called from outside it.
 ```text
 acp/
 ├── go.mod                    module github.com/Tangerg/acp, Go 1.25
-├── doc.go  version.go        the package, and ProtocolVersion
+├── doc.go  version.go        the package, and CurrentProtocolVersion
+├── opt.go  meta.go           the hand-written parts of the wire vocabulary
+├── schema.gen.go             the protocol types, generated and committed
+├── schema/                   the vendored schema, the generation roots, and what
+│                             their closure became
+├── internal/wire/            the runtime the generated codecs are written against
+├── internal/cmd/schemagen/   the generator
+├── testdata/fixtures/        the cross-SDK corpus, replayed by go test
 ├── AGENTS.md                 the rules the code is written under
 ├── CLAUDE.md -> AGENTS.md    one file, two names, no drift
 ├── docs/                     these pages
 ├── .tools/                   the Markdown toolchain, out of Go's way
-├── scripts/                  check-reachability.sh, release.sh
+├── scripts/                  check-reachability.sh, release.sh, update-fixtures.sh, oracle.ts
 ├── .github/                  ci.yml, dependabot, issue and PR templates
 └── .golangci.yml  cspell.json  .markdownlint-cli2.yaml
 ```
@@ -146,9 +165,14 @@ v0.11.0 formats this tree identically and is what CI installs.
 ## Versioning
 
 Pre-1.0, and the module version is not the protocol version.
-`acp.ProtocolVersion` is `1` because that is what ACP's `initialize` negotiates;
-a module release never moves it, and a protocol release moves it only when the
-wire grammar changes incompatibly.
+`acp.CurrentProtocolVersion` is `1` because that is what ACP's `initialize`
+negotiates; a module release never moves it, and a protocol release moves it only
+when the wire grammar changes incompatibly.
+
+It is `CurrentProtocolVersion` rather than `ProtocolVersion` because the schema
+defines a `ProtocolVersion` type and the schema's names are not this repository's
+to reassign — see
+[design.md](./design.md#names-are-the-schemas-put-through-gos-initialism-rule).
 
 The vendored schema is pinned to an upstream release tag — `schema-v1.21.0` — and
 moving it is a deliberate, reviewable commit, not a build-time download. See

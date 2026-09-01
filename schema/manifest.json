@@ -1,0 +1,140 @@
+{
+  "$comment": "Generation roots. Scope is the transitive $ref closure of everything named here; internal/cmd/schemagen computes it and CI fails if the exported set differs. See README.md#manifestjson for what each bucket means and when it retires.",
+  "payloads": [
+    "AuthenticateRequest",
+    "AuthenticateResponse",
+    "CancelNotification",
+    "CreateTerminalRequest",
+    "CreateTerminalResponse",
+    "InitializeRequest",
+    "InitializeResponse",
+    "KillTerminalRequest",
+    "KillTerminalResponse",
+    "LoadSessionRequest",
+    "LoadSessionResponse",
+    "NewSessionRequest",
+    "NewSessionResponse",
+    "PromptRequest",
+    "PromptResponse",
+    "ReadTextFileRequest",
+    "ReadTextFileResponse",
+    "ReleaseTerminalRequest",
+    "ReleaseTerminalResponse",
+    "RequestPermissionRequest",
+    "RequestPermissionResponse",
+    "SessionNotification",
+    "SetSessionModeRequest",
+    "SetSessionModeResponse",
+    "TerminalOutputRequest",
+    "TerminalOutputResponse",
+    "WaitForTerminalExitRequest",
+    "WaitForTerminalExitResponse",
+    "WriteTextFileRequest",
+    "WriteTextFileResponse"
+  ],
+  "plumbing": [
+    "Error",
+    "ErrorCode"
+  ],
+  "markers": [],
+  "internal": {
+    "$comment": "Generated but not exported: JSON-RPC plumbing a caller never names. Each value says why. An exported definition that reaches one of these is a generation failure, because a published type whose field a caller cannot name is worse than no type.",
+    "CancelRequestNotification": "the params of $/cancel_request, which the connection sends on its own behalf; a caller cancels by cancelling a context",
+    "RequestId": "a JSON-RPC request identifier, which the API never surfaces: not request IDs, not the envelope, not the method strings"
+  },
+  "probes": {
+    "$comment": "Layer-1 wire-shape probes. Each key is a definition; each value is the shape it proves that no payload root reaches yet. Entries leave as the payload roots grow to reach the same shapes.",
+    "MultiSelectItems": "an open object union: a `not` catch-all arm, an untagged arm, and extra properties that must survive"
+  },
+  "projections": {
+    "$comment": "Handle-facing params types: the generated wire request minus the identifiers a handle owns. See docs/design.md#handles-bind-identifiers-and-nothing-else.",
+    "PromptParams": {
+      "from": "PromptRequest",
+      "without": [
+        "sessionId"
+      ],
+      "why": "A ClientSession binds the session identifier."
+    },
+    "CancelParams": {
+      "from": "CancelNotification",
+      "without": [
+        "sessionId"
+      ],
+      "why": "A ClientSession binds the session identifier. Cancel still takes params because the notification carries _meta too."
+    },
+    "SetModeParams": {
+      "from": "SetSessionModeRequest",
+      "without": [
+        "sessionId"
+      ],
+      "why": "A ClientSession binds the session identifier."
+    },
+    "SessionUpdateParams": {
+      "from": "SessionNotification",
+      "without": [
+        "sessionId"
+      ],
+      "why": "An AgentSession binds the session identifier."
+    },
+    "RequestPermissionParams": {
+      "from": "RequestPermissionRequest",
+      "without": [
+        "sessionId"
+      ],
+      "why": "An AgentSession binds the session identifier."
+    },
+    "ReadTextFileParams": {
+      "from": "ReadTextFileRequest",
+      "without": [
+        "sessionId"
+      ],
+      "why": "An AgentSession binds the session identifier."
+    },
+    "WriteTextFileParams": {
+      "from": "WriteTextFileRequest",
+      "without": [
+        "sessionId"
+      ],
+      "why": "An AgentSession binds the session identifier."
+    },
+    "CreateTerminalParams": {
+      "from": "CreateTerminalRequest",
+      "without": [
+        "sessionId"
+      ],
+      "why": "An AgentSession binds the session identifier."
+    },
+    "TerminalOutputParams": {
+      "from": "TerminalOutputRequest",
+      "without": [
+        "sessionId",
+        "terminalId"
+      ],
+      "why": "A Terminal binds both identifiers."
+    },
+    "WaitForTerminalExitParams": {
+      "from": "WaitForTerminalExitRequest",
+      "without": [
+        "sessionId",
+        "terminalId"
+      ],
+      "why": "A Terminal binds both identifiers."
+    },
+    "KillTerminalParams": {
+      "from": "KillTerminalRequest",
+      "without": [
+        "sessionId",
+        "terminalId"
+      ],
+      "why": "A Terminal binds both identifiers."
+    },
+    "ReleaseTerminalParams": {
+      "from": "ReleaseTerminalRequest",
+      "without": [
+        "sessionId",
+        "terminalId"
+      ],
+      "why": "A Terminal binds both identifiers."
+    }
+  }
+}

@@ -1,0 +1,292 @@
+{
+  "$comment": "Recorded by internal/cmd/interop against an agent built on the reference implementation. Written by scripts/interop.sh; replayed by interop_test.go. Do not edit.",
+  "scenario": "the workspace operations",
+  "provenance": {
+    "sdkCommit": "5dac09aaae3ebde1eaaf4a11840f7543f4806e20",
+    "sdkVersion": "1.4.0",
+    "schemaRelease": "schema-v1.21.0"
+  },
+  "observed": {
+    "updates": [
+      "agent_message_chunk:read: the file's contents",
+      "agent_message_chunk:ran: done exit=0"
+    ],
+    "permissionRequests": 0,
+    "stopReason": "end_turn",
+    "filesRead": [
+      "/w/a.txt"
+    ],
+    "filesWritten": [
+      "/w/b.txt"
+    ],
+    "terminalsCreated": 1,
+    "authRequired": false,
+    "authenticated": false
+  },
+  "messages": [
+    {
+      "from": "client",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": 1,
+          "clientCapabilities": {
+            "fs": {
+              "readTextFile": true,
+              "writeTextFile": true
+            },
+            "terminal": true,
+            "auth": {
+              "terminal": false
+            }
+          },
+          "clientInfo": {
+            "name": "acp-go-interop",
+            "version": "0.0.0"
+          }
+        }
+      }
+    },
+    {
+      "from": "agent",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentCapabilities": {
+            "loadSession": false
+          },
+          "authMethods": [
+            {
+              "id": "interop",
+              "name": "Interoperability"
+            }
+          ],
+          "agentInfo": {
+            "name": "interop-agent",
+            "version": "0.0.0"
+          }
+        }
+      }
+    },
+    {
+      "from": "client",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "session/new",
+        "params": {
+          "cwd": "/w",
+          "mcpServers": []
+        }
+      }
+    },
+    {
+      "from": "agent",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "sessionId": "interop-session"
+        }
+      }
+    },
+    {
+      "from": "client",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "session/prompt",
+        "params": {
+          "sessionId": "interop-session",
+          "prompt": [
+            {
+              "type": "text",
+              "text": "workspace"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "from": "agent",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "fs/read_text_file",
+        "params": {
+          "sessionId": "interop-session",
+          "path": "/w/a.txt"
+        }
+      }
+    },
+    {
+      "from": "client",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "result": {
+          "content": "the file's contents"
+        }
+      }
+    },
+    {
+      "from": "agent",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "interop-session",
+          "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {
+              "type": "text",
+              "text": "read: the file's contents"
+            }
+          }
+        }
+      }
+    },
+    {
+      "from": "agent",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "fs/write_text_file",
+        "params": {
+          "sessionId": "interop-session",
+          "path": "/w/b.txt",
+          "content": "written by the interop agent\n"
+        }
+      }
+    },
+    {
+      "from": "client",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {}
+      }
+    },
+    {
+      "from": "agent",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "terminal/create",
+        "params": {
+          "sessionId": "interop-session",
+          "command": "/bin/true",
+          "args": [
+            "--quiet"
+          ]
+        }
+      }
+    },
+    {
+      "from": "client",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "terminalId": "interop-terminal"
+        }
+      }
+    },
+    {
+      "from": "agent",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "terminal/wait_for_exit",
+        "params": {
+          "sessionId": "interop-session",
+          "terminalId": "interop-terminal"
+        }
+      }
+    },
+    {
+      "from": "client",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "exitCode": 0
+        }
+      }
+    },
+    {
+      "from": "agent",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "terminal/output",
+        "params": {
+          "sessionId": "interop-session",
+          "terminalId": "interop-terminal"
+        }
+      }
+    },
+    {
+      "from": "client",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "result": {
+          "output": "done\n",
+          "truncated": false
+        }
+      }
+    },
+    {
+      "from": "agent",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "terminal/release",
+        "params": {
+          "sessionId": "interop-session",
+          "terminalId": "interop-terminal"
+        }
+      }
+    },
+    {
+      "from": "client",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "result": {}
+      }
+    },
+    {
+      "from": "agent",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "interop-session",
+          "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {
+              "type": "text",
+              "text": "ran: done exit=0"
+            }
+          }
+        }
+      }
+    },
+    {
+      "from": "agent",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "stopReason": "end_turn"
+        }
+      }
+    }
+  ]
+}

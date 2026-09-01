@@ -125,7 +125,16 @@ linters:
       # encoding needs both: MarshalJSON reads, and json.Unmarshaler cannot be
       # satisfied without a pointer. It is what time.Time and net.IP do, and the
       # alternative is a value type nobody can decode into.
+      #
+      # MarshalJSON is listed even though the Unmarshal side is built in: the
+      # built-in set covers only the decoding half, so without this every
+      # generated protocol type reports the mix its json interfaces require. The
+      # value receiver on it is load-bearing rather than stylistic — an optional
+      # property holds its value, not a pointer to one, so a pointer-receiver
+      # encoder would never be found and the default struct encoding would
+      # silently replace it.
       exclusions:
+        - "*.MarshalJSON"
         - "*.UnmarshalJSON"
         - "*.UnmarshalText"
 
@@ -156,6 +165,37 @@ linters:
       # hide the complete contract they audit.
       - path: _test\.go
         linters:
+          - gocognit
+          - gocyclo
+          - maintidx
+
+      # internal/jsonrpc2 is a fork of golang.org/x/tools/internal/jsonrpc2_v2,
+      # kept as close to upstream as the removals in its doc.go allow. Its
+      # comment style and its one error type assertion are upstream's, and
+      # rewriting them would make the diff against upstream unreadable — which is
+      # the only thing that makes a fork maintainable when upstream moves.
+      - path: internal/jsonrpc2/
+        linters:
+          - errorlint
+          - revive
+          - godot
+
+      # The generated protocol types stay in the lint gate — see `generated:
+      # disable` above — and every linter that measures a decision somebody made
+      # still applies to them. These four do not measure a decision.
+      #
+      # dupl reports that two types with the same property shapes produce the
+      # same code. That is the generator's contract, not a maintenance hazard:
+      # there is one place to change, and factoring the repetition out would mean
+      # emitting helpers whose only purpose is to defeat a duplication metric.
+      #
+      # The three complexity metrics report the number of properties the schema
+      # gives a type. A decoder has one branch per property because each one
+      # recovers, defaults or fails on its own, and the alternative is one method
+      # per property — more code, more indirection, and the same total.
+      - path: \.gen\.go
+        linters:
+          - dupl
           - gocognit
           - gocyclo
           - maintidx
