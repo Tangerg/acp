@@ -181,10 +181,9 @@ func (config *ClientConfig) resolveCapabilities() (ClientCapabilities, error) {
 	return stated, nil
 }
 
-// It is the other half of the capability table: the table says which capability
-// gates which method, and this says which methods this configuration can actually
-// serve. Neither is derivable from the other, so both are written out and the
-// check is their intersection.
+// The other half of the capability table: the table says which capability gates
+// which method, this says which methods a configuration can actually serve, and
+// neither is derivable from the other. Construction checks their intersection.
 func (config *ClientConfig) implements(method string) bool {
 	switch method {
 	case methodSessionUpdate, methodSessionRequestPermission:
@@ -255,7 +254,6 @@ func (c *Client) Connect(ctx context.Context, transport Transport) (*ClientConn,
 	return conn, nil
 }
 
-// Conns iterates the connections this client has opened and not closed.
 func (c *Client) Conns() iter.Seq[*ClientConn] { return c.conns.all() }
 
 // A ClientConn is one logical connection to an agent, after initialize.
@@ -274,7 +272,6 @@ type ClientConn struct {
 	turns clientTurns
 }
 
-// initialize performs the handshake.
 func (c *ClientConn) initialize(ctx context.Context) error {
 	if !c.handshake.begin() {
 		return errors.New("acp: this connection is already initializing")
@@ -302,8 +299,6 @@ func (c *ClientConn) initialize(ctx context.Context) error {
 	})
 }
 
-// accept validates what the agent answered and publishes it, or says why the
-// connection cannot proceed.
 func (c *ClientConn) accept(request *InitializeRequest, response *InitializeResponse) error {
 	// A protocol number identifies a grammar, not a feature level whose minimum is
 	// automatically safe. This package speaks version 1 and nothing else, so an
@@ -346,7 +341,8 @@ func (c *ClientConn) Call(ctx context.Context, method string, params, result any
 	return extensionCall(ctx, c.link, method, params, result)
 }
 
-// Notify sends an extension notification. Extension methods only; see [ClientConn.Call].
+// Notify sends an extension notification. Extension methods only; see
+// [ClientConn.Call].
 func (c *ClientConn) Notify(ctx context.Context, method string, params any) error {
 	return extensionNotify(ctx, c.link, method, params)
 }
@@ -365,7 +361,6 @@ func (c *ClientConn) awaitHandshake(request *jsonrpc.Request) error {
 		"%s arrived before initialize was answered", request.Method)
 }
 
-// serve dispatches the requests an agent makes of a client.
 func (c *ClientConn) serve(ctx context.Context, request *jsonrpc.Request) (any, error) {
 	config := &c.client.config
 

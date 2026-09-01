@@ -39,7 +39,6 @@ func newRequests() *requests {
 	return &requests{serving: make(map[jsonrpc.ID]*inboundRequest)}
 }
 
-// accept puts a request on record, or says why this connection will not serve it.
 // Both refusals are terminal: an answer written under a reused identifier would
 // be ambiguous, and a peer past the in-flight bound is one this side cannot
 // follow.
@@ -58,10 +57,9 @@ func (r *requests) accept(id jsonrpc.ID, cancel context.CancelFunc) error {
 	return nil
 }
 
-// release forgets a request and stops the work descending from it. It is the last
-// step of serving one and not the first: the right to answer is held on this
-// record, so releasing it before the answer is written would throw the answer
-// away.
+// The last step of serving a request and not the first: the right to answer is
+// held on this record, so releasing it before the answer is written would throw
+// the answer away.
 func (r *requests) release(id jsonrpc.ID) {
 	r.mu.Lock()
 	request := r.serving[id]
@@ -74,9 +72,8 @@ func (r *requests) release(id jsonrpc.ID) {
 	}
 }
 
-// settlement lets cancellation preserve the peer-visible ordering of a
-// permission answer whose handler has already claimed it. A claim says who will
-// answer; this channel says the answer's write has actually settled.
+// A claim says who will answer; this says the answer's write has settled, which
+// is what cancellation needs to preserve peer-visible ordering.
 func (r *requests) settlement(id jsonrpc.ID) <-chan struct{} {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -115,8 +112,8 @@ func (r *requests) interrupt(id jsonrpc.ID) {
 	}
 }
 
-// claim takes the right to answer a request, once, and carries the wire fact
-// needed to choose that answer without exposing mutable request state.
+// The claim carries the wire fact needed to choose the answer, so that no caller
+// has to read mutable request state to make that choice.
 func (r *requests) claim(id jsonrpc.ID) (requestClaim, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

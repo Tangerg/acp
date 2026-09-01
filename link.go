@@ -142,9 +142,8 @@ func (l *link) readLoop() {
 	}
 }
 
-// admit puts one inbound request where it belongs and reports whether reading may
-// continue. Every bound a peer can push against is reached from here, because
-// this is the only place messages enter.
+// Every bound a peer can push against is reached from here, because this is the
+// only place messages enter. A false answer stops the read loop.
 func (l *link) admit(request *jsonrpc.Request) bool {
 	if !l.acceptsShape(request) {
 		return true
@@ -175,16 +174,15 @@ func (l *link) admit(request *jsonrpc.Request) bool {
 	return true
 }
 
-// overflowed ends a connection whose peer is producing faster than this side
-// delivers. The backlog is the only thing that grows here, so there is nothing
-// left to try once it is full: see limits.go for why this is not backpressure.
+// See limits.go for why a full backlog ends the connection instead of applying
+// backpressure.
 func (l *link) overflowed() {
 	l.endReading(fmt.Errorf("%w: more than %d messages are waiting to be delivered",
 		errTooManyQueued, maxQueuedDeliveries))
 }
 
 // deliverLoop owns the moment the connection becomes observably over: it is the
-// last thing to stop, so nothing it was still holding can be reported as lost.
+// last thing to stop, so nothing it still held is reported as lost.
 func (l *link) deliverLoop() {
 	defer l.life.finishDelivering(l.calls.close)
 
@@ -340,20 +338,17 @@ func (l *link) endReading(cause error) {
 	})
 }
 
-// close ends the connection, and is idempotent. It does not wait: the messages
-// already accepted are still delivered, and wait is what observes that finishing.
-//
-// It reports the connection's terminal error, which is the same value wait
-// reports. One policy rather than two.
+// It does not wait: messages already accepted are still delivered, and wait is
+// what observes that finishing.
 func (l *link) close() error {
 	l.endReading(nil)
 	<-l.life.readEnded // terminal is written before this is closed
 	return l.life.terminal
 }
 
-// These delegations exist so that the two sides collaborate with a link rather
-// than with its parts: a peer's half of the protocol has no business knowing that
-// an answer is claimed in one object and a waiter retired in another.
+// These delegations let the two sides collaborate with a link rather than with
+// its parts: a peer's half of the protocol has no business knowing that an answer
+// is claimed in one object and a waiter retired in another.
 func (l *link) wait() error     { return l.life.wait() }
 func (l *link) ended() bool     { return l.life.ended() }
 func (l *link) spawn(fn func()) { l.life.spawn(fn) }
@@ -364,6 +359,4 @@ func (l *link) claimAnswer(id jsonrpc.ID) bool {
 }
 func (l *link) interruptRequest(id jsonrpc.ID) { l.requests.interrupt(id) }
 
-// over is closed when the connection is observably finished, for callers that
-// have their own waiting to do.
 func (l *link) over() <-chan struct{} { return l.life.delivered }

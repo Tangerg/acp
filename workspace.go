@@ -119,13 +119,13 @@ type TerminalHandle struct {
 // a terminal the client has since given the same identifier to.
 var ErrTerminalReleased = errors.New("acp: this terminal has been released")
 
-// ID is the identifier the client gave this terminal.
 func (t *TerminalHandle) ID() TerminalID { return t.id }
 
-// Session is the session this terminal belongs to.
 func (t *TerminalHandle) Session() *AgentSession { return t.session }
 
-// Output reports what the command has written so far, and whether it has exited.
+// Output reports what the command has written so far, whether that output was
+// truncated to the byte limit the terminal was created with, and the exit status
+// once there is one. It does not wait; see [TerminalHandle.WaitForExit].
 func (t *TerminalHandle) Output(
 	ctx context.Context,
 	params *TerminalOutputParams,
@@ -140,7 +140,8 @@ func (t *TerminalHandle) Output(
 	return callGated[TerminalOutputResponse](ctx, t.session.conn, methodTerminalOutput, request)
 }
 
-// WaitForExit blocks until the command exits.
+// WaitForExit blocks until the command exits. The terminal is still readable
+// afterwards, because exiting is not releasing.
 func (t *TerminalHandle) WaitForExit(
 	ctx context.Context,
 	params *WaitForTerminalExitParams,
@@ -157,11 +158,6 @@ func (t *TerminalHandle) WaitForExit(
 
 // Kill stops the command without releasing the terminal, so its output can still
 // be read.
-//
-// It returns a result rather than only an error, and so does [TerminalHandle.Release],
-// because the schema's response for each is an object carrying optional _meta.
-// Returning only an error would throw the peer's data away — an empty-looking
-// response is not a discardable one.
 func (t *TerminalHandle) Kill(
 	ctx context.Context,
 	params *KillTerminalParams,
@@ -208,12 +204,9 @@ func (t *TerminalHandle) Release(
 	return response, nil
 }
 
-// callGated makes a call the peer must have advertised.
-//
-// The check is local and happens before the write. A call the peer never offered
-// is refused here rather than sent and refused there: the peer's answer would be
-// the same, and asking wastes a round trip while making a developer read a wire
-// trace to find out what they forgot.
+// The gate is checked locally, before the write. A call the peer never offered
+// would be refused there too, and asking wastes a round trip while making a
+// developer read a wire trace to find out what they forgot.
 func callGated[Response any](ctx context.Context, c *AgentConn, method string, request any) (*Response, error) {
 	response, call, err := beginGatedCall[Response](ctx, c, method, request)
 	if err != nil {

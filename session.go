@@ -38,10 +38,8 @@ type ClientSession struct {
 	conn *ClientConn
 }
 
-// ID is the identifier the agent gave this session.
 func (s *ClientSession) ID() SessionID { return s.id }
 
-// Conn is the connection this session belongs to.
 func (s *ClientSession) Conn() *ClientConn { return s.conn }
 
 // Prompt runs one turn and blocks until it ends.
@@ -162,6 +160,10 @@ func (s *ClientSession) Cancel(ctx context.Context, params *CancelParams) error 
 }
 
 // SetMode switches the agent's mode for this session.
+//
+// No capability gates it: an agent offers modes by returning them from
+// [ClientConn.NewSession], so an agent that offered none has nothing to set and
+// answers method-not-found.
 func (s *ClientSession) SetMode(ctx context.Context, params *SetModeParams) (*SetSessionModeResponse, error) {
 	request := &SetSessionModeRequest{SessionID: s.id}
 	if params != nil {
@@ -223,11 +225,11 @@ func (s *ClientSession) Close(ctx context.Context, params *CloseParams) (*CloseS
 	return response, nil
 }
 
-// NewSession creates a conversation.
+// NewSession opens a conversation.
 //
-// It returns three things because the response carries more than an identifier —
-// modes, config options and _meta — and returning only a handle would make those
-// unreachable. Three results is mildly ugly and strictly lossless.
+// It returns the response as well as the handle because the response carries more
+// than an identifier — modes, configuration options and _meta — and a handle alone
+// would put those out of reach.
 //
 // An agent that requires authentication answers this with -32000, which is control
 // flow rather than failure:
@@ -251,12 +253,13 @@ func (c *ClientConn) NewSession(
 }
 
 // LoadSession reopens a conversation the agent already has, replaying its history
-// as session/update notifications.
+// as [SessionNotification] updates before it answers.
 //
-// A connection keeps one canonical handle per session identifier, so loading an
-// identifier already seen on this connection returns that handle and all callers
-// share the same turn invariant. Loading it through a new connection returns a
-// new handle, because handles never silently move between transports.
+// Loading an identifier this connection has already seen returns the handle it
+// already has. Loading it through a different connection returns a different one:
+// handles never silently move between transports.
+//
+// Gated on agentCapabilities.loadSession.
 func (c *ClientConn) LoadSession(
 	ctx context.Context,
 	params *LoadSessionRequest,
@@ -353,7 +356,8 @@ func (c *ClientConn) DeleteSession(
 	return response, nil
 }
 
-// Authenticate performs the authentication an agent asked for.
+// Authenticate performs the authentication an agent asked for, which is how a
+// client answers [ErrAuthRequired].
 //
 // The method identifier is one of those the agent advertised in its initialize
 // response, which [ClientConn.Peer] carries. A terminal method is not one of
@@ -405,17 +409,15 @@ type AgentSession struct {
 	conn *AgentConn
 }
 
-// ID is the identifier of the session this handle names.
 func (s *AgentSession) ID() SessionID { return s.id }
 
-// Conn is the connection this session belongs to.
 func (s *AgentSession) Conn() *AgentConn { return s.conn }
 
 // Update sends the client one piece of a turn's output.
 //
-// It is a notification, so there is no response to return. Clients keep accepting
-// these after sending session/cancel, because an agent may still have final
-// tool-call updates to report.
+// A client keeps accepting these after it has sent a cancellation, because an
+// agent may still have final tool-call updates to report before it answers the
+// prompt.
 func (s *AgentSession) Update(ctx context.Context, params *SessionUpdateParams) error {
 	if params == nil {
 		return errors.New("acp: Update needs params: the update is in them")
@@ -433,9 +435,9 @@ func (s *AgentSession) Update(ctx context.Context, params *SessionUpdateParams) 
 
 // RequestPermission asks the user to approve a tool call.
 //
-// If the client cancels the turn while this is outstanding, it must answer with
-// the cancelled outcome rather than dropping the request. That obligation is the
-// client's, and this side sees it as an ordinary response.
+// A client that cancels the turn while this is outstanding answers it with the
+// cancelled outcome rather than dropping it, so this returns an outcome either
+// way and never hangs on a turn that has ended.
 func (s *AgentSession) RequestPermission(
 	ctx context.Context,
 	params *RequestPermissionParams,
@@ -469,9 +471,6 @@ func (c *AgentConn) session(id SessionID) *AgentSession {
 	return handle
 }
 
-// newSession serves session/new and builds the handle from the identifier the
-// handler returned.
-//
 // The handler receives no handle because this is the call that creates one.
 func (c *AgentConn) newSession(ctx context.Context, request *jsonrpc.Request) (any, error) {
 	result, err := dispatchCall(ctx, request, c.agent.config.NewSession)
@@ -532,7 +531,6 @@ func (x *SetSessionModeRequest) sessionID() SessionID         { return x.Session
 func (x *SetSessionConfigOptionRequest) sessionID() SessionID { return x.SessionID }
 func (x *ResumeSessionRequest) sessionID() SessionID          { return x.SessionID }
 
-// dispatchSessionCall serves a request whose handler takes a session handle.
 func dispatchSessionCall[Request sessionRequest, Response any](
 	ctx context.Context,
 	c *AgentConn,

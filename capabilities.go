@@ -193,8 +193,6 @@ var gates = gateTable{
 	},
 }
 
-// One row per session-lifecycle method, each gated by its own property of one
-// capability object.
 func sessionCapability(name string, set func(SessionCapabilities) bool) methodGate {
 	return methodGate{
 		gating:     gatingCapability,
@@ -229,8 +227,6 @@ var terminalGate = methodGate{
 	why:        `"Whether the Client support all terminal/* methods" — one flag for five methods`,
 }
 
-// exceeded lists what an advertisement promises that its side cannot serve.
-//
 // It is driven by the table rather than by a hand-written list of capability
 // fields, so a capability nobody remembered to check is not a hole: every row that
 // names a predicate is consulted, and a method this package does not implement at
@@ -262,8 +258,6 @@ func (t gateTable) exceeded(peer PeerInfo, owner methodSide, implemented func(st
 	return exceeded
 }
 
-// permits reports why a peer may not be asked to serve a method, or nil.
-//
 // A method with no row is refused: the table covers every method the schema
 // defines, so a name that is not in it is not a standard method, and an extension
 // method does not come through here.

@@ -24,8 +24,8 @@ func (l *link) call(ctx context.Context, method string, params, result any) erro
 	return l.await(ctx, call)
 }
 
-// send is separate from await because a prompt remains a live turn after its
-// original caller stops waiting.
+// Separate from await because a prompt remains a live turn after its original
+// caller has stopped waiting for it.
 func (l *link) send(
 	ctx context.Context,
 	method string,

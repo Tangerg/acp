@@ -61,8 +61,7 @@ func (q *queue) pushCall(ctx context.Context, message *jsonrpc.Request) bool {
 	return q.pushDelivery(delivery{message: message, ctx: ctx})
 }
 
-// pushDelivery reports whether the backlog still has room. A refusal is the
-// connection's to act on: the queue does not know how to end one.
+// A refusal is the connection's to act on: a queue does not know how to end one.
 func (q *queue) pushDelivery(pending delivery) bool {
 	q.mu.Lock()
 	if len(q.pending) >= maxQueuedDeliveries {

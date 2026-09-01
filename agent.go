@@ -143,13 +143,10 @@ func NewAgent(config *AgentConfig) (*Agent, error) {
 	return &Agent{config: cloned, capabilities: capabilities, auth: auth}, nil
 }
 
-// authenticate serves authenticate, holding the identifier to what this
-// connection advertised.
-//
-// The same rule as on the client side, kept here against any peer: a client that
-// does not go through this package can still name a method that was never
-// offered, and the handler would then be asked to authenticate something the
-// agent never said it could.
+// The same rule the client keeps locally, kept here against any peer: a client
+// that does not go through this package can still name a method that was never
+// offered, and the handler would otherwise be asked to authenticate something
+// this agent never said it could.
 func (c *AgentConn) authenticate(ctx context.Context, request *jsonrpc.Request) (any, error) {
 	params, err := decodeParams[AuthenticateRequest](request)
 	if err != nil {
@@ -201,8 +198,7 @@ func (config *AgentConfig) resolveCapabilities() (AgentCapabilities, error) {
 	return stated, nil
 }
 
-// implements reports whether this configuration has the handler that serves an
-// agent method. See [ClientConfig.implements].
+// See [ClientConfig.implements].
 func (config *AgentConfig) implements(method string) bool {
 	switch method {
 	case methodInitialize, methodSessionNew, methodSessionPrompt, methodSessionCancel:
@@ -230,8 +226,6 @@ func (config *AgentConfig) implements(method string) bool {
 	}
 }
 
-// clone copies every mutable value the library keeps reading after construction.
-// See [ClientConfig.clone].
 func (config *AgentConfig) clone() AgentConfig {
 	copied := *config
 	copied.Info = deepCopy(config.Info)
@@ -293,7 +287,6 @@ func (a *Agent) Run(ctx context.Context, transport Transport) error {
 	}
 }
 
-// Conns iterates the connections this agent is serving.
 func (a *Agent) Conns() iter.Seq[*AgentConn] { return a.conns.all() }
 
 // An AgentConn is one logical connection to a client.
@@ -344,7 +337,7 @@ func (c *AgentConn) awaitHandshake(ctx context.Context, method string) error {
 	}
 }
 
-// initialize prepares the answer to the handshake.
+// initialize prepares the answer without publishing it.
 //
 // It does not open the connection. What it negotiated is held until the answer
 // has been written, because an agent that started sending on the strength of its
@@ -393,7 +386,6 @@ func (c *AgentConn) initialize(request *InitializeRequest) *InitializeResponse {
 	return response
 }
 
-// serve dispatches the requests a client makes of an agent.
 func (c *AgentConn) serve(ctx context.Context, request *jsonrpc.Request) (any, error) {
 	config := &c.agent.config
 

@@ -43,8 +43,6 @@ type PeerInfo struct {
 	AgentMeta  Opt[Meta]
 }
 
-// clone returns a copy that shares nothing this package defined.
-//
 // The struct copy is not enough, and neither is a shallow clone of the slices in
 // it. Capabilities nest more than twenty reserved _meta maps inside each other,
 // the auth methods are a slice of interfaces holding pointers, and a caller who
@@ -54,8 +52,6 @@ func (p PeerInfo) clone() PeerInfo {
 	return deepCopy(p)
 }
 
-// authenticates reports why methodID may not be passed to authenticate, or nil.
-//
 // The schema says the identifier "must be one of the methods advertised in the
 // initialize response", and that a client "MUST NOT pass" a terminal method to
 // authenticate: that one is performed by running the agent again in an

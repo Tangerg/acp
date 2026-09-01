@@ -160,7 +160,7 @@ the manifest is a loop rather than an audit.
 
 ## 2. Wire — done
 
-**Delivered.** The current manifest reaches 129 of the published schema's 170
+**Delivered.** The current manifest reaches 142 of the published schema's 170
 definitions. JSON-RPC envelopes are excluded by decision, and the remaining
 definitions enter the closure only with an implemented public operation. What
 the layer turned up is under "What layer 2 found".

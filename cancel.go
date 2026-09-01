@@ -148,8 +148,6 @@ func (t *clientTurns) forgetPermission(session SessionID, id jsonrpc.ID) {
 	}
 }
 
-// beginCancel starts a cancellation and reports the turn it belongs to.
-//
 // The claim on the pending permission requests is synchronous and happens first —
 // before the notification goes out and before Cancel returns. That ordering is
 // what makes the race decidable: a user decision arriving afterwards finds the
@@ -174,8 +172,6 @@ func (t *clientTurns) beginCancellation(session SessionID) clientCancellation {
 	return clientCancellation{generation: turn.generation, pending: pending}
 }
 
-// endCancel releases a cancellation once its notification is on the wire.
-//
 // Two concurrent cancellations of one turn each hold it, so the session reopens
 // when the last of them has been sent rather than when the first returns.
 func (t *clientTurns) finishCancellation(session SessionID, generation uint64) {
@@ -313,9 +309,9 @@ func (t *agentTurns) cancel(session SessionID) (jsonrpc.ID, bool) {
 	return turn.id, false
 }
 
-// commit decides the result against cancellation exactly once. Checking a flag
-// and then writing outside the aggregate would leave a window in which both a
-// normal result and cancellation appeared to win.
+// Deciding result-against-cancellation inside the aggregate is what makes it one
+// decision: checking a flag and then writing outside would leave a window in
+// which both a normal result and a cancellation appeared to win.
 func (t *agentTurns) commit(session SessionID, id jsonrpc.ID) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -382,8 +378,8 @@ func (c *AgentConn) register(request *jsonrpc.Request) registration {
 	}
 }
 
-// Ordered admission needs the identifier and nothing else, and must not spend the
-// time to decode a whole prompt to get it.
+// Admission needs the identifier and nothing else, and must not spend the time to
+// decode a whole prompt to get it.
 func sessionOf(request *jsonrpc.Request) (SessionID, bool) {
 	var params struct {
 		SessionID *SessionID `json:"sessionId"`

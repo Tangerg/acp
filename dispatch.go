@@ -13,8 +13,8 @@ import (
 // rather than once per method.
 
 // A nil handler is method-not-found rather than a panic or a silent success: the
-// peer asked for something this side does not implement, and that is exactly what
-// -32601 means.
+// peer asked for something this side does not implement, which is what -32601
+// means.
 func dispatchCall[Request, Response any](
 	ctx context.Context,
 	request *jsonrpc.Request,

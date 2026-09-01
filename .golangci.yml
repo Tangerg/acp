@@ -169,6 +169,18 @@ linters:
           - gocyclo
           - maintidx
 
+      # revive's exported rule asks every exported identifier for a doc comment.
+      # That is the right default and it stays on, but it cannot tell a comment
+      # that carries a reason from one that repeats the name. These methods mean
+      # exactly what a Go reader already knows they mean — the codec pair, the
+      # conventional accessors, and the two collection listings — so a comment on
+      # one could only say what the signature says. Where such a method does
+      # something surprising, the surprise is documented on the type that owns it
+      # or inline at the line that causes it.
+      - text: "exported: exported (method|function) [A-Za-z.]*(MarshalJSON|UnmarshalJSON|OptValue|IsNull|Len|Delete|Conns|ID|Conn|Session)"
+        linters:
+          - revive
+
       # internal/jsonrpc2 is a fork of golang.org/x/tools/internal/jsonrpc2_v2,
       # kept as close to upstream as the removals in its doc.go allow. Its
       # comment style and its one error type assertion are upstream's, and

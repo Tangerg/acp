@@ -80,13 +80,10 @@ type ioConnection struct {
 	closeErr  error
 }
 
-// Read returns the next message.
-//
-// The context is not consulted while blocked on the underlying stream: an
-// io.Reader has no way to be interrupted, and pretending otherwise would return
-// while a goroutine stayed blocked in a read that later consumed a message
-// nobody was waiting for. Close is what unblocks a Read, which is what the
-// Connection contract asks for.
+// Read does not consult the context while blocked on the underlying stream: an
+// io.Reader cannot be interrupted, and pretending otherwise would return while a
+// goroutine stayed blocked in a read that later consumed a message nobody was
+// waiting for. Close is what unblocks it.
 func (c *ioConnection) Read(ctx context.Context) (jsonrpc.Message, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -109,8 +106,8 @@ func (c *ioConnection) Read(ctx context.Context) (jsonrpc.Message, error) {
 	}
 }
 
-// readLine reads one newline-delimited message, refusing one that is absurdly
-// long rather than growing a buffer until the process dies.
+// A message too long to be one is refused rather than grown into until the
+// process dies.
 func (c *ioConnection) readLine() ([]byte, error) {
 	var line []byte
 	for {
@@ -153,8 +150,8 @@ func (c *ioConnection) Write(ctx context.Context, message jsonrpc.Message) error
 	return nil
 }
 
-// Close closes both streams, which is what unblocks a pending Read. It is
-// idempotent, and reports the first failure rather than the last.
+// Both streams, because unblocking a pending Read is what the Connection contract
+// asks of Close and a reader has no other way to be interrupted.
 func (c *ioConnection) Close() error {
 	c.closeOnce.Do(func() {
 		c.closeErr = errors.Join(c.reader.Close(), c.writer.Close())
@@ -274,28 +271,22 @@ type commandConnection struct {
 	reapErr  error
 }
 
-// Close closes the pipes and reaps the process, on a bounded sequence.
+// Close reaps the agent on a bounded sequence; see reap.
 //
-// Closing the pipes is what releases the read loop, and it is what an agent is
-// meant to read as "no more requests are coming". An agent that takes that hint
-// exits, and the first wait reaps it.
-//
-// An agent that does not is asked, and then made, to stop. Every step has a
-// deadline, because ownership of a subprocess is not ownership if the owner can be
-// held by it: an agent that ignores end-of-input and keeps a background thread
-// alive used to block this call, and with it the client's Close, for ever.
-//
-// The process's exit status is not the connection's error. A client that closed
-// the connection expects it to be closed; an agent that exits non-zero, or dies of
-// the signal it was sent, has not failed — it has stopped. What is reported is a
-// failure to close a pipe, or a process this package could not reap at all.
+// The exit status is not reported. A client that closed the connection expects it
+// to be closed, and an agent that exits non-zero, or dies of the signal it was
+// sent, has stopped rather than failed. What is reported is a pipe that would not
+// close, or a process this package could not reap at all.
 func (c *commandConnection) Close() error {
 	closeErr := c.ioConnection.Close()
 	c.reapOnce.Do(func() { c.reapErr = c.reap() })
 	return errors.Join(closeErr, c.reapErr)
 }
 
-// reap waits for the process, escalating as long as it is still there.
+// reap escalates for as long as the process is still there: the pipes are already
+// closed, which is the polite way to say stop, then the platform's way of asking,
+// then the way that is not a request. Every step is bounded, because ownership of
+// a subprocess is not ownership if the owner can be held by it.
 func (c *commandConnection) reap() error {
 	exited := make(chan struct{})
 	go func() {

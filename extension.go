@@ -31,15 +31,12 @@ type ExtNotification struct {
 	Params json.RawMessage
 }
 
-// An unrestricted method string would be a hole straight through every invariant
-// in this package: a caller could pass session/prompt and bypass the generated
-// params type, the outbound validation, the session-ID binding and the capability
-// gate. A standard method has exactly one path through the typed codec, and this
-// is what keeps it the only one.
-//
-// If a diagnostic tool ever needs raw access to a standard method, that is a
-// separately named unsafe API and not a side effect of ordinary extension
-// support.
+// An unrestricted method string would be a hole through every invariant here: a
+// caller could pass session/prompt and bypass the generated params type, the
+// outbound validation, the session binding and the capability gate. A standard
+// method has exactly one path through the typed codec, and this keeps it the only
+// one. Raw access to a standard method, if it is ever needed, is a separately
+// named unsafe API rather than a side effect of extension support.
 func errReservedMethod(method string) error {
 	return fmt.Errorf("acp: %q is a method the specification defines, and the extension API "+
 		"does not send it: call the operation for it instead", method)

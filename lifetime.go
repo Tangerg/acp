@@ -52,14 +52,11 @@ func newLifetime() *lifetime {
 	}
 }
 
-// endReading records why the connection is over and stops the read side, once.
-//
-// Cancellation precedes release so a transport whose Close waits for handler
-// work cannot form a cycle with work that is still waiting for its context.
-// Release still runs inside because failing it is a terminal condition rather
-// than a detail for a log: a subprocess that could not be reaped is still
-// running, and a connection that answered "closed cleanly" would be reporting it
-// as gone.
+// Cancellation precedes release so that a transport whose Close waits for handler
+// work cannot form a cycle with work still waiting for its context. Release runs
+// inside because failing it is terminal rather than a detail for a log: a
+// subprocess that could not be reaped is still running, and answering "closed
+// cleanly" would report it as gone.
 func (l *lifetime) endReading(cause error, release func() error) {
 	l.endOnce.Do(func() {
 		// A clean end of stream is not a failure. Neither is a read that was
@@ -82,8 +79,6 @@ func (l *lifetime) endReading(cause error, release func() error) {
 	})
 }
 
-// finishDelivering marks the connection observably over, which is the last thing
-// that happens.
 func (l *lifetime) finishDelivering(release func()) {
 	l.mu.Lock()
 	l.stopped = true
@@ -93,9 +88,8 @@ func (l *lifetime) finishDelivering(release func()) {
 	close(l.delivered)
 }
 
-// spawn runs work the connection owns while delivery is still open. Once the
-// delivery loop has shut the work pool, no peer can observe newly scheduled
-// work, so starting it would create a goroutine Wait no longer owns.
+// Once delivery has shut the work pool no peer can observe newly scheduled work,
+// so starting any would create a goroutine Wait no longer owns.
 func (l *lifetime) spawn(fn func()) {
 	l.mu.Lock()
 	if l.stopped {
@@ -113,11 +107,9 @@ func (l *lifetime) spawn(fn func()) {
 
 func (l *lifetime) run(fn func()) { l.work.Go(fn) }
 
-// ended reports whether the connection is over, which is the read side having
-// finished rather than the delivery queue having drained.
-//
-// A connection that will accept nothing further is not open, however much is
-// still being handed to the callers that were already waiting.
+// Over means the read side has finished, not that the queue has drained: a
+// connection that will accept nothing further is not open, however much is still
+// being handed to callers already waiting.
 func (l *lifetime) ended() bool {
 	select {
 	case <-l.readEnded:
@@ -127,18 +119,12 @@ func (l *lifetime) ended() bool {
 	}
 }
 
-// wait blocks until the connection has ended and everything it owns has stopped.
-//
-// Every caller gets the same value every time. A terminal condition that reported
-// differently depending on who asked first would be unusable for deciding whether
-// to reconnect.
 func (l *lifetime) wait() error {
 	<-l.delivered
 	l.work.Wait()
 	return l.terminal
 }
 
-// failure is what an operation on an ended connection returns.
 func (l *lifetime) failure() error {
 	// terminal is final before readEnded closes. Waiting for delivery here would
 	// let an unrelated slow notification handler hold a failed write — and its

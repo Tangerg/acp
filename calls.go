@@ -60,8 +60,8 @@ func (c *calls) begin(
 	return outboundCall{id: id, completed: completed}, true
 }
 
-// deliver runs on the ordered delivery loop, so accepting a response finishes
-// before any later message can observe the state it changes.
+// Runs on the delivery loop, so accepting a response finishes before any later
+// message can observe the state it changed.
 func (c *calls) deliver(response *jsonrpc.Response) {
 	c.mu.Lock()
 	pending, waiting := c.waiting[response.ID]

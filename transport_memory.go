@@ -55,11 +55,10 @@ func (c *inMemoryConnection) Write(ctx context.Context, message jsonrpc.Message)
 	return c.write.send(ctx, message)
 }
 
-// Close closes both directions. Closing only the write side would leave the peer
-// able to send into a connection nobody is reading, and a pending Read on this
-// side blocked forever — and unblocking a pending Read is the one thing the
-// Connection contract insists Close does.
 func (c *inMemoryConnection) Close() error {
+	// Both directions. Closing only the write side would leave a pending Read here
+	// blocked for ever, which is the one thing the Connection contract insists
+	// Close does not do.
 	c.closeOnce.Do(func() {
 		c.read.close()
 		c.write.close()

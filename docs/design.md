@@ -921,9 +921,58 @@ call on the same connection and wait for it.** Its own response would be queued
 behind it. Spawning the work instead is what the session handle being valid beyond
 the handler call is for.
 
-The queue is unbounded rather than a channel with a size, because a slow handler
-must not stall the read loop: the request that would unblock it may be the next
-message on the wire.
+The queue is a slice rather than a channel with a size, because refusing to read
+until a handler finishes would deadlock the very case the rule above warns about:
+the message that releases the handler may be the next one on the wire. Its depth
+is bounded instead; see "What a connection will hold".
+
+## What a connection will hold
+
+A message's size and the time this side will wait were bounded from the start. Its
+*count* was not, and count is what a peer controls for free. Three things grew on
+nothing but inbound messages: the backlog of messages read but not yet delivered,
+the inbound calls being served at once, and the session handles the connection has
+minted.
+
+Each now has a bound, and breaching one ends the connection saying which. The
+alternatives are worse in specific ways rather than aesthetic ones. Backpressure —
+refusing to read until the backlog drains — turns the documented rule that a
+notification handler must not wait on its own connection into a real deadlock.
+Dropping messages loses protocol state silently. Answering "too busy" invents a
+code the schema does not define. A peer past one of these bounds is either hostile
+or outrunning an application that cannot keep up, and neither is recoverable in
+place.
+
+These are not memory proofs, and the code says so: a count bound multiplied by the
+64 MiB message cap is still a large number. What they remove is the two realistic
+exhaustion paths — a backlog that never drains and a population that never shrinks
+— while the size cap handles the single enormous message.
+
+The session population is the interesting one, because it is the only one that
+could not shrink at all until `session/close` was implemented. A handle cannot be
+evicted on a guess: an application may still be holding it. `session/close` is the
+protocol's own statement that a session is over, so it is also the only principled
+moment to forget one.
+
+## One link, four collaborators
+
+The connection machinery began as one object holding six responsibilities behind
+one mutex: transport I/O, the read loop, the outbound calls, the inbound requests,
+the delivery queue, and the connection's own lifetime. It is now a `link` and four
+objects, each owning one invariant and one lock:
+
+| Object | The invariant it owns |
+| --- | --- |
+| `calls` | An outbound call must not be registered after the last delivery. |
+| `requests` | An inbound request must not be forgotten before its answer is written. |
+| `queue` | Arrival order is preserved, and the backlog is bounded. |
+| `lifetime` | The work pool must not be added to after `Wait` has begun draining it. |
+
+Those are four rules, not one. A single mutex over all four said they were one,
+and the comment explaining why each field needed the others was doing the work
+that structure should do. The two sides talk to a `link` rather than to its parts,
+through one `side` interface, so a peer's half of the protocol has no business
+knowing that an answer is claimed in one object and a waiter retired in another.
 
 ## Extension methods, with standard names reserved
 

@@ -26,28 +26,27 @@ func newConnection() connection {
 	return connection{handshake: newHandshake()}
 }
 
-// Peer reports what initialize negotiated. Before initialize it is the zero value.
+// Peer reports what initialize negotiated, and the zero value before it has.
 //
-// It is a copy, all the way down. The same value backs the capability gate, and a
-// caller who could mutate it could widen its own authority.
+// It is a copy all the way down: the same value backs the capability gate, so a
+// caller able to mutate it could widen its own authority.
 func (c *connection) Peer() PeerInfo {
 	return c.handshake.Peer()
 }
 
-// Close ends the connection. It is idempotent and safe to call concurrently, and
-// it reports the connection's terminal error — the same value [connection.Wait]
-// reports.
+// Close reports the connection's terminal error rather than a close error: they
+// are the same value [connection.Wait] reports, and releasing what the connection
+// owns is part of what can fail. It is idempotent.
 func (c *connection) Close() error { return c.close() }
 
-// Wait blocks until the connection has ended and everything it owns has stopped,
-// then reports its terminal error: nil for a local close that released everything
-// and for a clean end of stream, and otherwise the first read, write or release
-// failure.
+// Wait blocks until the connection has ended and everything it owns has stopped.
+// It reports nil for a local close that released everything and for a peer that
+// hung up cleanly, and otherwise the first read, write or release failure. Every
+// caller sees the same value.
 func (c *connection) Wait() error { return c.wait() }
 
-// tooManySessions ends a connection whose peer has named more sessions than this
-// side will hold. The handle already minted is honoured so that whatever is
-// mid-flight fails on the connection ending rather than on a nil pointer.
+// The handle already minted is still honoured, so that whatever is mid-flight
+// fails on the connection ending rather than on a nil pointer.
 func (c *connection) tooManySessions() {
 	c.endReading(fmt.Errorf("%w: more than %d", errTooManySessions, maxSessionsPerConnection))
 }
@@ -94,7 +93,7 @@ func newHandshake() *handshake {
 	}
 }
 
-// begin makes renegotiation unrepresentable while capabilities may be gating
+// begin makes renegotiation unrepresentable while capabilities are already gating
 // concurrent work.
 func (h *handshake) begin() bool {
 	h.mu.Lock()
@@ -243,9 +242,8 @@ type sessions[Handle any] struct {
 	byID map[SessionID]*Handle
 }
 
-// lookup returns the handle for an identifier and whether this connection is
-// still within its bound. The handle is real either way — the caller is mid-way
-// through serving something and needs one — so a false only says the connection
+// The handle is real whether or not the bound was breached: the caller is mid-way
+// through serving something and needs one, so a false only says the connection
 // must now end.
 func (s *sessions[Handle]) lookup(id SessionID, open func(SessionID) *Handle) (*Handle, bool) {
 	s.mu.Lock()
@@ -264,8 +262,7 @@ func (s *sessions[Handle]) lookup(id SessionID, open func(SessionID) *Handle) (*
 	return handle, true
 }
 
-// forget drops a session the protocol says is over, so that a long-lived
-// connection reclaims what session/close and session/delete free.
+// forget is the only way this population shrinks; see limits.go.
 func (s *sessions[Handle]) forget(id SessionID) {
 	s.mu.Lock()
 	delete(s.byID, id)

@@ -103,8 +103,8 @@ func requestIDOf(id jsonrpc.ID) requestID {
 	}
 }
 
-// Unknown union implementations cannot name a call; every schema-defined arm,
-// including the discouraged null ID, can.
+// Every schema-defined arm can name a call, including the discouraged null one.
+// An implementation outside the union cannot.
 func jsonrpcID(id requestID) (jsonrpc.ID, bool) {
 	switch arm := id.(type) {
 	case *requestIDStr:

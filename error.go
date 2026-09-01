@@ -1,5 +1,9 @@
 package acp
 
+// The failure half of the protocol. [Error] itself is generated, because a
+// JSON-RPC error object is a wire type; what is written here is what makes it
+// usable as a Go error and what keeps its code comparable.
+
 import (
 	"encoding/json"
 	"errors"
@@ -9,12 +13,6 @@ import (
 	"github.com/Tangerg/acp/internal/jsonrpc2"
 )
 
-// Error makes the generated [Error] an error, so that a peer's failure can be
-// returned as one and inspected with errors.As.
-//
-// The type itself is generated from the schema, because it is a wire type: a
-// JSON-RPC error object with a code, a message and optional data. What is written
-// here is only what makes it usable as a Go error.
 func (x *Error) Error() string {
 	data, hasData := x.Data.Get()
 	switch {
@@ -27,12 +25,10 @@ func (x *Error) Error() string {
 	}
 }
 
-// Is compares codes, which is what makes a sentinel match a peer's error.
-//
-// Wrapping alone would only have made errors.As work, and errors.As is the wrong
-// tool for the question a caller actually asks. "Did the agent say I must
-// authenticate first?" is a question about a code, and answering it should not
-// require the caller to extract a value and compare a field.
+// Is matches on the code rather than on identity, because that is the question a
+// caller actually asks: "did the agent say I must authenticate first?" is about a
+// code, and answering it should not require extracting a value and comparing a
+// field. See [ErrAuthRequired].
 func (x *Error) Is(target error) bool {
 	var sentinel codeSentinelError
 	if errors.As(target, &sentinel) {
@@ -45,12 +41,6 @@ func (x *Error) Is(target error) bool {
 	return false
 }
 
-// String names a code, so that an error message says what went wrong rather than
-// quoting a number at the reader.
-//
-// The unknown case prints the number, because an unknown in-range code is valid:
-// the schema's ninth arm is an unrestricted int32, and a code this package has
-// never heard of still has to survive being reported.
 func (x ErrorCode) String() string {
 	switch x {
 	case ErrorCodeParseError:
@@ -70,6 +60,8 @@ func (x ErrorCode) String() string {
 	case ErrorCodeResourceNotFound:
 		return "resource not found"
 	default:
+		// An unknown in-range code is valid — the schema's last arm is an
+		// unrestricted int32 — so it has to survive being reported.
 		return "error " + strconv.FormatInt(int64(x), 10)
 	}
 }
@@ -124,12 +116,9 @@ func newError(code ErrorCode, format string, args ...any) *Error {
 }
 
 // toWire and errorFromWire are the one place the three states of Data survive the
-// JSON-RPC adapter.
-//
-// Opt exists to keep absent and null apart, and Get reports both as not present.
-// A relay that read the states through Get alone dropped an explicit null on the
-// way out and invented a present raw "null" on the way in, so the error it passed
-// on was not the error it was given.
+// JSON-RPC adapter. Reading them through [Opt.Get] alone drops an explicit null on
+// the way out and invents a present raw "null" on the way in, so an error relayed
+// between two peers is not the error it was given.
 func (x *Error) toWire() *jsonrpc2.WireError {
 	wire := &jsonrpc2.WireError{Code: int64(x.Code), Message: x.Message}
 	switch data, present := x.Data.Get(); {
