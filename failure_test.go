@@ -6,6 +6,7 @@ import (
 	"io"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Tangerg/acp"
@@ -151,4 +152,129 @@ func (t *failingClose) Close() error {
 	// do however badly the rest of it goes.
 	t.once.Do(func() { close(t.closed) })
 	return t.failure
+}
+
+// A response this side cannot write in time ends the connection.
+//
+// The deadline on a response write is this package's own, not a caller's, so its
+// expiry says the peer stopped reading. Treating it as a caller changing its mind
+// left the connection alive with a request it had failed to answer.
+func TestAResponseWriteThatTimesOutEndsTheConnection(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// A peer that asks and then stops reading. The write blocks until the
+		// deadline this package set for it, which is what the test is about; under
+		// the synthetic clock it costs nothing.
+		transport := &scriptedWrites{
+			inbound: []string{`{"jsonrpc":"2.0","id":1,"method":"session/new",` +
+				`"params":{"cwd":"/w","mcpServers":[]}}`},
+		}
+
+		conn, err := testAgent(t, nil).Connect(context.Background(), transport)
+		if err != nil {
+			t.Fatalf("Agent.Connect: %v", err)
+		}
+		defer conn.Close() //nolint:errcheck // idempotent.
+
+		if err := conn.Wait(); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Wait reported %v, want the response write's own deadline", err)
+		}
+	})
+}
+
+// A transport that reports its output closed while its input still blocks ends the
+// connection rather than waiting on a state transition nothing would start.
+func TestAClosedOutputWithABlockedInputEndsTheConnection(t *testing.T) {
+	// The handshake goes out, so the agent may send; everything after it is
+	// refused, which is a transport whose output has gone while its input has not.
+	transport := &scriptedWrites{
+		inbound: []string{`{"jsonrpc":"2.0","id":1,"method":"initialize",` +
+			`"params":{"protocolVersion":1,"clientCapabilities":{}}}`},
+		succeed: 1,
+		failure: acp.ErrConnectionClosed,
+	}
+
+	conn, err := testAgent(t, nil).Connect(context.Background(), transport)
+	if err != nil {
+		t.Fatalf("Agent.Connect: %v", err)
+	}
+	defer conn.Close() //nolint:errcheck // idempotent.
+
+	failed := make(chan error, 1)
+	go func() {
+		failed <- conn.Notify(context.Background(), "_vendor.example/thing", nil)
+	}()
+
+	select {
+	case err := <-failed:
+		if !errors.Is(err, acp.ErrConnectionClosed) {
+			t.Fatalf("Notify reported %v, want ErrConnectionClosed", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Notify never returned; the closed output never became a terminal state")
+	}
+	if err := conn.Wait(); err != nil {
+		t.Fatalf("Wait reported %v; a peer that hung up is not a failure", err)
+	}
+}
+
+// scriptedWrites delivers a fixed list of inbound messages and then blocks its
+// reads. The first succeed writes go through; everything after that fails with
+// failure, or blocks until the writer's own deadline when there is none.
+type scriptedWrites struct {
+	inbound []string
+	succeed int
+	failure error
+
+	mu      sync.Mutex
+	read    int
+	written int
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func (t *scriptedWrites) Connect(context.Context) (acp.Connection, error) {
+	t.closed = make(chan struct{})
+	return t, nil
+}
+
+func (t *scriptedWrites) Write(ctx context.Context, _ jsonrpc.Message) error {
+	t.mu.Lock()
+	t.written++
+	through := t.written <= t.succeed
+	t.mu.Unlock()
+	if through {
+		return nil
+	}
+	if t.failure != nil {
+		return t.failure
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.closed:
+		return acp.ErrConnectionClosed
+	}
+}
+
+func (t *scriptedWrites) Read(ctx context.Context) (jsonrpc.Message, error) {
+	t.mu.Lock()
+	if t.read < len(t.inbound) {
+		line := t.inbound[t.read]
+		t.read++
+		t.mu.Unlock()
+		return jsonrpc.DecodeMessage([]byte(line))
+	}
+	t.mu.Unlock()
+
+	select {
+	case <-t.closed:
+		return nil, io.EOF
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (t *scriptedWrites) Close() error {
+	t.once.Do(func() { close(t.closed) })
+	return nil
 }

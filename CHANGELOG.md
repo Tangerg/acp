@@ -75,11 +75,16 @@ both directions.
   authentication method is advertised only to a client that enabled
   `clientCapabilities.auth.terminal`; the agent's `positionEncoding` is chosen from
   the encodings the client offered, or omitted. A client refuses an encoding it
-  never offered rather than proceed under two readings of the same offsets, and
-  refuses to pass a terminal method to `authenticate` — the schema says it must
-  not, because that method is performed by running the agent in a terminal.
-  `NewAgent` correspondingly requires an `Authenticate` handler only for the
-  methods it would actually serve.
+  never offered rather than proceed under two readings of the same offsets.
+- **`authenticate` names a method the handshake advertised.** The schema says the
+  identifier "must be one of the methods advertised in the initialize response",
+  and that a terminal method must not be passed to `authenticate` at all — it is
+  performed by running the agent in a terminal. Both sides hold to it, so a peer
+  that does not go through this package cannot reach the handler with an
+  identifier the agent never offered. `NewAgent` requires an `Authenticate`
+  handler only for the methods it would actually serve, and refuses two methods
+  that share an identifier, which the schema calls unique and which a client
+  selects by.
 - **The extension boundary**: `Call`, `Notify` and fallback handlers, in both
   directions, for methods the specification does not define. A method it does
   define is refused there, because it has exactly one path through the typed codec
@@ -133,13 +138,18 @@ both directions.
   second one arriving from any peer is refused on the wire for the same reason.
   Cancelling a `Prompt` context stops *that caller* waiting; it does not end the
   turn, so the session stays claimed until the agent's answer arrives, and a
-  waiter stays behind to observe it. `Cancel` is the operation that ends a turn.
-- **Nothing is served before the handshake, on either side.** A client refuses
-  every inbound method — including extension fallbacks — until it has accepted the
-  initialize answer, because until then there is no negotiated peer to judge it
-  against. An agent refuses everything but `initialize` before one arrives, and
-  refuses to *send* anything until it has written the answer, so nothing it sends
-  can overtake the response that told the client what it agreed to.
+  waiter stays behind to observe it. `Cancel` is the operation that ends a turn,
+  and it holds the session until its notification is on the wire: `session/cancel`
+  names only a session, so a prompt that started before it went out would be the
+  turn the agent applies it to.
+- **Nothing is served before the handshake, and nothing after it is refused.** A
+  client refuses every inbound method — including extension fallbacks — that
+  reached it before the initialize answer did, and serves everything the agent was
+  entitled to send afterwards. Those are two facts: the read loop saw the order,
+  and the answer is validated and published from the delivery queue so that the
+  order survives. An agent refuses everything but `initialize` before one arrives,
+  and waits before *sending* anything until it has written the answer, so nothing
+  it sends can overtake the response that told the client what it agreed to.
 - **This package speaks protocol version 1 and no other.** An agent answers
   `initialize` with the version it implements, which is what the schema asks for —
   the version the client requested if it is supported, and its own latest

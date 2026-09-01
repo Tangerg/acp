@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/Tangerg/acp"
 	"github.com/Tangerg/acp/jsonrpc"
@@ -311,4 +312,72 @@ func answerCall(ctx context.Context, t *testing.T, stream acp.Connection, reques
 	t.Helper()
 
 	writeRaw(ctx, t, stream, fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":%s}`, idOf(t, request), result))
+}
+
+// A cancellation holds its turn until the notification is on the wire.
+//
+// session/cancel names only a session, so which turn it cancels is decided by
+// when it arrives. Releasing the session as soon as the old prompt was answered
+// let the next turn start first, and the notification the caller had already
+// asked for then cancelled it instead.
+func TestACancellationThatHasNotBeenSentStillHoldsItsTurn(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		client, err := acp.NewClient(&acp.ClientConfig{
+			SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+			RequestPermission: denyingPermission,
+		})
+		if err != nil {
+			t.Fatalf("NewClient: %v", err)
+		}
+
+		conn, stream, ctx := rawAgentFor(t, client)
+		session := openSession(ctx, t, conn, stream, "sess-1")
+
+		prompted := make(chan error, 1)
+		go func() {
+			_, err := session.Prompt(context.Background(), &acp.PromptParams{})
+			prompted <- err
+		}()
+		first := expectCall(ctx, t, stream, "session/prompt")
+
+		// Cancel starts and blocks writing its notification, because nothing is
+		// reading this end yet. That is the interval the test is about.
+		cancelled := make(chan error, 1)
+		go func() { cancelled <- session.Cancel(context.Background(), nil) }()
+
+		// The agent answers the old turn first, which is exactly the ordering that
+		// used to reopen the session.
+		answerCall(ctx, t, stream, first, `{"stopReason":"cancelled"}`)
+		if err := <-prompted; err != nil {
+			t.Fatalf("Prompt: %v", err)
+		}
+
+		// A deadline rather than nothing, so that a prompt wrongly admitted fails
+		// here instead of blocking on a write nobody is reading.
+		refused, giveUp := context.WithTimeout(context.Background(), time.Second)
+		defer giveUp()
+		if _, err := session.Prompt(refused, &acp.PromptParams{}); !errors.Is(
+			err, acp.ErrPromptInProgress,
+		) {
+			t.Fatalf("a prompt was accepted while a cancellation for the previous turn had not been "+
+				"sent, so the agent would have applied that cancellation to this turn: %v", err)
+		}
+
+		// Once the notification is out, the session is the next turn's.
+		expectNotification(ctx, t, stream, "session/cancel")
+		if err := <-cancelled; err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+
+		next := make(chan error, 1)
+		go func() {
+			_, err := session.Prompt(context.Background(), &acp.PromptParams{})
+			next <- err
+		}()
+		second := expectCall(ctx, t, stream, "session/prompt")
+		answerCall(ctx, t, stream, second, `{"stopReason":"end_turn"}`)
+		if err := <-next; err != nil {
+			t.Fatalf("the next prompt: %v", err)
+		}
+	})
 }

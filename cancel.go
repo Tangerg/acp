@@ -43,11 +43,17 @@ type clientTurn struct {
 	// running is set from the prompt being sent to the agent's answer being
 	// observed, which is not the same as this caller's patience.
 	running bool
-	// cancelling is set for as long as a cancellation is in progress. A permission
-	// request that arrives during it is answered cancelled without reaching the
-	// application: it belongs to a turn that is already over, and asking a user
-	// about it would be asking about work nobody is waiting for.
-	cancelling bool
+	// cancelled is set once this turn has been cancelled and cleared when it ends.
+	// A permission request that arrives while it is set is answered cancelled
+	// without reaching the application: it belongs to a turn that is already over,
+	// and asking a user about it would be asking about work nobody is waiting for.
+	cancelled bool
+	// sending counts the cancellations of this turn whose notification has not yet
+	// gone out, which is a different fact from the turn having been cancelled and
+	// was once the same field. The turn is not over while one is outstanding:
+	// session/cancel names only a session, so a prompt that started before the
+	// notification went out would be the turn the agent applies it to.
+	sending int
 	// pending is the permission requests this session is waiting on the user for.
 	pending map[jsonrpc.ID]struct{}
 }
@@ -59,12 +65,12 @@ func (c *ClientConn) beginTurn(session SessionID) (uint64, bool) {
 	defer c.turnsMu.Unlock()
 
 	turn := c.turnFor(session)
-	if turn.running {
+	if turn.running || turn.sending > 0 {
 		return 0, false
 	}
 	turn.generation++
 	turn.running = true
-	turn.cancelling = false
+	turn.cancelled = false
 	return turn.generation, true
 }
 
@@ -79,9 +85,9 @@ func (c *ClientConn) endTurn(session SessionID, generation uint64) {
 		return
 	}
 	turn.running = false
-	// The turn is over, so a session that was cancelling is open to the next
-	// turn's permission requests again. A session is not cancelled for ever.
-	turn.cancelling = false
+	// The turn is over, so a session that was cancelled is open to the next turn's
+	// permission requests again. A session is not cancelled for ever.
+	turn.cancelled = false
 }
 
 // Callers hold turnsMu.
@@ -104,7 +110,7 @@ func (c *ClientConn) registerPermission(session SessionID, id jsonrpc.ID) bool {
 	defer c.turnsMu.Unlock()
 
 	turn := c.turnFor(session)
-	if turn.cancelling {
+	if turn.cancelled {
 		return false
 	}
 	turn.pending[id] = struct{}{}
@@ -119,15 +125,23 @@ func (c *ClientConn) forgetPermission(session SessionID, id jsonrpc.ID) {
 	}
 }
 
-// The claim is synchronous and happens first — before the notification goes out
-// and before Cancel returns. That ordering is what makes the race decidable: a
-// user decision arriving afterwards finds the request already answered and is
-// dropped, and a permission request arriving afterwards finds the session
-// cancelling and is answered without ever reaching the application.
-func (c *ClientConn) cancelPermissions(session SessionID) {
+// beginCancel starts a cancellation and reports the turn it belongs to.
+//
+// The claim on the pending permission requests is synchronous and happens first —
+// before the notification goes out and before Cancel returns. That ordering is
+// what makes the race decidable: a user decision arriving afterwards finds the
+// request already answered and is dropped, and a permission request arriving
+// afterwards finds the session cancelling and is answered without ever reaching
+// the application.
+//
+// The turn is held until endCancel, which is what stops the next prompt starting
+// underneath a notification that has not gone out yet.
+func (c *ClientConn) beginCancel(session SessionID) uint64 {
 	c.turnsMu.Lock()
 	turn := c.turnFor(session)
-	turn.cancelling = true
+	turn.cancelled = true
+	turn.sending++
+	generation := turn.generation
 	pending := make([]jsonrpc.ID, 0, len(turn.pending))
 	for id := range turn.pending {
 		pending = append(pending, id)
@@ -142,6 +156,19 @@ func (c *ClientConn) cancelPermissions(session SessionID) {
 		if write := c.answerCancelled(id); write != nil {
 			write()
 		}
+	}
+	return generation
+}
+
+// endCancel releases a cancellation once its notification is on the wire.
+//
+// Two concurrent cancellations of one turn each hold it, so the session reopens
+// when the last of them has been sent rather than when the first returns.
+func (c *ClientConn) endCancel(session SessionID, generation uint64) {
+	c.turnsMu.Lock()
+	defer c.turnsMu.Unlock()
+	if turn := c.turns[session]; turn != nil && turn.generation == generation {
+		turn.sending--
 	}
 }
 

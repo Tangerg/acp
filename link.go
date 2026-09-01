@@ -6,17 +6,26 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/Tangerg/acp/internal/jsonrpc2"
 	"github.com/Tangerg/acp/jsonrpc"
 )
 
-// cancelRequestTimeout bounds a message this side owes the peer but no caller is
-// waiting for: the notification telling it to stop, and a response written after
-// its request's context has been cancelled. It exists so that an unresponsive peer
-// cannot hold a caller past its own deadline.
-const cancelRequestTimeout = 5 * time.Second
+// The deadlines on the two messages this side owes a peer that no caller is
+// waiting for. They exist so that an unresponsive peer cannot hold a goroutine of
+// this connection's for ever, and being this package's own is what makes their
+// expiry a fact about the connection rather than about a caller's patience.
+const (
+	// cancelRequestTimeout bounds telling a peer to stop working on a request
+	// whose caller has given up. Failing to tell it costs the peer some work.
+	cancelRequestTimeout = 5 * time.Second
+
+	// responseWriteTimeout bounds answering a request. Failing to answer leaves
+	// the peer waiting for ever, so it ends the connection.
+	responseWriteTimeout = 5 * time.Second
+)
 
 // A side is the half of the protocol a link serves.
 //
@@ -84,6 +93,17 @@ type link struct {
 	calls    *calls
 	requests *requests
 	queue    *queue
+
+	// handshakeCall and handshakeAnswered are the ordering fact a side needs to
+	// tell a message that preceded the handshake from one the peer was entitled to
+	// send.
+	//
+	// A side publishes what it negotiated on some other goroutine, and by the time
+	// it has, the read loop has moved on. The read loop is where the order is, so
+	// it records the one thing that cannot be recovered later: whether the answer
+	// had arrived yet.
+	handshakeCall     atomic.Pointer[jsonrpc.ID]
+	handshakeAnswered atomic.Bool
 }
 
 func newLink(transport Connection, half side, logger *slog.Logger) *link {
@@ -120,6 +140,9 @@ func (l *link) readLoop() {
 		case *jsonrpc.Request:
 			l.receive(message)
 		case *jsonrpc.Response:
+			if pending := l.handshakeCall.Load(); pending != nil && *pending == message.ID {
+				l.handshakeAnswered.Store(true)
+			}
 			l.queue.push(message)
 		default:
 			// The message set is closed, so this is unreachable — but a transport
@@ -218,8 +241,10 @@ func (l *link) receive(request *jsonrpc.Request) {
 		// The answer is written under the connection's context rather than this
 		// request's: the request's has just been cancelled in the case that matters
 		// most, and a cancelled turn still owes the peer an answer.
-		l.respond(request.ID, result, err) //nolint:contextcheck // deliberate; see above.
-		if entry.answered != nil {
+		written := l.respond(request.ID, result, err) //nolint:contextcheck // deliberate; see above.
+		if written && entry.answered != nil {
+			// Only when the peer has it. An agent whose initialize response never
+			// reached the client must not go on to send as though it had.
 			entry.answered()
 		}
 	})
@@ -300,7 +325,7 @@ func (l *link) call(ctx context.Context, method string, params, result any) erro
 //
 // A caller that does not go on to await must retire the identifier itself.
 func (l *link) send(ctx context.Context, method string, params any) (jsonrpc.ID, chan *jsonrpc.Response, error) {
-	id, replies, open := l.calls.begin()
+	id, replies, open := l.calls.begin(nil)
 	if !open {
 		return id, nil, l.life.failure()
 	}
@@ -314,6 +339,45 @@ func (l *link) send(ctx context.Context, method string, params any) (jsonrpc.ID,
 		return id, nil, l.writeFailure(err)
 	}
 	return id, replies, nil
+}
+
+// handshake sends the one call whose answer must be processed in the delivery
+// queue's order rather than on the caller's goroutine.
+//
+// publish runs on the delivery loop, before the loop moves on, so that everything
+// the peer sent after answering is served by a side that already knows what was
+// agreed. Doing it here rather than after the wait is the difference between
+// refusing a message the peer was entitled to send and serving it.
+func (l *link) handshake(
+	ctx context.Context,
+	method string,
+	params any,
+	publish func(*jsonrpc.Response) error,
+) error {
+	var published error
+	id, replies, open := l.calls.begin(func(response *jsonrpc.Response) {
+		published = publish(response)
+	})
+	if !open {
+		return l.failure()
+	}
+	l.handshakeCall.Store(&id)
+	request, err := jsonrpc2.NewCall(id, method, params)
+	if err != nil {
+		l.calls.retire(id)
+		return err
+	}
+	if err := l.transport.Write(ctx, request); err != nil {
+		l.calls.retire(id)
+		return l.writeFailure(err)
+	}
+
+	// The envelope first, then whatever publish made of it. The channel receive
+	// orders the write of published against this read.
+	if err := l.await(ctx, id, replies, nil); err != nil {
+		return err
+	}
+	return published
 }
 
 func (l *link) await(ctx context.Context, id jsonrpc.ID, replies <-chan *jsonrpc.Response, result any) error {
@@ -382,17 +446,20 @@ func (l *link) cancelRemotely(id jsonrpc.ID) {
 	})
 }
 
-func (l *link) respond(id jsonrpc.ID, result any, handlerErr error) {
-	if l.requests.claim(id) {
-		l.writeResponse(id, result, handlerErr)
+// respond reports whether the answer reached the transport. A request something
+// else has already answered counts as answered: one request, one response.
+func (l *link) respond(id jsonrpc.ID, result any, handlerErr error) bool {
+	if !l.requests.claim(id) {
+		return false
 	}
+	return l.writeResponse(id, result, handlerErr)
 }
 
 // writeResponse writes an answer for a request already claimed, under the
 // connection's context rather than the request's: the request's has just been
 // cancelled in the case that matters most, and a cancelled turn still owes the
 // peer an answer.
-func (l *link) writeResponse(id jsonrpc.ID, result any, handlerErr error) {
+func (l *link) writeResponse(id jsonrpc.ID, result any, handlerErr error) bool {
 	if result == nil && handlerErr == nil {
 		// A request handler that returns nothing is a bug in the dispatch table,
 		// not something to send an empty result for: every request in the schema has
@@ -407,19 +474,22 @@ func (l *link) writeResponse(id jsonrpc.ID, result any, handlerErr error) {
 		response, err = jsonrpc2.NewResponse(id, nil,
 			l.wireError(newError(ErrorCodeInternalError, "the result could not be encoded")))
 		if err != nil {
-			return
+			return false
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(l.life.ctx), cancelRequestTimeout)
+	// The deadline is this package's own, so its expiry is not a caller changing
+	// its mind: it means the peer stopped reading, and a connection whose output
+	// side has failed would otherwise go on accepting requests it can never answer.
+	// Every failure here ends the connection.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(l.life.ctx), responseWriteTimeout)
 	defer cancel()
 	if err := l.transport.Write(ctx, response); err != nil {
-		// Through the same terminal path as any other failed write. A connection
-		// whose output side has failed can otherwise go on accepting requests it can
-		// never answer, and nothing would record why.
 		l.logger.Error("acp: writing a response failed", slog.Any("error", err))
-		_ = l.writeFailure(err)
+		l.endReading(err)
+		return false
 	}
+	return true
 }
 
 // wireError decides what a peer is told about a failure.
@@ -441,15 +511,20 @@ func (l *link) wireError(err error) error {
 	return newError(ErrorCodeInternalError, "%s", ErrorCodeInternalError).toWire()
 }
 
-// writeFailure translates a transport write failure. A failed write ends the
-// logical connection, which is the Connection contract's last clause and the
-// reason this does more than return the error.
+// writeFailure translates a failed write made on a caller's behalf. A failed write
+// ends the logical connection, which is the Connection contract's last clause and
+// the reason this does more than return the error.
 func (l *link) writeFailure(err error) error {
 	switch {
 	case errors.Is(err, ErrConnectionClosed):
-		return l.life.failure()
+		// The transport says its output is gone, and its input may still be
+		// blocked. Ending first is what makes an answer available at all: failure
+		// waits for the delivery queue to drain, and nothing else would start it.
+		l.endReading(nil)
+		return l.failure()
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		// The caller's own context, not the connection's health.
+		// The caller's own context, not the connection's health. A deadline this
+		// package set is a different thing and does not come through here.
 		return err
 	default:
 		l.endReading(err)
@@ -491,6 +566,10 @@ func (l *link) failure() error                 { return l.life.failure() }
 func (l *link) claimAnswer(id jsonrpc.ID) bool { return l.requests.claim(id) }
 func (l *link) cancelRequest(id jsonrpc.ID)    { l.requests.cancel(id) }
 func (l *link) retireCall(id jsonrpc.ID)       { l.calls.retire(id) }
+
+// answeredHandshake reports whether the read loop has taken the handshake answer
+// off the transport, which is not the same as this side having published it.
+func (l *link) answeredHandshake() bool { return l.handshakeAnswered.Load() }
 
 // over is closed when the connection is observably finished, for callers that
 // have their own waiting to do.

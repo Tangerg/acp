@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Tangerg/acp"
 )
@@ -211,4 +212,42 @@ func text(t *testing.T, value any) string {
 		t.Fatalf("encoding %v: %v", reflect.TypeOf(value), err)
 	}
 	return string(encoded)
+}
+
+// A value the copy cannot rebuild is shared rather than replaced by its zero.
+//
+// copyValue used to walk into any struct and set the fields it could reach, which
+// silently dropped everything unexported. A time.Time is nothing but unexported
+// state, so a _meta carrying one sent the zero time on the wire — a wrong value,
+// which is worse than a shared one.
+func TestCopyingAValueItCannotRebuildKeepsIt(t *testing.T) {
+	stamp := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	client, err := acp.NewClient(&acp.ClientConfig{
+		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		RequestPermission: denyingPermission,
+		Meta:              acp.Meta{"stamp": stamp, "nested": map[string]any{"stamp": stamp}},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	session := connectAndOpen(t, client, testAgent(t, nil))
+
+	meta, ok := session.Conn().Peer().ClientMeta.Get()
+	if !ok {
+		t.Fatal("the snapshot carries no client _meta")
+	}
+	kept, isTime := meta["stamp"].(time.Time)
+	if !isTime {
+		t.Fatalf("the timestamp came back as %#v", meta["stamp"])
+	}
+	if !kept.Equal(stamp) {
+		t.Fatalf("the timestamp came back as %v, want %v", kept, stamp)
+	}
+	nested, ok := meta["nested"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested came back as %#v", meta["nested"])
+	}
+	if inner, isTime := nested["stamp"].(time.Time); !isTime || !inner.Equal(stamp) {
+		t.Fatalf("the nested timestamp came back as %#v", nested["stamp"])
+	}
 }

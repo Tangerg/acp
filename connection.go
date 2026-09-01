@@ -18,9 +18,22 @@ import (
 type connection struct {
 	*link
 
-	peerMu      sync.Mutex
-	peer        PeerInfo
-	initialized bool
+	peerMu sync.Mutex
+	peer   PeerInfo
+	// negotiating is the claim on the handshake, which is separate from settled
+	// because a second initialize has to be refused while the first is still being
+	// answered.
+	negotiating bool
+	// settled is closed once this side knows what was negotiated. A channel rather
+	// than a flag, because one of the two sides has to wait on it: a message
+	// dispatched on a goroutine of its own has left the ordering that would
+	// otherwise decide whether it came before the handshake or after it.
+	settled     chan struct{}
+	settledOnce sync.Once
+}
+
+func newConnection() connection {
+	return connection{settled: make(chan struct{})}
 }
 
 // Peer reports what initialize negotiated. Before initialize it is the zero value.
@@ -46,15 +59,33 @@ func (c *connection) Wait() error { return c.wait() }
 
 func (c *connection) negotiated(peer PeerInfo) {
 	c.peerMu.Lock()
-	defer c.peerMu.Unlock()
 	c.peer = peer
-	c.initialized = true
+	c.peerMu.Unlock()
+	c.settledOnce.Do(func() { close(c.settled) })
+}
+
+// claimHandshake takes the right to settle this connection, once.
+//
+// A second initialize is not a re-negotiation: the capabilities already gate work
+// in flight, and letting them change under one would make an authority boundary
+// depend on timing.
+func (c *connection) claimHandshake() bool {
+	c.peerMu.Lock()
+	defer c.peerMu.Unlock()
+	if c.negotiating {
+		return false
+	}
+	c.negotiating = true
+	return true
 }
 
 func (c *connection) isInitialized() bool {
-	c.peerMu.Lock()
-	defer c.peerMu.Unlock()
-	return c.initialized
+	select {
+	case <-c.settled:
+		return true
+	default:
+		return false
+	}
 }
 
 // sessions is one handle per identifier per connection.

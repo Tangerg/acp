@@ -242,7 +242,7 @@ func (c *Client) Connect(ctx context.Context, transport Transport) (*ClientConn,
 		return nil, err
 	}
 
-	conn := &ClientConn{client: c}
+	conn := &ClientConn{connection: newConnection(), client: c}
 	conn.link = newLink(stream, conn, c.config.Logger)
 	conn.run()
 
@@ -294,11 +294,21 @@ func (c *ClientConn) initialize(ctx context.Context) error {
 		request.Meta = OptValue(maps.Clone(c.client.config.Meta))
 	}
 
-	var response InitializeResponse
-	if err := c.call(ctx, methodInitialize, request, &response); err != nil {
-		return err
-	}
+	// The answer is checked and published from the delivery loop, so that anything
+	// the agent sent after answering is served by a connection that already knows
+	// what was agreed. See link.handshake.
+	return c.handshake(ctx, methodInitialize, request, func(answer *jsonrpc.Response) error {
+		var response InitializeResponse
+		if err := decodeResponse(answer, &response); err != nil {
+			return err
+		}
+		return c.accept(request, &response)
+	})
+}
 
+// accept validates what the agent answered and publishes it, or says why the
+// connection cannot proceed.
+func (c *ClientConn) accept(request *InitializeRequest, response *InitializeResponse) error {
 	// A protocol number identifies a grammar, not a feature level whose minimum is
 	// automatically safe. This package speaks version 1 and nothing else, so an
 	// answer of anything else — higher or lower — is an agent asking to be spoken
@@ -348,17 +358,39 @@ func (c *ClientConn) Notify(ctx context.Context, method string, params any) erro
 	return extensionNotify(ctx, c.link, method, params)
 }
 
+// awaitHandshake holds an inbound message until this side knows what was
+// negotiated, or refuses one that genuinely arrived first.
+//
+// Those are two different questions and the connection answers them from two
+// places. Whether the message arrived first is the read loop's, which saw both it
+// and the handshake answer in the order the agent sent them. Whether this side has
+// published what it read is the delivery loop's, and a request is dispatched on a
+// goroutine of its own — so that a permission answer is not queued behind a stream
+// of updates — which takes it out of that ordering and leaves it to wait.
+func (c *ClientConn) awaitHandshake(ctx context.Context, request *jsonrpc.Request) error {
+	if c.isInitialized() {
+		return nil
+	}
+	if !c.answeredHandshake() {
+		return newError(ErrorCodeInvalidRequest,
+			"%s arrived before initialize was answered", request.Method)
+	}
+	select {
+	case <-c.settled:
+		return nil
+	case <-c.over():
+		return newError(ErrorCodeInvalidRequest, "the connection ended during initialize")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // serve dispatches the requests an agent makes of a client.
 func (c *ClientConn) serve(ctx context.Context, request *jsonrpc.Request) (any, error) {
 	config := &c.client.config
 
-	// Nothing is served before initialize has been answered and accepted. The read
-	// loop is running by then only because the answer arrives on it; a peer that
-	// sends anything else first is asking for work to be done under capabilities
-	// nobody has exchanged, and the handlers would see it before Connect returned.
-	if !c.isInitialized() {
-		return nil, newError(ErrorCodeInvalidRequest,
-			"%s arrived before initialize was answered", request.Method)
+	if err := c.awaitHandshake(ctx, request); err != nil {
+		return nil, err
 	}
 
 	// The capability gate first, and in this direction too. Capabilities are an

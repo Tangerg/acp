@@ -161,7 +161,11 @@ func (s *ClientSession) Cancel(ctx context.Context, params *CancelParams) error 
 	// The pending permission requests are claimed and answered first — before the
 	// notification goes out and before this returns. See cancel.go.
 	//nolint:contextcheck // the answers are the connection's obligation, not this caller's.
-	s.conn.cancelPermissions(s.id)
+	generation := s.conn.beginCancel(s.id)
+	// And the turn is held until the notification is on the wire. It names only
+	// the session, so a prompt that started before it went out would be the turn
+	// the agent applies it to.
+	defer s.conn.endCancel(s.id, generation)
 
 	notification := &CancelNotification{SessionID: s.id}
 	if params != nil {
@@ -252,13 +256,8 @@ func (c *ClientConn) Authenticate(
 	if params == nil {
 		params = &AuthenticateRequest{}
 	}
-	for _, method := range c.Peer().AuthMethods {
-		terminal, isTerminal := method.(*AuthMethodTerminal)
-		if isTerminal && terminal.ID == params.MethodID {
-			return nil, newError(ErrorCodeInvalidParams,
-				"%s is a terminal authentication method, which is performed by running the agent "+
-					"in a terminal rather than by calling authenticate", params.MethodID)
-		}
+	if err := c.Peer().authenticates(params.MethodID); err != nil {
+		return nil, err
 	}
 	response := new(AuthenticateResponse)
 	if err := c.call(ctx, methodAuthenticate, params, response); err != nil {

@@ -24,7 +24,7 @@ import (
 // still win. Now the session is closed to new registrations for as long as the
 // cancellation is in progress.
 func TestAPermissionRequestArrivingDuringCancellationIsAnsweredCancelled(t *testing.T) {
-	conn := &ClientConn{}
+	conn := newTestClientConn()
 	const session SessionID = "sess-1"
 
 	first := jsonrpc2.Int64ID(1)
@@ -34,20 +34,25 @@ func TestAPermissionRequestArrivingDuringCancellationIsAnsweredCancelled(t *test
 
 	// Cancelling closes the session. What was pending is claimed; what arrives
 	// next is refused registration and answered by the caller.
-	conn.turnsMu.Lock()
-	conn.turns[session].cancelling = true
-	conn.turnsMu.Unlock()
+	generation := conn.beginCancel(session)
 
 	if conn.registerPermission(session, jsonrpc2.Int64ID(2)) {
 		t.Fatal("a permission request registered while the session was cancelling, so it would " +
 			"have reached the application and its answer would then have been thrown away")
 	}
 
+	// The cancellation being on the wire is not the turn being over: until the
+	// agent answers the prompt it may still ask, and the answer is still cancelled.
+	conn.endCancel(session, generation)
+	if conn.registerPermission(session, jsonrpc2.Int64ID(3)) {
+		t.Fatal("a permission request reached the application after the cancellation was sent " +
+			"but before the turn it cancelled had ended")
+	}
+
 	// And the session reopens when the turn ends, because a session is not
 	// cancelled for ever: the next prompt is a new turn.
-	generation := conn.turns[session].generation
 	conn.endTurn(session, generation)
-	if !conn.registerPermission(session, jsonrpc2.Int64ID(3)) {
+	if !conn.registerPermission(session, jsonrpc2.Int64ID(4)) {
 		t.Fatal("the session stayed closed after the cancelled turn ended")
 	}
 }
@@ -147,11 +152,16 @@ func TestASecondPromptForOneSessionIsRefused(t *testing.T) {
 
 const promptParams = `{"sessionId":"sess-1","prompt":[]}`
 
-// newTestAgentConn is an agent connection with a link but no transport: enough
-// for the registration and turn state these tests drive directly, and nothing
-// that would need a peer.
+// The two connections these tests drive directly: a link with no transport, which
+// is enough for registration and turn state and nothing that would need a peer.
 func newTestAgentConn() *AgentConn {
-	conn := &AgentConn{opened: make(chan struct{})}
+	conn := &AgentConn{connection: newConnection(), opened: make(chan struct{})}
+	conn.link = newLink(nil, conn, nil)
+	return conn
+}
+
+func newTestClientConn() *ClientConn {
+	conn := &ClientConn{connection: newConnection()}
 	conn.link = newLink(nil, conn, nil)
 	return conn
 }

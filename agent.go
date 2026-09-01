@@ -105,6 +105,34 @@ func NewAgent(config *AgentConfig) (*Agent, error) {
 	return &Agent{config: config.clone(), capabilities: capabilities}, nil
 }
 
+// authenticate serves authenticate, holding the identifier to what this
+// connection advertised.
+//
+// The same rule as on the client side, kept here against any peer: a client that
+// does not go through this package can still name a method that was never
+// offered, and the handler would then be asked to authenticate something the
+// agent never said it could.
+func (c *AgentConn) authenticate(ctx context.Context, request *jsonrpc.Request) (any, error) {
+	params, err := decodeParams[AuthenticateRequest](request)
+	if err != nil {
+		return nil, err
+	}
+	if refusal := c.Peer().authenticates(params.MethodID); refusal != nil {
+		return nil, refusal
+	}
+	if c.agent.config.Authenticate == nil {
+		return nil, newError(ErrorCodeMethodNotFound, "%s is not implemented here", request.Method)
+	}
+	response, err := c.agent.config.Authenticate(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	if response == nil {
+		return nil, newError(ErrorCodeInternalError, "the handler for %s returned nothing", request.Method)
+	}
+	return response, nil
+}
+
 // checkAuthMethods holds the handler requirement to the methods that need one.
 //
 // A terminal method is not served by this agent at all: the client runs the agent
@@ -113,18 +141,40 @@ func NewAgent(config *AgentConfig) (*Agent, error) {
 // a valid terminal-only agent, while the arm that does need the handler is the
 // agent one.
 func (config *AgentConfig) checkAuthMethods() error {
-	if config.Authenticate != nil {
-		return nil
-	}
+	seen := make(map[AuthMethodID]struct{}, len(config.AuthMethods))
 	for _, method := range config.AuthMethods {
-		if _, terminal := method.(*AuthMethodTerminal); terminal {
-			continue
+		id, handled := authMethodID(method)
+		if _, duplicate := seen[id]; duplicate {
+			// The schema describes the identifier as unique, and a client picks by
+			// it: a terminal entry sharing a name with an agent-handled one makes
+			// the agent-handled flow unreachable.
+			return fmt.Errorf("acp: two authentication methods share the identifier %q, "+
+				"which a client selects by", id)
 		}
-		return errors.New("acp: this agent offers an authentication method it handles itself and has " +
-			"no Authenticate handler, so a client that took it up would be refused the method it was " +
-			"told to call")
+		seen[id] = struct{}{}
+
+		if handled && config.Authenticate == nil {
+			return errors.New("acp: this agent offers an authentication method it handles itself and " +
+				"has no Authenticate handler, so a client that took it up would be refused the method " +
+				"it was told to call")
+		}
 	}
 	return nil
+}
+
+// authMethodID reports a method's identifier and whether this agent is the one
+// that serves it. A terminal method is not served here at all: the client runs
+// the agent again as an interactive process, and the schema says the client "MUST
+// NOT pass this method to authenticate".
+func authMethodID(method AuthMethod) (id AuthMethodID, handledHere bool) {
+	switch method := method.(type) {
+	case *AuthMethodAgent:
+		return method.ID, true
+	case *AuthMethodTerminal:
+		return method.ID, false
+	default:
+		return "", false
+	}
 }
 
 func (config *AgentConfig) resolveCapabilities() (AgentCapabilities, error) {
@@ -186,7 +236,7 @@ func (a *Agent) Connect(ctx context.Context, transport Transport) (*AgentConn, e
 		return nil, err
 	}
 
-	conn := &AgentConn{agent: a, opened: make(chan struct{})}
+	conn := &AgentConn{connection: newConnection(), agent: a, opened: make(chan struct{})}
 	conn.link = newLink(stream, conn, a.config.Logger)
 	conn.run()
 
@@ -306,13 +356,7 @@ func (c *AgentConn) awaitHandshake(ctx context.Context, method string) error {
 // it, and the position encoding is "selected by the agent from the client's
 // supported encodings".
 func (c *AgentConn) initialize(request *InitializeRequest) (*InitializeResponse, error) {
-	c.peerMu.Lock()
-	defer c.peerMu.Unlock()
-
-	if c.initialized {
-		// A second initialize is not a re-negotiation. The capabilities already
-		// gate work in flight, and letting them change under it would make the
-		// authority boundary depend on timing.
+	if !c.claimHandshake() {
 		return nil, newError(ErrorCodeInvalidRequest, "this connection is already initialized")
 	}
 
@@ -342,7 +386,7 @@ func (c *AgentConn) initialize(request *InitializeRequest) (*InitializeResponse,
 		response.Meta = OptValue(deepCopy(c.agent.config.Meta))
 	}
 
-	c.peer = PeerInfo{
+	c.negotiated(PeerInfo{
 		ProtocolVersion:    version,
 		ClientCapabilities: deepCopy(request.ClientCapabilities),
 		ClientInfo:         request.ClientInfo,
@@ -351,8 +395,7 @@ func (c *AgentConn) initialize(request *InitializeRequest) (*InitializeResponse,
 		AgentInfo:          response.AgentInfo,
 		AgentMeta:          response.Meta,
 		AuthMethods:        response.AuthMethods,
-	}
-	c.initialized = true
+	})
 	return response, nil
 }
 
@@ -426,7 +469,7 @@ func (c *AgentConn) serve(ctx context.Context, request *jsonrpc.Request) (any, e
 
 	switch request.Method {
 	case methodAuthenticate:
-		return dispatchCall(ctx, request, config.Authenticate)
+		return c.authenticate(ctx, request)
 	case methodSessionNew:
 		return c.newSession(ctx, request)
 	case methodSessionLoad:

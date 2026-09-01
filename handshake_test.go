@@ -380,3 +380,219 @@ func TestAnAgentWaitsForTheHandshakeRatherThanRefusing(t *testing.T) {
 		})
 	})
 }
+
+// A client serves what the agent sent after answering, and refuses what came
+// before.
+//
+// Those are two facts and the client used to have one. It published the
+// negotiated peer on the goroutine that called Connect, which runs after the read
+// loop has queued the answer and after the delivery loop has handed it over — so
+// the agent's next message could be refused for arriving before a handshake that
+// had already been answered. Publication is now part of ordered delivery, and
+// whether a message preceded the answer is the read loop's to say.
+func TestAClientServesWhatTheAgentSendsAfterAnswering(t *testing.T) {
+	// Repeated, because the failure it guards against was a race between three
+	// goroutines and one run proves little.
+	for range 100 {
+		heard := make(chan string, 4)
+		client, err := acp.NewClient(&acp.ClientConfig{
+			SessionUpdate: func(context.Context, *acp.SessionNotification) {
+				heard <- "session/update"
+			},
+			RequestPermission: denyingPermission,
+			CallFallback: func(_ context.Context, request *acp.ExtRequest) (json.RawMessage, error) {
+				heard <- request.Method
+				return json.RawMessage(`{}`), nil
+			},
+			NotifyFallback: func(_ context.Context, notification *acp.ExtNotification) {
+				heard <- notification.Method
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewClient: %v", err)
+		}
+
+		stream, connected, ctx := rawAgentPending(t, client)
+		handshake := expectCall(ctx, t, stream, "initialize")
+
+		// The answer, then a request and a notification with no gap: an agent may
+		// send both the moment its answer is on the wire.
+		answerCall(ctx, t, stream, handshake, fmt.Sprintf(`{"protocolVersion":%d}`, acp.CurrentProtocolVersion))
+		writeRaw(ctx, t, stream, `{"jsonrpc":"2.0","method":"_vendor.example/after","params":{}}`)
+		answered := roundTrip(ctx, t, stream, 900, "_vendor.example/asked", `{}`)
+
+		result := <-connected
+		if result.err != nil {
+			t.Fatalf("Client.Connect: %v", result.err)
+		}
+		if answered.Error != nil {
+			t.Fatalf("an extension call sent after the answer was refused: %v", answered.Error)
+		}
+
+		reached := map[string]bool{}
+		for range 2 {
+			select {
+			case method := <-heard:
+				reached[method] = true
+			case <-ctx.Done():
+				t.Fatalf("only %v reached the application", reached)
+			}
+		}
+		if !reached["_vendor.example/after"] || !reached["_vendor.example/asked"] {
+			t.Fatalf("the application saw %v", reached)
+		}
+		if err := result.conn.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}
+}
+
+// The identifier passed to authenticate is one the handshake advertised.
+//
+// The schema says it "must be one of the methods advertised in the initialize
+// response". The client refused a terminal method and sent an unknown one; the
+// agent dispatched an unknown one straight to the application, which is what a
+// peer that does not go through this package would do.
+func TestAuthenticateIsHeldToTheAdvertisedMethods(t *testing.T) {
+	advertised := []acp.AuthMethod{
+		&acp.AuthMethodAgent{ID: "oauth", Name: "Sign in"},
+		&acp.AuthMethodTerminal{ID: "tui", Name: "Sign in with a terminal"},
+	}
+
+	tests := map[string]struct {
+		methodID acp.AuthMethodID
+		accepted bool
+		says     string
+	}{
+		"an advertised agent method": {methodID: "oauth", accepted: true},
+		"a terminal method":          {methodID: "tui", says: "terminal"},
+		"a method nobody advertised": {methodID: "guess", says: "not one of the authentication methods"},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			served := make(chan acp.AuthMethodID, 1)
+			agent, err := acp.NewAgent(&acp.AgentConfig{
+				AuthMethods: advertised,
+				Authenticate: func(
+					_ context.Context,
+					request *acp.AuthenticateRequest,
+				) (*acp.AuthenticateResponse, error) {
+					served <- request.MethodID
+					return &acp.AuthenticateResponse{}, nil
+				},
+				NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+					return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
+				},
+				Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
+					return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+				},
+				Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
+			})
+			if err != nil {
+				t.Fatalf("NewAgent: %v", err)
+			}
+			client, err := acp.NewClient(&acp.ClientConfig{
+				SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+				RequestPermission: denyingPermission,
+				Capabilities:      &acp.ClientCapabilities{Auth: acp.AuthCapabilities{Terminal: true}},
+			})
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			conn := connectAndOpen(t, client, agent).Conn()
+
+			_, err = conn.Authenticate(context.Background(), &acp.AuthenticateRequest{MethodID: test.methodID})
+			if test.accepted {
+				if err != nil {
+					t.Fatalf("Authenticate: %v", err)
+				}
+				if got := <-served; got != test.methodID {
+					t.Fatalf("the agent served %q", got)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("the client sent an identifier the handshake did not offer")
+			}
+			if !strings.Contains(err.Error(), test.says) {
+				t.Errorf("refused with %v, which does not say why", err)
+			}
+			select {
+			case got := <-served:
+				t.Fatalf("the agent's handler was asked to authenticate %q", got)
+			default:
+			}
+		})
+	}
+}
+
+// The same rule on ingress, for a peer that does not go through this package's
+// client.
+func TestAnAgentRefusesAnUnadvertisedAuthenticationMethod(t *testing.T) {
+	served := make(chan acp.AuthMethodID, 1)
+	agent, err := acp.NewAgent(&acp.AgentConfig{
+		AuthMethods: []acp.AuthMethod{&acp.AuthMethodAgent{ID: "oauth", Name: "Sign in"}},
+		Authenticate: func(_ context.Context, request *acp.AuthenticateRequest) (*acp.AuthenticateResponse, error) {
+			served <- request.MethodID
+			return &acp.AuthenticateResponse{}, nil
+		},
+		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
+		},
+		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
+			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+		},
+		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	_, stream, ctx := rawClientFor(t, agent)
+	initializeRaw(ctx, t, stream)
+
+	refused := roundTrip(ctx, t, stream, 2, "authenticate", `{"methodId":"guess"}`)
+	if refused.Error == nil {
+		t.Fatal("an identifier this agent never advertised reached the application")
+	}
+	select {
+	case got := <-served:
+		t.Fatalf("the handler was asked to authenticate %q", got)
+	default:
+	}
+
+	if accepted := roundTrip(ctx, t, stream, 3, "authenticate", `{"methodId":"oauth"}`); accepted.Error != nil {
+		t.Fatalf("the advertised method was refused: %v", accepted.Error)
+	}
+	if got := <-served; got != "oauth" {
+		t.Fatalf("the handler served %q", got)
+	}
+}
+
+// Two authentication methods cannot share an identifier, because a client selects
+// by it.
+func TestDuplicateAuthenticationIdentifiersAreRefused(t *testing.T) {
+	_, err := acp.NewAgent(&acp.AgentConfig{
+		AuthMethods: []acp.AuthMethod{
+			&acp.AuthMethodTerminal{ID: "same", Name: "Sign in with a terminal"},
+			&acp.AuthMethodAgent{ID: "same", Name: "Sign in"},
+		},
+		Authenticate: func(context.Context, *acp.AuthenticateRequest) (*acp.AuthenticateResponse, error) {
+			return &acp.AuthenticateResponse{}, nil
+		},
+		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
+		},
+		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
+			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+		},
+		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
+	})
+	if err == nil {
+		t.Fatal("an agent advertised two methods under one identifier, so the agent-handled one " +
+			"could never be selected")
+	}
+	if !strings.Contains(err.Error(), "share the identifier") {
+		t.Errorf("NewAgent failed with %v, which does not say why", err)
+	}
+}

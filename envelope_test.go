@@ -265,9 +265,14 @@ func answerHandshake(ctx context.Context, stream acp.Connection) error {
 	if !ok || request.Method != "initialize" {
 		return fmt.Errorf("the client opened with %v", opening)
 	}
+	// One advertised authentication method, because a client will not send an
+	// identifier the handshake did not offer and several tests use authenticate as
+	// the simplest round trip there is.
 	answer, err := jsonrpc.EncodeMessage(&jsonrpc.Response{
-		ID:     request.ID,
-		Result: []byte(fmt.Sprintf(`{"protocolVersion":%d}`, acp.CurrentProtocolVersion)),
+		ID: request.ID,
+		Result: []byte(fmt.Sprintf(
+			`{"protocolVersion":%d,"authMethods":[{"id":"oauth","name":"Sign in"}]}`,
+			acp.CurrentProtocolVersion)),
 	})
 	if err != nil {
 		return err

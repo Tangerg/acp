@@ -1,18 +1,26 @@
 package acp
 
-// PeerInfo is an immutable snapshot of what initialize negotiated.
+// PeerInfo is a snapshot of what initialize negotiated.
 //
 // Capabilities are an authority boundary rather than presentation metadata: they
 // decide whether an agent may read a file or run a command. So this is handed out
-// as a copy. The same value backs the capability gate, and a caller who could
-// mutate it could widen its own authority.
+// as a copy, all the way down. The same value backs the capability gate, and a
+// caller who could mutate it could widen its own authority.
+//
+// The copy covers everything the schema defines. It does not cover a value a
+// caller put in a _meta map that reflection cannot rebuild — a struct that keeps
+// its state unexported — because rebuilding one of those returns the zero value
+// of everything it hides, and a shared value is a smaller problem than a silently
+// wrong one.
 //
 // Both halves are here whichever side holds it. A client needs the agent's
 // capabilities to know what it may call, and its own to know what it promised;
 // the agent needs exactly the same two facts from the other direction.
 type PeerInfo struct {
-	// ProtocolVersion is the version initialize settled on, which is the lower of
-	// what the two peers can speak.
+	// ProtocolVersion is the version initialize settled on, which is always
+	// [CurrentProtocolVersion]: a protocol number names a grammar rather than a
+	// feature level, so this package speaks the one it implements or refuses the
+	// connection. See [CurrentProtocolVersion].
 	ProtocolVersion ProtocolVersion
 
 	// ClientCapabilities is what the client advertised. It gates the methods an
@@ -41,13 +49,41 @@ type PeerInfo struct {
 	AgentMeta  Opt[Meta]
 }
 
-// clone returns a copy that shares nothing mutable with the original.
+// clone returns a copy that shares nothing this package defined.
 //
 // The struct copy is not enough, and neither is a shallow clone of the slices in
 // it. Capabilities nest more than twenty reserved _meta maps inside each other,
 // the auth methods are a slice of interfaces holding pointers, and a caller who
 // could reach any of them would be holding the same memory the connection reads.
-// See clone.go for why this is one reflective copy rather than a method per type.
+// See clone.go for why this is one reflective copy rather than a method per type,
+// and for the one thing it shares: a value a caller put in a _meta map that
+// reflection cannot rebuild.
 func (p PeerInfo) clone() PeerInfo {
 	return deepCopy(p)
+}
+
+// authenticates reports why methodID may not be passed to authenticate, or nil.
+//
+// The schema says the identifier "must be one of the methods advertised in the
+// initialize response", and that a client "MUST NOT pass" a terminal method to
+// authenticate: that one is performed by running the agent again in an
+// interactive terminal, so there is no call to make. An unadvertised identifier
+// is the client guessing, which is the thing AuthMethods exists to stop.
+func (p PeerInfo) authenticates(methodID AuthMethodID) error {
+	for _, method := range p.AuthMethods {
+		switch method := method.(type) {
+		case *AuthMethodAgent:
+			if method.ID == methodID {
+				return nil
+			}
+		case *AuthMethodTerminal:
+			if method.ID == methodID {
+				return newError(ErrorCodeInvalidParams,
+					"%s is a terminal authentication method, which is performed by running the agent "+
+						"in a terminal rather than by calling authenticate", methodID)
+			}
+		}
+	}
+	return newError(ErrorCodeInvalidParams,
+		"%s is not one of the authentication methods advertised in the initialize response", methodID)
 }
