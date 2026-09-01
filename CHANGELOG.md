@@ -140,9 +140,16 @@ both directions.
   ownership.
 - **The generated protocol types**, from `schema/schema.json` at upstream release
   `schema-v1.21.0`. Generation now reaches every operation the API implements —
-  129 of the published schema's 170 definitions. JSON-RPC envelopes are
+  142 of the published schema's 170 definitions. JSON-RPC envelopes are
   deliberately not generated: `internal/jsonrpc2` owns JSON-RPC's grammar, and a
   second set of types for it would be two sources of truth.
+
+- **Examples that run.** Every example in the package documentation is a working
+  program with both peers in one process over `acp.NewInMemoryTransports`, so
+  `go test` fails when one goes stale: a turn, a cancellation and the stop reason
+  it obliges, authentication, a terminal handle's life, extension methods, `Opt`
+  and `Meta`. `examples/` has an agent binary and a client that spawns it, which
+  is the same code over a real pipe between two processes.
 
 ### Changed
 

@@ -12,16 +12,12 @@
 //
 // # Building a client
 //
+// A client is a [ClientConfig] of handlers — what an agent may ask of the
+// workspace and of the user — and a transport to reach the agent over:
+//
 //	client, err := acp.NewClient(&acp.ClientConfig{
-//		SessionUpdate: func(ctx context.Context, n *acp.SessionNotification) {
-//			// The agent's running commentary for a turn.
-//		},
-//		RequestPermission: func(ctx context.Context, r *acp.RequestPermissionRequest) (*acp.RequestPermissionResponse, error) {
-//			// Ask the user. There is no outcome this package may assume for you.
-//			return &acp.RequestPermissionResponse{
-//				Outcome: &acp.SelectedPermissionOutcome{OptionID: r.Options[0].OptionID},
-//			}, nil
-//		},
+//		SessionUpdate:     render, // the agent's running commentary for a turn
+//		RequestPermission: ask,    // the user's decision, which is the client's alone
 //	})
 //
 //	conn, err := client.Connect(ctx, acp.NewCommandTransport(&acp.CommandConfig{
@@ -38,6 +34,11 @@
 //
 // The same shape from the other end: an [AgentConfig] whose handlers are the
 // operations a client calls, and [Agent.Run] over [NewStdioTransport].
+//
+// The examples below run both halves in one process, over
+// [NewInMemoryTransports], so that they run at all. The repository's examples
+// directory has the same pair as two programs that talk over a pipe, which is
+// what a deployment looks like.
 //
 // # Connections, sessions and turns
 //

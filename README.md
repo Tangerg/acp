@@ -98,6 +98,18 @@ The agent's side is the same shape read from the other end: an `acp.AgentConfig`
 whose handlers are the operations a client calls, and `agent.Run(ctx,
 acp.NewStdioTransport())`.
 
+Both halves as two programs that spawn one another and talk over a pipe are in
+[examples/](./examples), and one turn is one command:
+
+```sh
+mkdir /tmp/workspace
+go run ./examples/client -prompt "remember the release is on Friday" -cwd /tmp/workspace
+```
+
+Smaller runnable examples — a turn, a cancellation, authentication, terminals,
+extension methods, `Opt`, `Meta` — are in the [package
+documentation](https://pkg.go.dev/github.com/Tangerg/acp#pkg-examples).
+
 ## What it is
 
 Messages are JSON-RPC 2.0 over a byte stream. The transport is ordinarily the agent

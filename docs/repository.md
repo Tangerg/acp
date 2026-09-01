@@ -133,6 +133,7 @@ acp/
 ├── internal/wire/            the runtime the generated codecs are written against
 ├── internal/cmd/schemagen/   the generator
 ├── testdata/fixtures/        the cross-SDK corpus, replayed by go test
+├── examples/                 an agent binary and the client that spawns it
 ├── AGENTS.md                 the rules the code is written under
 ├── CLAUDE.md -> AGENTS.md    one file, two names, no drift
 ├── docs/                     these pages

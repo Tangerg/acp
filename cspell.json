@@ -5,6 +5,7 @@
   "files": [
     "*.md",
     "docs/**/*.md",
+    "examples/**/*.md",
     "schema/*.md",
     "NOTICE"
   ],
