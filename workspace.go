@@ -196,12 +196,14 @@ func (t *TerminalHandle) Release(
 // the same, and asking wastes a round trip while making a developer read a wire
 // trace to find out what they forgot.
 func callGated[Response any](ctx context.Context, c *AgentConn, method string, request any) (*Response, error) {
-	if allowed, capability := allowsMethod(c.Peer(), method); !allowed {
-		return nil, newError(ErrorCodeMethodNotFound,
-			"the client did not advertise %s, so %s cannot be called", capability, method)
+	if err := c.awaitHandshake(ctx, method); err != nil {
+		return nil, err
+	}
+	if err := c.Peer().permits(method); err != nil {
+		return nil, err
 	}
 	response := new(Response)
-	if err := c.conn.call(ctx, method, request, response); err != nil {
+	if err := c.call(ctx, method, request, response); err != nil {
 		return nil, err
 	}
 	return response, nil

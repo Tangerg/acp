@@ -3,9 +3,12 @@ package acp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/Tangerg/acp"
 )
@@ -322,4 +325,58 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// An agent waits for its client rather than refusing to send.
+//
+// Connect returns before a handshake arrives, so the only honest answers to "may
+// I send yet" are "wait" and "the connection ended". A flag set after the
+// initialize response was written answered "not yet" to handlers that were only
+// running because the client already had that response — the client observes the
+// answer during the write, and the request it sends next is served on a different
+// goroutine from the one still finishing the handshake.
+func TestAnAgentWaitsForTheHandshakeRatherThanRefusing(t *testing.T) {
+	t.Run("a caller bounds its own wait", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			_, agentSide := acp.NewInMemoryTransports()
+			conn, err := testAgent(t, nil).Connect(context.Background(), agentSide)
+			if err != nil {
+				t.Fatalf("Agent.Connect: %v", err)
+			}
+			defer conn.Close() //nolint:errcheck // idempotent.
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+
+			// No client has connected, so this waits and is stopped by its own
+			// deadline rather than told the connection is unusable.
+			err = conn.Call(ctx, "_vendor.example/thing", nil, nil)
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("Call returned %v, want the caller's own deadline", err)
+			}
+		})
+	})
+
+	t.Run("a connection that ends releases the wait", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			_, agentSide := acp.NewInMemoryTransports()
+			conn, err := testAgent(t, nil).Connect(context.Background(), agentSide)
+			if err != nil {
+				t.Fatalf("Agent.Connect: %v", err)
+			}
+
+			waited := make(chan error, 1)
+			go func() {
+				waited <- conn.Notify(context.Background(), "_vendor.example/thing", nil)
+			}()
+			synctest.Wait()
+
+			if err := conn.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			if err := <-waited; !errors.Is(err, acp.ErrConnectionClosed) {
+				t.Fatalf("the waiting call returned %v, want ErrConnectionClosed", err)
+			}
+		})
+	})
 }

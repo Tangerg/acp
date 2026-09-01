@@ -2,6 +2,8 @@ package acp
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 
 	"github.com/Tangerg/acp/jsonrpc"
 )
@@ -50,3 +52,22 @@ type Connection interface {
 	// Close releases the stream and unblocks a pending Read.
 	Close() error
 }
+
+// A singleUse enforces the first clause of the Connection contract for the
+// transports in this package.
+//
+// It is a type rather than the same two lines in three places because the obvious
+// spelling of it is wrong. A sync.Once that sets a flag, followed by a read of
+// that flag outside the once, lets two concurrent Connect calls both see it set:
+// the second call's Do returns as soon as the first has finished, and neither
+// knows which of them ran it.
+type singleUse struct{ used atomic.Bool }
+
+func (s *singleUse) claim() error {
+	if s.used.CompareAndSwap(false, true) {
+		return nil
+	}
+	return errTransportUsed
+}
+
+var errTransportUsed = errors.New("acp: a transport is connected at most once, and this one already has been")

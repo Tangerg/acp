@@ -30,8 +30,6 @@ type ExtNotification struct {
 	Params json.RawMessage
 }
 
-// errReservedMethod refuses a standard method name on the extension path.
-//
 // An unrestricted method string would be a hole straight through every invariant
 // in this package: a caller could pass session/prompt and bypass the generated
 // params type, the outbound validation, the session-ID binding and the capability
@@ -46,18 +44,16 @@ func errReservedMethod(method string) error {
 		"does not send it: call the operation for it instead", method)
 }
 
-// extensionCall sends an extension request, refusing a reserved name.
-func extensionCall(ctx context.Context, c *conn, method string, params, result any) error {
+func extensionCall(ctx context.Context, l *link, method string, params, result any) error {
 	if isStandardMethod(method) {
 		return errReservedMethod(method)
 	}
-	return c.call(ctx, method, params, result)
+	return l.call(ctx, method, params, result)
 }
 
-// extensionNotify sends an extension notification, refusing a reserved name.
-func extensionNotify(ctx context.Context, c *conn, method string, params any) error {
+func extensionNotify(ctx context.Context, l *link, method string, params any) error {
 	if isStandardMethod(method) {
 		return errReservedMethod(method)
 	}
-	return c.notify(ctx, method, params)
+	return l.notify(ctx, method, params)
 }

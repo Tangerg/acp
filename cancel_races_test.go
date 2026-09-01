@@ -65,15 +65,15 @@ func TestAPermissionRequestArrivingDuringCancellationIsAnsweredCancelled(t *test
 // cancellation that arrived first found nothing on record and did nothing, and the
 // turn then ran to completion having never been told.
 func TestACancellationBeforeTheHandlerStartsIsNotLost(t *testing.T) {
-	conn := &AgentConn{conn: newConn(nil, nil, nil, nil)}
+	conn := newTestAgentConn()
 	const session SessionID = "sess-1"
 	id := jsonrpc2.Int64ID(1)
 
 	// What the read loop does with a request before spawning anything to serve it.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	conn.conn.inflight[id] = cancel
-	if entry := conn.registerInbound(rawRequest(id, methodSessionPrompt, promptParams)); !entry.dispatch {
+	conn.requests.accept(id, cancel)
+	if entry := conn.register(rawRequest(id, methodSessionPrompt, promptParams)); !entry.dispatch {
 		t.Fatal("the prompt was refused although the session had no turn")
 	}
 
@@ -95,17 +95,17 @@ func TestACancellationBeforeTheHandlerStartsIsNotLost(t *testing.T) {
 // agent's own call would return "cancelled" instead of the cancelled outcome the
 // client had already sent.
 func TestACancellationDoesNotOvertakeTheAnswersSentBeforeIt(t *testing.T) {
-	conn := &AgentConn{conn: newConn(nil, nil, nil, nil)}
+	conn := newTestAgentConn()
 	id := jsonrpc2.Int64ID(1)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	conn.conn.inflight[id] = cancel
-	conn.registerInbound(rawRequest(id, methodSessionPrompt, promptParams))
+	conn.requests.accept(id, cancel)
+	conn.register(rawRequest(id, methodSessionPrompt, promptParams))
 
 	// The read loop has now seen the cancellation. Nothing may have happened to
 	// the turn yet: the queue in front of it has not been served.
-	conn.registerInbound(rawNotification(methodSessionCancel, `{"sessionId":"sess-1"}`))
+	conn.register(rawNotification(methodSessionCancel, `{"sessionId":"sess-1"}`))
 	select {
 	case <-ctx.Done():
 		t.Fatal("the cancellation was applied on the read loop, so it overtook every response the " +
@@ -120,7 +120,7 @@ func TestACancellationDoesNotOvertakeTheAnswersSentBeforeIt(t *testing.T) {
 // The agent used to overwrite the recorded request, so a peer that sent two
 // prompts got two turns and a later cancellation could name neither.
 func TestASecondPromptForOneSessionIsRefused(t *testing.T) {
-	conn := &AgentConn{conn: newConn(nil, nil, nil, nil)}
+	conn := newTestAgentConn()
 	const session SessionID = "sess-1"
 
 	first := jsonrpc2.Int64ID(1)
@@ -146,6 +146,15 @@ func TestASecondPromptForOneSessionIsRefused(t *testing.T) {
 }
 
 const promptParams = `{"sessionId":"sess-1","prompt":[]}`
+
+// newTestAgentConn is an agent connection with a link but no transport: enough
+// for the registration and turn state these tests drive directly, and nothing
+// that would need a peer.
+func newTestAgentConn() *AgentConn {
+	conn := &AgentConn{opened: make(chan struct{})}
+	conn.link = newLink(nil, conn, nil)
+	return conn
+}
 
 // A second concurrent prompt is refused over the wire, with the reason, rather
 // than silently taking over the session.

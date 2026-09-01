@@ -15,7 +15,7 @@ import (
 // that fails on a schema bump names the method it is missing.
 func TestEveryMethodHasAGate(t *testing.T) {
 	for name := range standardMethods {
-		if _, gated := methodGates[name]; !gated {
+		if _, gated := gates[name]; !gated {
 			t.Errorf("the schema defines %q and the capability table does not classify it; "+
 				"add a row saying whether it is baseline, gated, or not implemented yet", name)
 		}
@@ -23,7 +23,7 @@ func TestEveryMethodHasAGate(t *testing.T) {
 }
 
 func TestNoGateNamesAMethodTheSchemaDoesNotDefine(t *testing.T) {
-	for name := range methodGates {
+	for name := range gates {
 		if !isStandardMethod(name) {
 			t.Errorf("the capability table classifies %q, which the schema no longer defines", name)
 		}
@@ -33,7 +33,7 @@ func TestNoGateNamesAMethodTheSchemaDoesNotDefine(t *testing.T) {
 // A row's shape has to match its classification, or the gate would either consult
 // a predicate that is not there or ignore one that is.
 func TestGateRowsAreWellFormed(t *testing.T) {
-	for name, gate := range methodGates {
+	for name, gate := range gates {
 		switch gate.gating {
 		case gatingCapability:
 			if gate.advertised == nil {
@@ -107,14 +107,14 @@ func TestEachPredicateReadsItsOwnCapability(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.method, func(t *testing.T) {
 			var silent PeerInfo
-			if allowed, capability := allowsMethod(silent, test.method); allowed {
-				t.Errorf("allowed with nothing advertised; the gate reads %s", capability)
+			if err := silent.permits(test.method); err == nil {
+				t.Error("allowed with nothing advertised")
 			}
 
 			var advertising PeerInfo
 			test.advertise(&advertising)
-			if allowed, capability := allowsMethod(advertising, test.method); !allowed {
-				t.Errorf("refused with %s advertised", capability)
+			if err := advertising.permits(test.method); err != nil {
+				t.Errorf("refused with the capability advertised: %v", err)
 			}
 		})
 	}
@@ -126,10 +126,10 @@ func TestTheFilesystemCapabilitiesAreIndependent(t *testing.T) {
 	var reading PeerInfo
 	reading.ClientCapabilities.Fs.ReadTextFile = true
 
-	if allowed, _ := allowsMethod(reading, methodFsReadTextFile); !allowed {
+	if reading.permits(methodFsReadTextFile) != nil {
 		t.Error("reading was refused although it was advertised")
 	}
-	if allowed, _ := allowsMethod(reading, methodFsWriteTextFile); allowed {
+	if reading.permits(methodFsWriteTextFile) == nil {
 		t.Error("advertising the read capability also allowed writing")
 	}
 }
@@ -146,11 +146,11 @@ func TestTheTerminalCapabilityCoversAllFiveMethods(t *testing.T) {
 	var advertising PeerInfo
 	advertising.ClientCapabilities.Terminal = true
 	for _, name := range terminalMethods {
-		if allowed, _ := allowsMethod(advertising, name); !allowed {
+		if advertising.permits(name) != nil {
 			t.Errorf("%q was refused although the terminal capability was advertised", name)
 		}
 		var silent PeerInfo
-		if allowed, _ := allowsMethod(silent, name); allowed {
+		if silent.permits(name) == nil {
 			t.Errorf("%q was allowed with the terminal capability unadvertised", name)
 		}
 	}
@@ -221,12 +221,12 @@ func TestOfferingAuthMethodsWithoutTheHandlerIsRefused(t *testing.T) {
 func TestBaselineIsAllowedAndUnimplementedIsNot(t *testing.T) {
 	var silent PeerInfo
 	for _, name := range []string{methodInitialize, methodSessionNew, methodSessionPrompt, methodSessionUpdate} {
-		if allowed, _ := allowsMethod(silent, name); !allowed {
+		if silent.permits(name) != nil {
 			t.Errorf("the baseline method %q was refused", name)
 		}
 	}
 	for _, name := range []string{methodLogout, methodMcpMessage, methodNesStart} {
-		if allowed, _ := allowsMethod(silent, name); allowed {
+		if silent.permits(name) == nil {
 			t.Errorf("%q is not implemented yet but the gate allowed it", name)
 		}
 	}
@@ -236,7 +236,7 @@ func TestBaselineIsAllowedAndUnimplementedIsNot(t *testing.T) {
 // extension method is decided.
 func TestAnUnknownMethodIsRefused(t *testing.T) {
 	var silent PeerInfo
-	if allowed, _ := allowsMethod(silent, "_vendor.example/thing"); allowed {
+	if silent.permits("_vendor.example/thing") == nil {
 		t.Error("an extension method reached the capability gate and was allowed")
 	}
 	if isStandardMethod("_vendor.example/thing") {

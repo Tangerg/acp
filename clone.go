@@ -25,7 +25,6 @@ import "reflect"
 // round trip through the codec would not: a caller who put an int in _meta gets
 // an int back.
 
-// deepCopy returns a copy of value that shares no mutable memory with it.
 func deepCopy[T any](value T) T {
 	var copied T
 	reflect.ValueOf(&copied).Elem().Set(copyValue(reflect.ValueOf(&value).Elem()))

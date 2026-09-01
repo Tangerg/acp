@@ -104,9 +104,7 @@ type TerminalHandlers struct {
 type Client struct {
 	config       ClientConfig
 	capabilities ClientCapabilities
-
-	mu    sync.Mutex
-	conns []*ClientConn
+	conns        registry[*ClientConn]
 }
 
 // NewClient builds a client, or reports why the configuration cannot be served.
@@ -126,7 +124,7 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		return nil, errors.New("acp: a client needs a RequestPermission handler: " +
 			"the protocol defines no outcome a client may assume, so there is nothing to synthesise")
 	}
-	if err := checkTerminalHandlers(config.Terminal); err != nil {
+	if err := config.Terminal.check(); err != nil {
 		return nil, err
 	}
 
@@ -137,7 +135,10 @@ func NewClient(config *ClientConfig) (*Client, error) {
 	return &Client{config: config.clone(), capabilities: capabilities}, nil
 }
 
-func checkTerminalHandlers(handlers *TerminalHandlers) error {
+// check refuses a partial handler set, because the capability that gates them is
+// one boolean covering all five methods: a client with four of them would refuse a
+// method it had advertised.
+func (handlers *TerminalHandlers) check() error {
 	if handlers == nil {
 		return nil
 	}
@@ -161,7 +162,6 @@ func checkTerminalHandlers(handlers *TerminalHandlers) error {
 		"so its handlers are all or none; these are missing: %v", missing)
 }
 
-// resolveCapabilities derives the advertisement, or checks the stated one.
 func (config *ClientConfig) resolveCapabilities() (ClientCapabilities, error) {
 	derived := ClientCapabilities{
 		Fs: FileSystemCapabilities{
@@ -175,8 +175,7 @@ func (config *ClientConfig) resolveCapabilities() (ClientCapabilities, error) {
 	}
 
 	stated := deepCopy(*config.Capabilities)
-	exceeded := checkAdvertisement(
-		PeerInfo{ClientCapabilities: stated}, sideClient, config.implements)
+	exceeded := gates.exceeded(PeerInfo{ClientCapabilities: stated}, sideClient, config.implements)
 	if len(exceeded) > 0 {
 		return ClientCapabilities{}, fmt.Errorf(
 			"acp: the stated capabilities advertise what this client cannot serve: %v", exceeded)
@@ -184,9 +183,6 @@ func (config *ClientConfig) resolveCapabilities() (ClientCapabilities, error) {
 	return stated, nil
 }
 
-// implements reports whether this configuration has the handler that serves a
-// client method.
-//
 // It is the other half of the capability table: the table says which capability
 // gates which method, and this says which methods this configuration can actually
 // serve. Neither is derivable from the other, so both are written out and the
@@ -207,8 +203,6 @@ func (config *ClientConfig) implements(method string) bool {
 	}
 }
 
-// clone copies every mutable value the library keeps reading after construction.
-//
 // Without it a caller's slice, map or handler set stays aliased: mutating it
 // afterwards would change what this client advertises, or what it serves, without
 // going back through the check that made it valid — and would race a connection
@@ -248,36 +242,23 @@ func (c *Client) Connect(ctx context.Context, transport Transport) (*ClientConn,
 		return nil, err
 	}
 
-	connection := &ClientConn{client: c}
-	connection.conn = newConn(stream, connection.serve, connection.registerInbound, c.config.Logger)
-	connection.conn.run()
+	conn := &ClientConn{client: c}
+	conn.link = newLink(stream, conn, c.config.Logger)
+	conn.run()
 
-	if err := connection.initialize(ctx); err != nil {
-		// Close before returning: a half-initialized connection is not something
-		// to hand back and hope nobody uses.
-		_ = connection.conn.close()
+	if err := conn.initialize(ctx); err != nil {
+		// Close before returning: a half-initialized connection is not something to
+		// hand back and hope nobody uses.
+		_ = conn.Close()
 		return nil, err
 	}
 
-	c.mu.Lock()
-	c.conns = append(c.conns, connection)
-	c.mu.Unlock()
-	return connection, nil
+	c.conns.add(conn)
+	return conn, nil
 }
 
 // Conns iterates the connections this client has opened and not closed.
-func (c *Client) Conns() iter.Seq[*ClientConn] {
-	c.mu.Lock()
-	open := make([]*ClientConn, 0, len(c.conns))
-	for _, connection := range c.conns {
-		if !connection.conn.ended() {
-			open = append(open, connection)
-		}
-	}
-	c.conns = open
-	c.mu.Unlock()
-	return slices.Values(open)
-}
+func (c *Client) Conns() iter.Seq[*ClientConn] { return c.conns.all() }
 
 // A ClientConn is one logical connection to an agent, after initialize.
 //
@@ -287,23 +268,15 @@ func (c *Client) Conns() iter.Seq[*ClientConn] {
 // connection carries many. Calling the connection a session too would have put
 // NewSession on a type called ClientSession.
 type ClientConn struct {
-	client *Client
-	conn   *conn
+	connection
 
-	peerMu sync.Mutex
-	peer   PeerInfo
-	// initialized opens inbound dispatch. The read loop starts before the
-	// handshake completes, because the answer to initialize arrives on it, and
-	// anything else that arrives first would reach application code before there
-	// was a negotiated peer for it to be judged against.
-	initialized bool
+	client   *Client
+	sessions sessions[ClientSession]
 
-	sessionsMu sync.Mutex
-	sessions   map[SessionID]*ClientSession
-
-	// turns is this client's per-session turn state: the permission requests it is
-	// waiting on, and whether a cancellation is in progress. One lock rather than
-	// two maps, because the race it settles is between them. See cancel.go.
+	// turns is this client's per-session turn state: which turn is running, the
+	// permission requests it is waiting on, and whether a cancellation is in
+	// progress. One lock rather than three maps, because the races it settles are
+	// between them. See cancel.go.
 	turnsMu sync.Mutex
 	turns   map[SessionID]*clientTurn
 }
@@ -322,7 +295,7 @@ func (c *ClientConn) initialize(ctx context.Context) error {
 	}
 
 	var response InitializeResponse
-	if err := c.conn.call(ctx, methodInitialize, request, &response); err != nil {
+	if err := c.call(ctx, methodInitialize, request, &response); err != nil {
 		return err
 	}
 
@@ -348,8 +321,7 @@ func (c *ClientConn) initialize(ctx context.Context) error {
 		}
 	}
 
-	c.peerMu.Lock()
-	c.peer = PeerInfo{
+	c.negotiated(PeerInfo{
 		ProtocolVersion:    response.ProtocolVersion,
 		ClientCapabilities: deepCopy(c.client.capabilities),
 		ClientInfo:         request.ClientInfo,
@@ -358,26 +330,8 @@ func (c *ClientConn) initialize(ctx context.Context) error {
 		AgentInfo:          response.AgentInfo,
 		AgentMeta:          response.Meta,
 		AuthMethods:        response.AuthMethods,
-	}
-	c.initialized = true
-	c.peerMu.Unlock()
+	})
 	return nil
-}
-
-func (c *ClientConn) isInitialized() bool {
-	c.peerMu.Lock()
-	defer c.peerMu.Unlock()
-	return c.initialized
-}
-
-// Peer reports what initialize negotiated.
-//
-// It is a copy. The same value backs the capability gate, and a caller who could
-// mutate it could widen its own authority.
-func (c *ClientConn) Peer() PeerInfo {
-	c.peerMu.Lock()
-	defer c.peerMu.Unlock()
-	return c.peer.clone()
 }
 
 // Call sends an extension request and decodes its result.
@@ -386,24 +340,12 @@ func (c *ClientConn) Peer() PeerInfo {
 // it has exactly one path through the typed codec and the capability gate, and
 // this is not it.
 func (c *ClientConn) Call(ctx context.Context, method string, params, result any) error {
-	return extensionCall(ctx, c.conn, method, params, result)
+	return extensionCall(ctx, c.link, method, params, result)
 }
 
 // Notify sends an extension notification. Extension methods only; see [ClientConn.Call].
 func (c *ClientConn) Notify(ctx context.Context, method string, params any) error {
-	return extensionNotify(ctx, c.conn, method, params)
-}
-
-// Close ends the connection. It is idempotent and safe to call concurrently.
-func (c *ClientConn) Close() error {
-	return c.conn.close()
-}
-
-// Wait blocks until the connection has ended and reports its terminal error: nil
-// for a local Close or a clean end of stream, and the read or write failure
-// otherwise.
-func (c *ClientConn) Wait() error {
-	return c.conn.wait()
+	return extensionNotify(ctx, c.link, method, params)
 }
 
 // serve dispatches the requests an agent makes of a client.
@@ -423,8 +365,8 @@ func (c *ClientConn) serve(ctx context.Context, request *jsonrpc.Request) (any, 
 	// authority boundary, so a method this client never advertised is refused
 	// rather than served — the agent was told it was not there.
 	if isStandardMethod(request.Method) {
-		if allowed, capability := allowsMethod(c.Peer(), request.Method); !allowed {
-			return nil, methodRefusal(request.Method, capability)
+		if err := c.Peer().permits(request.Method); err != nil {
+			return nil, err
 		}
 	}
 

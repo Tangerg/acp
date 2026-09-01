@@ -1,6 +1,9 @@
 package acp
 
-import "slices"
+import (
+	"maps"
+	"slices"
+)
 
 // The capability table: which methods a peer may be asked to serve, and on what
 // condition.
@@ -65,8 +68,13 @@ type methodGate struct {
 	why string
 }
 
-// methodGates classifies every method the specification defines.
-var methodGates = map[string]methodGate{
+// A gateTable classifies every method the specification defines. It answers two
+// questions, and both are its own: whether a negotiated peer permits a method,
+// and what an advertisement promises that its side cannot serve.
+type gateTable map[string]methodGate
+
+// gates classifies every method the specification defines.
+var gates = gateTable{
 	// -- Baseline -------------------------------------------------------------
 	//
 	// The lifecycle, one turn, and cancellation. A peer that cannot serve these
@@ -206,8 +214,8 @@ var methodGates = map[string]methodGate{
 	methodDocumentDidFocus:  agentNesEvents,
 }
 
-// sessionCapability builds a row for one of the agent's session-lifecycle
-// methods, each of which is gated by its own property of one capability object.
+// One row per session-lifecycle method, each gated by its own property of one
+// capability object.
 func sessionCapability(name string, set func(SessionCapabilities) bool) methodGate {
 	return methodGate{
 		gating:     gatingUnimplemented,
@@ -266,25 +274,25 @@ var terminalGate = methodGate{
 	why:        `"Whether the Client support all terminal/* methods" — one flag for five methods`,
 }
 
-// checkAdvertisement refuses an advertisement this side cannot serve.
+// exceeded lists what an advertisement promises that its side cannot serve.
 //
-// It is driven by the capability table rather than by a hand-written list of
-// capability fields, so a capability nobody remembered to check is not a hole:
-// every row that names a predicate is consulted, and a method this package does
-// not implement at all cannot be advertised however its capability is spelled.
+// It is driven by the table rather than by a hand-written list of capability
+// fields, so a capability nobody remembered to check is not a hole: every row that
+// names a predicate is consulted, and a method this package does not implement at
+// all cannot be advertised however its capability is spelled.
 //
 // The rule is about methods. A capability describing data an existing handler
 // accepts — prompt content types, position encodings — is an explicit refinement
-// and not a promise of a separate method, so it has no row here and is left to
-// the caller.
-func checkAdvertisement(peer PeerInfo, owner methodSide, implemented func(string) bool) []string {
+// and not a promise of a separate method, so it has no row here and is left to the
+// caller.
+//
+// The methods are visited in order so that two runs of the same misconfiguration
+// report the same thing.
+func (t gateTable) exceeded(peer PeerInfo, owner methodSide, implemented func(string) bool) []string {
 	var exceeded []string
-	for _, method := range sortedMethods() {
-		gate := methodGates[method]
-		if gate.advertised == nil || gate.owner != owner {
-			continue
-		}
-		if !gate.advertised(peer) {
+	for _, method := range slices.Sorted(maps.Keys(t)) {
+		gate := t[method]
+		if gate.advertised == nil || gate.owner != owner || !gate.advertised(peer) {
 			continue
 		}
 		switch {
@@ -299,31 +307,25 @@ func checkAdvertisement(peer PeerInfo, owner methodSide, implemented func(string
 	return exceeded
 }
 
-// sortedMethods keeps a construction failure's message stable, so that two runs
-// of the same misconfiguration report the same thing.
-func sortedMethods() []string {
-	methods := make([]string, 0, len(methodGates))
-	for method := range methodGates {
-		methods = append(methods, method)
-	}
-	slices.Sort(methods)
-	return methods
-}
-
-// allowsMethod reports whether the peer that serves name advertised it, and names
-// the capability when it did not.
+// permits reports why a peer may not be asked to serve a method, or nil.
 //
 // A method with no row is refused: the table covers every method the schema
 // defines, so a name that is not in it is not a standard method, and an extension
 // method does not come through here.
-func allowsMethod(peer PeerInfo, name string) (allowed bool, capability string) {
-	gate, known := methodGates[name]
+//
+// The refusal is method-not-found rather than a code of its own, because from the
+// caller's side that is the truth: it was told during initialize that this method
+// was not there. The message names the capability so that a developer reading a
+// log can see which advertisement was missing.
+func (p PeerInfo) permits(method string) error {
+	gate, known := gates[method]
 	switch {
 	case !known, gate.gating == gatingUnimplemented:
-		return false, ""
-	case gate.gating == gatingBaseline:
-		return true, ""
+		return newError(ErrorCodeMethodNotFound, "%s is not implemented here", method)
+	case gate.gating == gatingBaseline, gate.advertised(p):
+		return nil
 	default:
-		return gate.advertised(peer), gate.capability
+		return newError(ErrorCodeMethodNotFound,
+			"%s was not advertised: %s is not set", method, gate.capability)
 	}
 }

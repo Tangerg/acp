@@ -48,20 +48,15 @@ func NewIOTransport(reader io.ReadCloser, writer io.WriteCloser) Transport {
 }
 
 type ioTransport struct {
+	singleUse
 	reader io.ReadCloser
 	writer io.WriteCloser
-
-	once      sync.Once
-	connected bool
 }
 
 func (t *ioTransport) Connect(context.Context) (Connection, error) {
-	t.once.Do(func() { t.connected = true })
-	if !t.connected {
-		return nil, errors.New("acp: this transport is already connected")
+	if err := t.claim(); err != nil {
+		return nil, err
 	}
-	t.connected = false
-
 	lines := bufio.NewReaderSize(t.reader, 64<<10)
 	return &ioConnection{reader: t.reader, writer: t.writer, lines: lines}, nil
 }
@@ -204,18 +199,14 @@ func NewCommandTransport(config *CommandConfig) Transport {
 }
 
 type commandTransport struct {
+	singleUse
 	config CommandConfig
-
-	once      sync.Once
-	connected bool
 }
 
 func (t *commandTransport) Connect(context.Context) (Connection, error) {
-	t.once.Do(func() { t.connected = true })
-	if !t.connected {
-		return nil, errors.New("acp: this transport is already connected")
+	if err := t.claim(); err != nil {
+		return nil, err
 	}
-	t.connected = false
 
 	cmd := t.config.Command
 	stdin, err := cmd.StdinPipe()

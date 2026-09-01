@@ -70,7 +70,6 @@ var handWritten = map[string]string{
 	"ErrRequestCancelled": "error.go — a peer's -32800, which does not prove anybody cancelled anything",
 	"ErrConnectionClosed": "error.go — a local state rather than a wire error: nobody sent it",
 	"ErrPromptInProgress": "session.go — one prompt at a time per session, because session/cancel names no turn",
-	"ErrNotInitialized":   "agent.go — an agent connection exists before the handshake it does not initiate",
 	"ErrTerminalReleased": "workspace.go — a released terminal identifier is the client's to reuse, so the handle is spent",
 }
 

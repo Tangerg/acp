@@ -60,7 +60,8 @@ func (s *ClientSession) Conn() *ClientConn { return s.conn }
 // a waiter stays behind to observe it. A caller who wants the session back
 // promptly should call Cancel, which is the operation that ends a turn.
 func (s *ClientSession) Prompt(ctx context.Context, params *PromptParams) (*PromptResponse, error) {
-	generation, claimed := s.conn.beginTurn(s.id)
+	conn := s.conn
+	generation, claimed := conn.beginTurn(s.id)
 	if !claimed {
 		return nil, ErrPromptInProgress
 	}
@@ -71,10 +72,9 @@ func (s *ClientSession) Prompt(ctx context.Context, params *PromptParams) (*Prom
 		request.Meta = params.Meta
 	}
 
-	connection := s.conn.conn
-	id, replies, err := connection.send(ctx, methodSessionPrompt, request)
+	id, replies, err := conn.send(ctx, methodSessionPrompt, request)
 	if err != nil {
-		s.conn.endTurn(s.id, generation)
+		conn.endTurn(s.id, generation)
 		return nil, err
 	}
 
@@ -82,15 +82,15 @@ func (s *ClientSession) Prompt(ctx context.Context, params *PromptParams) (*Prom
 	case response := <-replies:
 		return s.finishTurn(generation, response)
 
-	case <-connection.done:
-		// An answer already in hand is an answer; see conn.await.
+	case <-conn.over():
+		// An answer already in hand is an answer; see link.await.
 		select {
 		case response := <-replies:
 			return s.finishTurn(generation, response)
 		default:
 		}
-		s.conn.endTurn(s.id, generation)
-		return nil, connection.terminalError()
+		conn.endTurn(s.id, generation)
+		return nil, conn.failure()
 
 	case <-ctx.Done():
 		select {
@@ -103,7 +103,7 @@ func (s *ClientSession) Prompt(ctx context.Context, params *PromptParams) (*Prom
 		// on a budget of its own, and leave a waiter behind — the session is free
 		// for the next prompt when that answer arrives and not before.
 		//nolint:contextcheck // deliberate; the notification has a budget of its own.
-		connection.cancelRemotely(id)
+		conn.cancelRemotely(id)
 		s.awaitLateAnswer(generation, id, replies)
 		return nil, ctx.Err()
 	}
@@ -129,15 +129,15 @@ func (s *ClientSession) awaitLateAnswer(
 	id jsonrpc.ID,
 	replies <-chan *jsonrpc.Response,
 ) {
-	connection := s.conn.conn
+	conn := s.conn
 	end := func() {
-		connection.retire(id)
-		s.conn.endTurn(s.id, generation)
+		conn.retireCall(id)
+		conn.endTurn(s.id, generation)
 	}
-	started := connection.spawn(func() {
+	started := conn.spawn(func() {
 		select {
 		case <-replies:
-		case <-connection.done:
+		case <-conn.over():
 		}
 		end()
 	})
@@ -167,7 +167,7 @@ func (s *ClientSession) Cancel(ctx context.Context, params *CancelParams) error 
 	if params != nil {
 		notification.Meta = params.Meta
 	}
-	return s.conn.conn.notify(ctx, methodSessionCancel, notification)
+	return s.conn.notify(ctx, methodSessionCancel, notification)
 }
 
 // SetMode switches the agent's mode for this session.
@@ -178,7 +178,7 @@ func (s *ClientSession) SetMode(ctx context.Context, params *SetModeParams) (*Se
 		request.Meta = params.Meta
 	}
 	response := new(SetSessionModeResponse)
-	if err := s.conn.conn.call(ctx, methodSessionSetMode, request, response); err != nil {
+	if err := s.conn.call(ctx, methodSessionSetMode, request, response); err != nil {
 		return nil, err
 	}
 	return response, nil
@@ -205,7 +205,7 @@ func (c *ClientConn) NewSession(
 		params = &NewSessionRequest{}
 	}
 	response := new(NewSessionResponse)
-	if err := c.conn.call(ctx, methodSessionNew, params, response); err != nil {
+	if err := c.call(ctx, methodSessionNew, params, response); err != nil {
 		return nil, nil, err
 	}
 	return c.session(response.SessionID), response, nil
@@ -228,12 +228,11 @@ func (c *ClientConn) LoadSession(
 	// here rather than sent and refused there: the answer would be the same, and
 	// asking wastes a round trip while making a developer read a wire trace to
 	// find out what they forgot.
-	if allowed, capability := allowsMethod(c.Peer(), methodSessionLoad); !allowed {
-		return nil, nil, newError(ErrorCodeMethodNotFound,
-			"the agent did not advertise %s, so %s cannot be called", capability, methodSessionLoad)
+	if err := c.Peer().permits(methodSessionLoad); err != nil {
+		return nil, nil, err
 	}
 	response := new(LoadSessionResponse)
-	if err := c.conn.call(ctx, methodSessionLoad, params, response); err != nil {
+	if err := c.call(ctx, methodSessionLoad, params, response); err != nil {
 		return nil, nil, err
 	}
 	return c.session(params.SessionID), response, nil
@@ -262,29 +261,16 @@ func (c *ClientConn) Authenticate(
 		}
 	}
 	response := new(AuthenticateResponse)
-	if err := c.conn.call(ctx, methodAuthenticate, params, response); err != nil {
+	if err := c.call(ctx, methodAuthenticate, params, response); err != nil {
 		return nil, err
 	}
 	return response, nil
 }
 
-// session returns the handle for an identifier, creating it once.
-//
-// One handle per identifier per connection, because the one-prompt-at-a-time rule
-// lives on the handle: two handles for one session would each think they were the
-// only turn.
 func (c *ClientConn) session(id SessionID) *ClientSession {
-	c.sessionsMu.Lock()
-	defer c.sessionsMu.Unlock()
-	if c.sessions == nil {
-		c.sessions = make(map[SessionID]*ClientSession)
-	}
-	if existing, ok := c.sessions[id]; ok {
-		return existing
-	}
-	session := &ClientSession{id: id, conn: c}
-	c.sessions[id] = session
-	return session
+	return c.sessions.lookup(id, func(id SessionID) *ClientSession {
+		return &ClientSession{id: id, conn: c}
+	})
 }
 
 // An AgentSession is the same conversation as the agent sees it.
@@ -320,12 +306,15 @@ func (s *AgentSession) Update(ctx context.Context, params *SessionUpdateParams) 
 	if params == nil {
 		return errors.New("acp: Update needs params: the update is in them")
 	}
+	if err := s.conn.awaitHandshake(ctx, methodSessionUpdate); err != nil {
+		return err
+	}
 	notification := &SessionNotification{
 		SessionID: s.id,
 		Update:    params.Update,
 		Meta:      params.Meta,
 	}
-	return s.conn.conn.notify(ctx, methodSessionUpdate, notification)
+	return s.conn.notify(ctx, methodSessionUpdate, notification)
 }
 
 // RequestPermission asks the user to approve a tool call.
@@ -340,6 +329,9 @@ func (s *AgentSession) RequestPermission(
 	if params == nil {
 		return nil, errors.New("acp: RequestPermission needs params: the tool call and the options are in them")
 	}
+	if err := s.conn.awaitHandshake(ctx, methodSessionRequestPermission); err != nil {
+		return nil, err
+	}
 	request := &RequestPermissionRequest{
 		SessionID: s.id,
 		ToolCall:  params.ToolCall,
@@ -347,22 +339,16 @@ func (s *AgentSession) RequestPermission(
 		Meta:      params.Meta,
 	}
 	response := new(RequestPermissionResponse)
-	if err := s.conn.conn.call(ctx, methodSessionRequestPermission, request, response); err != nil {
+	if err := s.conn.call(ctx, methodSessionRequestPermission, request, response); err != nil {
 		return nil, err
 	}
 	return response, nil
 }
 
-// session returns the handle for an identifier, creating it once.
 func (c *AgentConn) session(id SessionID) *AgentSession {
-	c.sessionsMu.Lock()
-	defer c.sessionsMu.Unlock()
-	if existing, ok := c.sessions[id]; ok {
-		return existing
-	}
-	session := &AgentSession{id: id, conn: c}
-	c.sessions[id] = session
-	return session
+	return c.sessions.lookup(id, func(id SessionID) *AgentSession {
+		return &AgentSession{id: id, conn: c}
+	})
 }
 
 // newSession serves session/new and builds the handle from the identifier the

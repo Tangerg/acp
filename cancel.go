@@ -52,8 +52,6 @@ type clientTurn struct {
 	pending map[jsonrpc.ID]struct{}
 }
 
-// beginTurn claims a session's turn, and reports the generation it claimed.
-//
 // One turn per session, because session/cancel names none: a session with two
 // turns would have no way to say which one a cancellation meant.
 func (c *ClientConn) beginTurn(session SessionID) (uint64, bool) {
@@ -70,11 +68,8 @@ func (c *ClientConn) beginTurn(session SessionID) (uint64, bool) {
 	return turn.generation, true
 }
 
-// endTurn ends a turn, if the turn named is still the one running.
-//
-// The generation is what makes that check possible. A late answer to an abandoned
-// turn must not end the turn that started after it, and without a generation the
-// two are indistinguishable.
+// A late answer to an abandoned turn must not end the turn that started after it,
+// and without a generation the two are indistinguishable.
 func (c *ClientConn) endTurn(session SessionID, generation uint64) {
 	c.turnsMu.Lock()
 	defer c.turnsMu.Unlock()
@@ -89,7 +84,7 @@ func (c *ClientConn) endTurn(session SessionID, generation uint64) {
 	turn.cancelling = false
 }
 
-// turnFor returns a session's turn state, creating it once. Callers hold turnsMu.
+// Callers hold turnsMu.
 func (c *ClientConn) turnFor(session SessionID) *clientTurn {
 	if c.turns == nil {
 		c.turns = make(map[SessionID]*clientTurn)
@@ -102,10 +97,7 @@ func (c *ClientConn) turnFor(session SessionID) *clientTurn {
 	return turn
 }
 
-// registerPermission claims a permission request for a session, and reports
-// whether the turn is still live.
-//
-// It runs on the read loop, before the request is dispatched, so a cancellation
+// Registration is on the read loop, before dispatch, so that a cancellation
 // cannot slip between a request arriving and being registered.
 func (c *ClientConn) registerPermission(session SessionID, id jsonrpc.ID) bool {
 	c.turnsMu.Lock()
@@ -127,9 +119,6 @@ func (c *ClientConn) forgetPermission(session SessionID, id jsonrpc.ID) {
 	}
 }
 
-// cancelPermissions answers every pending permission request for a session with
-// the cancelled outcome, and closes the session to new ones while it does.
-//
 // The claim is synchronous and happens first — before the notification goes out
 // and before Cancel returns. That ordering is what makes the race decidable: a
 // user decision arriving afterwards finds the request already answered and is
@@ -156,28 +145,23 @@ func (c *ClientConn) cancelPermissions(session SessionID) {
 	}
 }
 
-// answerCancelled claims one permission request for the cancelled outcome and
-// returns the write that delivers it, or nil if something has already answered.
-//
 // The claim is taken now, on whatever goroutine is asking, because it is what
 // decides the race. Where the write goes is the caller's to say: cancelPermissions
 // needs it on the wire before the cancellation notification, and the read loop
 // needs it off the read loop.
 func (c *ClientConn) answerCancelled(id jsonrpc.ID) func() {
-	write := c.conn.answer(id, &RequestPermissionResponse{
-		Outcome: &RequestPermissionOutcomeCancelled{},
-	}, nil)
-	if write == nil {
+	if !c.claimAnswer(id) {
 		return nil
 	}
 	return func() {
-		write()
-		c.conn.cancelRequest(id)
+		c.writeResponse(id, &RequestPermissionResponse{
+			Outcome: &RequestPermissionOutcomeCancelled{},
+		}, nil)
+		c.cancelRequest(id)
 	}
 }
 
-// registerInbound runs on the read loop for every call a client receives.
-func (c *ClientConn) registerInbound(request *jsonrpc.Request) registration {
+func (c *ClientConn) register(request *jsonrpc.Request) registration {
 	if request.Method != methodSessionRequestPermission {
 		return registration{dispatch: true}
 	}
@@ -192,7 +176,7 @@ func (c *ClientConn) registerInbound(request *jsonrpc.Request) registration {
 		// the difference between a dialog the user never sees and one they see and
 		// whose answer is then thrown away.
 		if write := c.answerCancelled(request.ID); write != nil {
-			c.conn.spawn(write)
+			c.spawn(write)
 		}
 		return registration{}
 	}
@@ -202,8 +186,6 @@ func (c *ClientConn) registerInbound(request *jsonrpc.Request) registration {
 	}
 }
 
-// requestPermission serves session/request_permission.
-//
 // Registration has already happened, on the read loop, and forgetting it belongs
 // to the request lifecycle. If the turn was cancelled between then and now the
 // request has been answered, and the claim in respond is what stops this answer
@@ -231,8 +213,6 @@ type agentTurn struct {
 	running bool
 }
 
-// registerInbound runs on the read loop for every call an agent receives.
-//
 // This is where the ordering the peer intended becomes the ordering this
 // connection has. A prompt is claimed here rather than in its handler, so a
 // cancellation that follows it on the wire finds the turn on record even though
@@ -242,7 +222,7 @@ type agentTurn struct {
 // already in progress, and doing it here would let it overtake every message read
 // before it — including the responses the peer sent first, which is exactly the
 // order a cancelled turn depends on.
-func (c *AgentConn) registerInbound(request *jsonrpc.Request) registration {
+func (c *AgentConn) register(request *jsonrpc.Request) registration {
 	switch request.Method {
 	case methodInitialize:
 		// This side may send once the client has been told what it agreed to.
@@ -260,8 +240,8 @@ func (c *AgentConn) registerInbound(request *jsonrpc.Request) registration {
 			// keeps locally, kept here against any peer.
 			refusal := newError(ErrorCodeInvalidRequest,
 				"session %s already has a prompt in flight, and session/cancel names no turn", session)
-			if write := c.conn.answer(request.ID, nil, refusal); write != nil {
-				c.conn.spawn(write)
+			if c.claimAnswer(request.ID) {
+				c.spawn(func() { c.writeResponse(request.ID, nil, refusal) })
 			}
 			return registration{}
 		}
@@ -277,8 +257,6 @@ func (c *AgentConn) registerInbound(request *jsonrpc.Request) registration {
 	}
 }
 
-// sessionOf reads the session a request names, without decoding the rest of it.
-//
 // The read loop needs the identifier and nothing else, and it must not spend the
 // time to decode a whole prompt to get it.
 func sessionOf(request *jsonrpc.Request) (SessionID, bool) {
@@ -291,11 +269,9 @@ func sessionOf(request *jsonrpc.Request) (SessionID, bool) {
 	return params.SessionID, true
 }
 
-// claimTurn records the request carrying a session's turn.
-//
-// One turn per session, which is what makes this a single identifier rather than
-// a set: session/cancel carries no turn identifier, so a session with two turns
-// would have no way to say which one it meant.
+// One turn per session, which is why the record is a single identifier rather
+// than a set: session/cancel carries no turn identifier, so a session with two
+// turns would have no way to say which one it meant.
 func (c *AgentConn) claimTurn(session SessionID, id jsonrpc.ID) (claimed bool) {
 	c.turnsMu.Lock()
 	defer c.turnsMu.Unlock()
@@ -316,8 +292,8 @@ func (c *AgentConn) claimTurn(session SessionID, id jsonrpc.ID) (claimed bool) {
 	return true
 }
 
-// releaseTurn ends a turn, if the request named is the one holding it. A second
-// prompt that was refused must not release the first prompt's turn.
+// The identifier is checked because a second prompt that was refused must not
+// release the turn the first one is holding.
 func (c *AgentConn) releaseTurn(session SessionID, id jsonrpc.ID) {
 	c.turnsMu.Lock()
 	defer c.turnsMu.Unlock()
@@ -326,8 +302,6 @@ func (c *AgentConn) releaseTurn(session SessionID, id jsonrpc.ID) {
 	}
 }
 
-// cancelTurn cancels a session's turn and the work descending from it.
-//
 // It does not answer the prompt. The protocol says what the answer is — the
 // cancelled stop reason — and it is the agent's handler that owes it: the client
 // is still waiting on that response, and the agent may have final tool-call
@@ -349,11 +323,9 @@ func (c *AgentConn) cancelTurn(session SessionID) {
 	id := turn.id
 	c.turnsMu.Unlock()
 
-	c.conn.cancelRequest(id)
+	c.cancelRequest(id)
 }
 
-// prompt serves session/prompt.
-//
 // The turn was claimed on the read loop and is released by the request lifecycle,
 // so what is left here is the handler.
 func (c *AgentConn) prompt(ctx context.Context, request *jsonrpc.Request) (any, error) {
@@ -371,9 +343,7 @@ func (c *AgentConn) prompt(ctx context.Context, request *jsonrpc.Request) (any, 
 	return response, nil
 }
 
-// cancel serves session/cancel.
-//
-// It runs from the ordered queue, which is where the cancellation belongs: the
+// This runs from the ordered queue, which is where the cancellation belongs: the
 // responses the client sent before it — the cancelled permission outcomes it owed
 // the turn — are delivered first, and the agent's own calls return their answers
 // rather than the cancellation that was chasing them.

@@ -1,9 +1,13 @@
 package acp
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
+
+	"github.com/Tangerg/acp/internal/jsonrpc2"
 )
 
 // Error makes the generated [Error] an error, so that a peer's failure can be
@@ -116,7 +120,50 @@ var (
 // send it to. A caller who needs to know why the connection ended asks Wait.
 var ErrConnectionClosed = errors.New("acp: the connection is closed")
 
-// newError builds the error this package sends to a peer.
 func newError(code ErrorCode, format string, args ...any) *Error {
 	return &Error{Code: code, Message: fmt.Sprintf(format, args...)}
+}
+
+// toWire and errorFromWire are the one place the three states of Data survive the
+// JSON-RPC adapter.
+//
+// Opt exists to keep absent and null apart, and Get reports both as not present.
+// A relay that read the states through Get alone dropped an explicit null on the
+// way out and invented a present raw "null" on the way in, so the error it passed
+// on was not the error it was given.
+func (x *Error) toWire() *jsonrpc2.WireError {
+	wire := &jsonrpc2.WireError{Code: int64(x.Code), Message: x.Message}
+	switch data, present := x.Data.Get(); {
+	case present:
+		wire.Data = data
+	case x.Data.IsNull():
+		wire.Data = json.RawMessage("null")
+	}
+	return wire
+}
+
+func errorFromWire(wire *jsonrpc2.WireError) *Error {
+	failure := &Error{Code: errorCodeOf(wire.Code), Message: wire.Message}
+	switch {
+	case len(wire.Data) == 0:
+		// Absent, which is the zero value and needs saying no other way.
+	case string(wire.Data) == "null":
+		failure.Data = OptNull[json.RawMessage]()
+	default:
+		failure.Data = OptValue(wire.Data)
+	}
+	return failure
+}
+
+// errorCodeOf narrows a JSON-RPC code to the schema's int32.
+//
+// The schema types every arm of the code union as an int32, so a wider value is a
+// peer that is not following it. Truncating would report a code the peer did not
+// send, which is worse than saying the failure was internal to it: an unknown
+// in-range code is valid and survives, and an out-of-range one is not a code.
+func errorCodeOf(code int64) ErrorCode {
+	if code < math.MinInt32 || code > math.MaxInt32 {
+		return ErrorCodeInternalError
+	}
+	return ErrorCode(code)
 }

@@ -22,10 +22,11 @@ both directions.
   refusal at construction rather than an invented answer at runtime.
 - **Connections and sessions as separate types.** `Client.Connect` performs the
   handshake and returns a connection that is already initialized; `Agent.Connect`
-  accepts one, and refuses every other method until it arrives — including its own
-  `Call` and `Notify`, which return `acp.ErrNotInitialized` until the client has
-  initialized, because before that nobody has agreed what the connection can
-  carry. A `ClientSession`
+  accepts one, and refuses every other method until it arrives. Its own `Call` and
+  `Notify` wait for the handshake rather than failing on it, so `ctx` is the
+  caller's answer to "how long": before it, nobody has agreed what the connection
+  can carry, and after it a handler is running only because the client already has
+  the answer. A `ClientSession`
   drives turns and an `AgentSession` serves them — a client never calls
   `RequestPermission` and an agent never calls `Prompt`, so one type carrying both
   would make those calls compile and fail at runtime.
@@ -50,6 +51,12 @@ both directions.
   connection's error is a failure to release it, which `Close` and `Wait` both
   report: a subprocess that could not be reaped is still running, and answering
   `nil` would be reporting it as gone.
+- **Nothing this side sends can precede the initialize response.** An agent's
+  outbound operations wait on the response having been written. A flag set after
+  that write is inherently late — the client observes the answer *during* the
+  write, and the request it sends next is served on a different goroutine from the
+  one still finishing the handshake — so a flag refused handlers that were only
+  running because the handshake had already succeeded.
 - **Terminal handles are spent once released.** `TerminalHandle.Release` documented
   that the handle was unusable afterwards; now it is. Every operation on a released
   handle, including a second `Release`, returns `acp.ErrTerminalReleased`. A

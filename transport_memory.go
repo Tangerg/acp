@@ -2,7 +2,6 @@ package acp
 
 import (
 	"context"
-	"errors"
 	"io"
 	"sync"
 
@@ -29,21 +28,15 @@ func NewInMemoryTransports() (client, agent Transport) {
 }
 
 type inMemoryTransport struct {
+	singleUse
 	read  *messagePipe
 	write *messagePipe
-
-	connectOnce sync.Once
-	connected   bool
 }
 
 func (t *inMemoryTransport) Connect(context.Context) (Connection, error) {
-	// A transport is connected at most once, and saying so is cheaper than
-	// debugging two connections sharing one pipe.
-	t.connectOnce.Do(func() { t.connected = true })
-	if !t.connected {
-		return nil, errors.New("acp: this in-memory transport is already connected")
+	if err := t.claim(); err != nil {
+		return nil, err
 	}
-	t.connected = false
 	return &inMemoryConnection{read: t.read, write: t.write}, nil
 }
 

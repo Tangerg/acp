@@ -72,9 +72,7 @@ type AgentConfig struct {
 type Agent struct {
 	config       AgentConfig
 	capabilities AgentCapabilities
-
-	mu    sync.Mutex
-	conns []*AgentConn
+	conns        registry[*AgentConn]
 }
 
 // NewAgent builds an agent, or reports why the configuration cannot be served.
@@ -96,7 +94,7 @@ func NewAgent(config *AgentConfig) (*Agent, error) {
 		return nil, fmt.Errorf("acp: an agent needs these baseline handlers, which are the whole of a "+
 			"turn and cannot be optional: %v", missing)
 	}
-	if err := checkAuthMethods(config); err != nil {
+	if err := config.checkAuthMethods(); err != nil {
 		return nil, err
 	}
 
@@ -114,7 +112,7 @@ func NewAgent(config *AgentConfig) (*Agent, error) {
 // this method to authenticate". Requiring an Authenticate handler for it rejected
 // a valid terminal-only agent, while the arm that does need the handler is the
 // agent one.
-func checkAuthMethods(config *AgentConfig) error {
+func (config *AgentConfig) checkAuthMethods() error {
 	if config.Authenticate != nil {
 		return nil
 	}
@@ -136,8 +134,7 @@ func (config *AgentConfig) resolveCapabilities() (AgentCapabilities, error) {
 	}
 
 	stated := deepCopy(*config.Capabilities)
-	exceeded := checkAdvertisement(
-		PeerInfo{AgentCapabilities: stated}, sideAgent, config.implements)
+	exceeded := gates.exceeded(PeerInfo{AgentCapabilities: stated}, sideAgent, config.implements)
 	if len(exceeded) > 0 {
 		return AgentCapabilities{}, fmt.Errorf(
 			"acp: the stated capabilities advertise what this agent cannot serve: %v", exceeded)
@@ -189,14 +186,12 @@ func (a *Agent) Connect(ctx context.Context, transport Transport) (*AgentConn, e
 		return nil, err
 	}
 
-	connection := &AgentConn{agent: a, sessions: make(map[SessionID]*AgentSession)}
-	connection.conn = newConn(stream, connection.serve, connection.registerInbound, a.config.Logger)
-	connection.conn.run()
+	conn := &AgentConn{agent: a, opened: make(chan struct{})}
+	conn.link = newLink(stream, conn, a.config.Logger)
+	conn.run()
 
-	a.mu.Lock()
-	a.conns = append(a.conns, connection)
-	a.mu.Unlock()
-	return connection, nil
+	a.conns.add(conn)
+	return conn, nil
 }
 
 // Run serves one connection until its context is cancelled or the connection
@@ -227,108 +222,74 @@ func (a *Agent) Run(ctx context.Context, transport Transport) error {
 }
 
 // Conns iterates the connections this agent is serving.
-func (a *Agent) Conns() iter.Seq[*AgentConn] {
-	a.mu.Lock()
-	open := make([]*AgentConn, 0, len(a.conns))
-	for _, connection := range a.conns {
-		if !connection.conn.ended() {
-			open = append(open, connection)
-		}
-	}
-	a.conns = open
-	a.mu.Unlock()
-	return slices.Values(open)
-}
+func (a *Agent) Conns() iter.Seq[*AgentConn] { return a.conns.all() }
 
 // An AgentConn is one logical connection to a client.
 //
 // It is not a mirror of [ClientConn]: it serves rather than drives, so it has no
 // session-creating methods. Sessions reach an agent through its handlers.
 type AgentConn struct {
-	agent *Agent
-	conn  *conn
+	connection
 
-	peerMu sync.Mutex
-	peer   PeerInfo
-	// initialized opens inbound dispatch, and is set when the handshake is
-	// negotiated. It cannot wait for the answer to be written: the client may send
-	// its next request the moment it reads that answer, and this side would refuse
-	// the request it had just made possible.
-	initialized bool
-	// opened opens this side's own outbound operations, and is set once the answer
-	// is on the wire. That is a different moment and a different question: an agent
-	// that sent on the strength of its own decision could put a message ahead of
-	// the response that told the client what the decision was.
-	opened bool
+	agent    *Agent
+	sessions sessions[AgentSession]
 
-	sessionsMu sync.Mutex
-	sessions   map[SessionID]*AgentSession
+	// opened is closed once the initialize response has been written, and every
+	// outbound operation waits on it.
+	//
+	// A barrier rather than a flag, because a flag cannot carry both of the facts
+	// it would have to. Nothing this side sends may precede the initialize
+	// response on the wire, so the gate cannot open before that write; but the
+	// client observes the response *during* the write, and the request it sends
+	// next is served on a different goroutine from the one still finishing the
+	// handshake. A flag set after the write therefore refuses handlers that are
+	// only running because the client already has the answer — a false negative
+	// that fired about once in seventy runs.
+	//
+	// Waiting costs nothing once it is closed, and an agent that has nothing to
+	// wait for has a context to bound the wait with.
+	opened     chan struct{}
+	openedOnce sync.Once
 
 	// turns is this agent's per-session turn state: which request carries the
-	// turn, and whether it was cancelled before its handler started. One per
-	// session, because session/cancel names no turn. See cancel.go.
+	// turn. One per session, because session/cancel names no turn. See cancel.go.
 	turnsMu sync.Mutex
 	turns   map[SessionID]*agentTurn
 }
 
-// Peer reports what initialize negotiated, as a copy. Before initialize it is the
-// zero value.
-func (c *AgentConn) Peer() PeerInfo {
-	c.peerMu.Lock()
-	defer c.peerMu.Unlock()
-	return c.peer.clone()
-}
-
 // Call sends an extension request. Extension methods only; see [ClientConn.Call].
 //
-// It fails until the handshake is complete and the client has been told so.
-// Connect returns before the handshake arrives — this side answers one, it does
-// not perform one — so an agent that sent on the connection immediately would be
-// sending before anybody had agreed what the connection can carry, and one that
-// sent the instant it decided could put a message ahead of the response carrying
-// the decision.
-//
-// Everything else this side sends is reached from a handler, and a handler runs
-// for a request the client sent after it was answered.
+// It waits for the handshake. Connect returns before one arrives — this side
+// answers a handshake, it does not perform one — so an agent that sent
+// immediately would be sending before anybody had agreed what the connection can
+// carry. Waiting rather than failing is what makes ctx the caller's answer to
+// "how long": an agent with nothing else to do can wait for its client, and one
+// that cannot afford to passes a deadline.
 func (c *AgentConn) Call(ctx context.Context, method string, params, result any) error {
-	if err := c.requireInitialized(method); err != nil {
+	if err := c.awaitHandshake(ctx, method); err != nil {
 		return err
 	}
-	return extensionCall(ctx, c.conn, method, params, result)
+	return extensionCall(ctx, c.link, method, params, result)
 }
 
 // Notify sends an extension notification. Extension methods only, and not before
-// initialize; see [AgentConn.Call].
+// the handshake; see [AgentConn.Call].
 func (c *AgentConn) Notify(ctx context.Context, method string, params any) error {
-	if err := c.requireInitialized(method); err != nil {
+	if err := c.awaitHandshake(ctx, method); err != nil {
 		return err
 	}
-	return extensionNotify(ctx, c.conn, method, params)
+	return extensionNotify(ctx, c.link, method, params)
 }
 
-// ErrNotInitialized is returned by an operation attempted on an agent connection
-// before the client has completed the handshake.
-//
-// An agent cannot make it happen sooner: the client initiates initialize. What it
-// can do is wait for a session to reach one of its handlers, which cannot happen
-// before initialization.
-var ErrNotInitialized = errors.New("acp: this connection has not been initialized yet")
-
-func (c *AgentConn) requireInitialized(method string) error {
-	if c.isOpen() {
+func (c *AgentConn) awaitHandshake(ctx context.Context, method string) error {
+	select {
+	case <-c.opened:
 		return nil
+	case <-c.over():
+		return c.failure()
+	case <-ctx.Done():
+		return fmt.Errorf("acp: %s waited for the client to initialize: %w", method, ctx.Err())
 	}
-	return fmt.Errorf("acp: %s cannot be sent yet: %w", method, ErrNotInitialized)
-}
-
-// Close ends the connection. It is idempotent and safe to call concurrently.
-func (c *AgentConn) Close() error {
-	return c.conn.close()
-}
-
-// Wait blocks until the connection has ended and reports its terminal error.
-func (c *AgentConn) Wait() error {
-	return c.conn.wait()
 }
 
 // initialize prepares the answer to the handshake.
@@ -367,7 +328,7 @@ func (c *AgentConn) initialize(request *InitializeRequest) (*InitializeResponse,
 	version := CurrentProtocolVersion
 
 	capabilities := deepCopy(c.agent.capabilities)
-	capabilities.PositionEncoding = selectPositionEncoding(capabilities, request.ClientCapabilities)
+	capabilities.PositionEncoding = capabilities.selectEncoding(request.ClientCapabilities)
 
 	response := &InitializeResponse{
 		ProtocolVersion:   version,
@@ -395,16 +356,14 @@ func (c *AgentConn) initialize(request *InitializeRequest) (*InitializeResponse,
 	return response, nil
 }
 
-// openOutbound lets this side send, once the client has been told what it agreed
-// to. It is a no-op when the handshake failed: there is nothing to open.
+// A failed handshake opens nothing: there is no connection to send on.
 func (c *AgentConn) openOutbound() {
-	c.peerMu.Lock()
-	defer c.peerMu.Unlock()
-	c.opened = c.initialized
+	if !c.isInitialized() {
+		return
+	}
+	c.openedOnce.Do(func() { close(c.opened) })
 }
 
-// offeredAuthMethods is what this agent may advertise to this client.
-//
 // The schema is explicit about the terminal arm: an agent "MUST advertise this
 // method only when the client enabled its terminal authentication capability".
 // Whether it may be offered is therefore a fact about the connection, and sending
@@ -424,31 +383,19 @@ func (a *Agent) offeredAuthMethods(client ClientCapabilities) []AuthMethod {
 	return offered
 }
 
-// selectPositionEncoding narrows the configured encoding to one the client
+// selectEncoding narrows this agent's configured encoding to one the client
 // offered.
 //
 // The schema calls the field "the position encoding selected by the agent from
 // the client's supported encodings", so an encoding the client never offered is
-// not a selection. Omitting it leaves both peers on the default rather than on
-// two different answers about what a character offset counts.
-func selectPositionEncoding(agent AgentCapabilities, client ClientCapabilities) Opt[PositionEncodingKind] {
-	chosen, configured := agent.PositionEncoding.Get()
+// not a selection. Omitting it leaves both peers on the default rather than on two
+// different answers about what a character offset counts.
+func (a AgentCapabilities) selectEncoding(client ClientCapabilities) Opt[PositionEncodingKind] {
+	chosen, configured := a.PositionEncoding.Get()
 	if configured && slices.Contains(client.PositionEncodings, chosen) {
 		return OptValue(chosen)
 	}
 	return Opt[PositionEncodingKind]{}
-}
-
-func (c *AgentConn) isInitialized() bool {
-	c.peerMu.Lock()
-	defer c.peerMu.Unlock()
-	return c.initialized
-}
-
-func (c *AgentConn) isOpen() bool {
-	c.peerMu.Lock()
-	defer c.peerMu.Unlock()
-	return c.opened
 }
 
 // serve dispatches the requests a client makes of an agent.
@@ -472,8 +419,8 @@ func (c *AgentConn) serve(ctx context.Context, request *jsonrpc.Request) (any, e
 	}
 
 	if isStandardMethod(request.Method) {
-		if allowed, capability := allowsMethod(c.Peer(), request.Method); !allowed {
-			return nil, methodRefusal(request.Method, capability)
+		if err := c.Peer().permits(request.Method); err != nil {
+			return nil, err
 		}
 	}
 
