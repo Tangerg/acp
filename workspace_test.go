@@ -3,6 +3,7 @@ package acp_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -351,6 +352,71 @@ func TestAReleasedTerminalHandleRefusesEverything(t *testing.T) {
 	}
 	if len(reached) != 2 || reached[0] != "create" || reached[1] != "release" {
 		t.Fatalf("the client served %v; a released handle went on sending", reached)
+	}
+}
+
+func TestATerminalReleaseCanRetryWhenNothingWasSent(t *testing.T) {
+	released := make(chan struct{}, 1)
+	client, err := acp.NewClient(&acp.ClientConfig{
+		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		RequestPermission: denyingPermission,
+		Terminal: &acp.TerminalHandlers{
+			Create: func(context.Context, *acp.CreateTerminalRequest) (*acp.CreateTerminalResponse, error) {
+				return &acp.CreateTerminalResponse{TerminalID: "term-1"}, nil
+			},
+			Output: func(context.Context, *acp.TerminalOutputRequest) (*acp.TerminalOutputResponse, error) {
+				return &acp.TerminalOutputResponse{}, nil
+			},
+			WaitForExit: func(
+				context.Context,
+				*acp.WaitForTerminalExitRequest,
+			) (*acp.WaitForTerminalExitResponse, error) {
+				return &acp.WaitForTerminalExitResponse{}, nil
+			},
+			Kill: func(context.Context, *acp.KillTerminalRequest) (*acp.KillTerminalResponse, error) {
+				return &acp.KillTerminalResponse{}, nil
+			},
+			Release: func(context.Context, *acp.ReleaseTerminalRequest) (*acp.ReleaseTerminalResponse, error) {
+				released <- struct{}{}
+				return &acp.ReleaseTerminalResponse{}, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	retried := make(chan error, 1)
+	agent := testAgent(t, func(
+		ctx context.Context,
+		session *acp.AgentSession,
+		_ *acp.PromptRequest,
+	) (*acp.PromptResponse, error) {
+		terminal, _, err := session.CreateTerminal(ctx, &acp.CreateTerminalParams{Command: "/bin/true"})
+		if err != nil {
+			return nil, err
+		}
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		if _, cancelErr := terminal.Release(cancelled, nil); !errors.Is(cancelErr, context.Canceled) {
+			return nil, fmt.Errorf("release with cancelled context returned %w", cancelErr)
+		}
+		_, err = terminal.Release(ctx, nil)
+		retried <- err
+		return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+	})
+
+	session := connectAndOpen(t, client, agent)
+	if _, err := session.Prompt(context.Background(), &acp.PromptParams{}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if err := <-retried; err != nil {
+		t.Fatalf("Release retry: %v", err)
+	}
+	select {
+	case <-released:
+	default:
+		t.Fatal("the retried release never reached the client")
 	}
 }
 

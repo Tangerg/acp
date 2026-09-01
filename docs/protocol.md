@@ -28,17 +28,14 @@ One bidirectional JSON-RPC 2.0 connection. Locally, the client starts the agent
 as a subprocess and speaks newline-delimited JSON over its stdin and stdout.
 Remote agents over HTTP or WebSocket are described upstream as work in progress.
 
-Both directions carry requests. This is not a client calling a server: 14 of the
-43 directory entries run from the agent to the client.
+Both directions carry requests. This is not a client calling a server: 11 of the
+25 methods run from the agent to the client.
 
 ## Methods
 
-Counted from `schema/meta.json` at schema release `schema-v1.21.0`: **28 agent
-methods, 14 client methods, and one protocol method — 43 directory entries, and
-42 distinct method names.** The two numbers differ because `mcp/message` is listed
-under both directions: either peer may send it, and it is the only method that
-carries both a request payload and a notification payload. Earlier revisions of
-this page said 43 methods, which was one too many.
+Counted from the published `schema/meta.json` asset at schema release
+`schema-v1.21.0`: **13 agent methods, 11 client methods, and one protocol method —
+25 distinct method names.**
 
 The `protocolVersion` that `initialize` negotiates is `1`.
 
@@ -53,13 +50,8 @@ The `protocolVersion` that `initialize` negotiates is `1`.
 | | `session/prompt` | Run one turn. Blocks until the turn ends. |
 | | `session/cancel` | Notification. Cancels the current turn. |
 | | `session/load` | Gated on `loadSession`. Replays history as notifications. |
-| | `session/resume` | Resume without replaying history. |
-| | `session/list`, `session/delete`, `session/fork`, `session/close` | Session management, each capability-gated. |
+| | `session/list`, `session/delete`, `session/resume`, `session/close` | Session management, each capability-gated. |
 | | `session/set_mode`, `session/set_config_option` | Switch agent mode or a config option mid-session. |
-| Providers | `providers/list`, `providers/set`, `providers/disable` | Model provider selection. |
-| Editor state | `document/didOpen`, `document/didChange`, `document/didClose`, `document/didSave`, `document/didFocus` | LSP-shaped document sync, so the agent knows what the user is looking at. |
-| Next edit | `nes/start`, `nes/suggest`, `nes/accept`, `nes/reject`, `nes/close` | Inline next-edit suggestions. |
-| MCP | `mcp/message` | Pass an MCP message through to a server the agent holds. |
 
 ### Agent → client
 
@@ -72,7 +64,6 @@ The `protocolVersion` that `initialize` negotiates is `1`.
 | Terminals | `terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, `terminal/release` | Gated on the `terminal` capability. |
 | Elicitation | `elicitation/create` | Ask the user for structured input. |
 | | `elicitation/complete` | Notification, reporting that an out-of-band interaction finished. |
-| MCP | `mcp/connect`, `mcp/message`, `mcp/disconnect` | The client holds the MCP connection on the agent's behalf. |
 
 ### Protocol
 
@@ -93,7 +84,7 @@ are baseline session operations with no capability behind them, and there are
 other exceptions.
 
 Which method is gated by which capability is **not machine-readable**. The schema
-annotates payloads with `x-method` and `x-side`, 74 occurrences each, and has no
+annotates payloads with `x-method` and `x-side`, 46 occurrences each, and has no
 annotation linking a method to a capability predicate — those links live only in
 prose descriptions. Any implementation therefore maintains that mapping itself;
 [design.md](./design.md#the-capability-table-is-hand-maintained-and-checked)
@@ -157,6 +148,11 @@ remote `-32800` distinct for that reason.
 Step 5 is why both peers serve requests. An agent that is answering a prompt is
 simultaneously a caller.
 
+The schema does not require `session/request_permission` to occur inside a prompt
+turn. A request received during an active turn is owned by that turn; one received
+outside a turn is still dispatched normally, but `session/cancel` has no turn
+through which to claim it. Its own `$/cancel_request` remains effective.
+
 ### Cancellation
 
 `session/cancel` is a notification, and sending it does not end the turn. The
@@ -182,36 +178,33 @@ as two separate operations in Go for this reason.
 
 ## The type system
 
-From `schema/schema.json` at `schema-v1.21.0`: **265 definitions and 41 unions.**
+From the published `schema/schema.json` asset at `schema-v1.21.0`: **170
+definitions and 32 unions.**
 
-The unions do not split in two. They split in five, and the schema is explicit
-about which is which:
+The schema uses closed enumerations, open string unions, discriminated object
+unions, and primitive/value unions. Openness belongs to each definition; it is
+not a blanket forward-compatibility policy.
 
-| Class | Count | Open? |
-| --- | --- | --- |
-| Closed string enumerations — `StopReason`, `ToolKind`, `Role` | 14 | No |
-| Open string unions — const arms plus a bare `string`: `LlmProtocol`, `CompactionStatus`, `SessionConfigOptionCategory` | 3 | Yes |
-| Closed discriminated object unions — `SessionUpdate`, `ContentBlock` | 16 | No |
-| Open object unions carrying a `not` catch-all | 4 | Yes |
-| Primitive, value and mixed — `RequestId`, `ErrorCode`, `ElicitationContentValue` | 4 | n/a |
-
-The largest is `SessionUpdate`, with **15 arms** tagged by a `sessionUpdate`
+The largest is `SessionUpdate`, with **11 arms** tagged by a `sessionUpdate`
 field. It is also the one sent most: it is the whole of a turn's output. It is
 **closed**.
 
 Openness is a property the schema states, not one an implementation may grant
-itself. `zStopReason` is five literals with no fallback; `zLlmProtocol` is five
-literals plus `z.string()` (`src/schema/zod.gen.ts:2075`, `:1671`). Exactly four
-unions carry the `not` clause that makes an object union open.
+itself. `StopReason` is five literals with no fallback, while
+`SessionConfigOptionCategory` includes a bare string arm.
 
 Two schema extension keywords also carry decoding semantics no plain JSON decoder
-implements: **`x-deserialize-default-on-error` appears 378 times** and
-**`x-deserialize-skip-invalid-items` 35 times**. A malformed value under the
+implements: **`x-deserialize-default-on-error` appears 249 times** and
+**`x-deserialize-skip-invalid-items` 27 times**. A malformed value under the
 first becomes the schema's declared default rather than failing the message.
-
-`schema.json` also marks **52 of its 265 definitions UNSTABLE** — providers,
-ACP-carried MCP, document sync, NES, session forking, compaction — so being in
-the v1 lane is not the same as being stable.
 
 [design.md](./design.md#unions) treats all of this as the governing constraint
 rather than detail.
+
+### Extensions
+
+Custom method names begin with `_`; every other method namespace is reserved for
+ACP. Unknown custom requests receive a JSON-RPC response, unknown custom
+notifications may be ignored, and extension data belongs under `_meta` rather
+than as new root properties. This keeps a private extension from colliding with a
+later standard method.

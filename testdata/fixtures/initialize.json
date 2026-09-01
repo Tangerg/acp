@@ -171,8 +171,7 @@
           },
           "mcpCapabilities": {
             "http": false,
-            "sse": false,
-            "acp": false
+            "sse": false
           },
           "sessionCapabilities": {},
           "auth": {}
@@ -228,8 +227,7 @@
           },
           "mcpCapabilities": {
             "http": false,
-            "sse": false,
-            "acp": false
+            "sse": false
           },
           "sessionCapabilities": {},
           "auth": {}
@@ -290,8 +288,7 @@
           },
           "mcpCapabilities": {
             "http": false,
-            "sse": false,
-            "acp": false
+            "sse": false
           },
           "sessionCapabilities": {},
           "auth": {}
@@ -331,8 +328,7 @@
           },
           "mcpCapabilities": {
             "http": false,
-            "sse": false,
-            "acp": false
+            "sse": false
           },
           "sessionCapabilities": {},
           "auth": {}

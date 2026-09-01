@@ -56,12 +56,12 @@ func (s *ClientSession) Conn() *ClientConn { return s.conn }
 // operations for a reason the protocol insists on. See [ClientSession.Cancel].
 //
 // The turn outlives this call when that happens. The agent still owes an answer,
-// and the session is not free for the next prompt until that answer arrives — so
-// a waiter stays behind to observe it. A caller who wants the session back
-// promptly should call Cancel, which is the operation that ends a turn.
+// and the session is not free for the next prompt until the connection accepts
+// that answer. A caller who wants the session back promptly should call Cancel,
+// which is the operation that ends a turn.
 func (s *ClientSession) Prompt(ctx context.Context, params *PromptParams) (*PromptResponse, error) {
 	conn := s.conn
-	generation, claimed := conn.beginTurn(s.id)
+	generation, claimed := conn.turns.begin(s.id)
 	if !claimed {
 		return nil, ErrPromptInProgress
 	}
@@ -72,30 +72,43 @@ func (s *ClientSession) Prompt(ctx context.Context, params *PromptParams) (*Prom
 		request.Meta = params.Meta
 	}
 
-	id, replies, err := conn.send(ctx, methodSessionPrompt, request)
+	result := new(PromptResponse)
+	finish := func() { conn.turns.complete(s.id, generation) }
+	call, err := conn.send(ctx, methodSessionPrompt, request, func(response *jsonrpc.Response) error {
+		defer finish()
+		return decodeResponse(response, result)
+	}, finish)
 	if err != nil {
-		conn.endTurn(s.id, generation)
+		finish()
 		return nil, err
 	}
 
 	select {
-	case response := <-replies:
-		return s.finishTurn(generation, response)
+	case err := <-call.completed:
+		if err != nil {
+			return nil, err
+		}
+		return result, nil
 
 	case <-conn.over():
 		// An answer already in hand is an answer; see link.await.
 		select {
-		case response := <-replies:
-			return s.finishTurn(generation, response)
+		case err := <-call.completed:
+			if err != nil {
+				return nil, err
+			}
+			return result, nil
 		default:
 		}
-		conn.endTurn(s.id, generation)
 		return nil, conn.failure()
 
 	case <-ctx.Done():
 		select {
-		case response := <-replies:
-			return s.finishTurn(generation, response)
+		case err := <-call.completed:
+			if err != nil {
+				return nil, err
+			}
+			return result, nil
 		default:
 		}
 		// This caller has stopped waiting. The turn has not stopped running: the
@@ -103,47 +116,8 @@ func (s *ClientSession) Prompt(ctx context.Context, params *PromptParams) (*Prom
 		// on a budget of its own, and leave a waiter behind — the session is free
 		// for the next prompt when that answer arrives and not before.
 		//nolint:contextcheck // deliberate; the notification has a budget of its own.
-		conn.cancelRemotely(id)
-		s.awaitLateAnswer(generation, id, replies)
+		conn.cancelRemotely(call.id)
 		return nil, ctx.Err()
-	}
-}
-
-func (s *ClientSession) finishTurn(generation uint64, response *jsonrpc.Response) (*PromptResponse, error) {
-	s.conn.endTurn(s.id, generation)
-	result := new(PromptResponse)
-	if err := decodeResponse(response, result); err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
-// awaitLateAnswer keeps a turn open until the agent answers a prompt whose caller
-// has walked away.
-//
-// It runs on connection-owned work so that its exit is something Wait observes
-// rather than a goroutine nobody tracks, and so that a connection which ends
-// first releases it.
-func (s *ClientSession) awaitLateAnswer(
-	generation uint64,
-	id jsonrpc.ID,
-	replies <-chan *jsonrpc.Response,
-) {
-	conn := s.conn
-	end := func() {
-		conn.retireCall(id)
-		conn.endTurn(s.id, generation)
-	}
-	started := conn.spawn(func() {
-		select {
-		case <-replies:
-		case <-conn.over():
-		}
-		end()
-	})
-	if !started {
-		// The connection is already over, so no answer is coming.
-		end()
 	}
 }
 
@@ -160,12 +134,25 @@ func (s *ClientSession) awaitLateAnswer(
 func (s *ClientSession) Cancel(ctx context.Context, params *CancelParams) error {
 	// The pending permission requests are claimed and answered first — before the
 	// notification goes out and before this returns. See cancel.go.
-	//nolint:contextcheck // the answers are the connection's obligation, not this caller's.
-	generation := s.conn.beginCancel(s.id)
+	cancellation := s.conn.turns.beginCancellation(s.id)
+	for _, id := range cancellation.pending {
+		settled := s.conn.requests.settlement(id)
+		//nolint:contextcheck // the answer is the connection's obligation, not this caller's.
+		if write := s.conn.answerCancelled(id); write != nil {
+			write()
+			continue
+		}
+		// The permission handler may have won the answer claim immediately before
+		// cancellation. Its response still has to reach the wire before
+		// session/cancel; a claimed answer is not yet an observed one.
+		if settled != nil {
+			<-settled
+		}
+	}
 	// And the turn is held until the notification is on the wire. It names only
 	// the session, so a prompt that started before it went out would be the turn
 	// the agent applies it to.
-	defer s.conn.endCancel(s.id, generation)
+	defer s.conn.turns.finishCancellation(s.id, cancellation.generation)
 
 	notification := &CancelNotification{SessionID: s.id}
 	if params != nil {
@@ -218,9 +205,10 @@ func (c *ClientConn) NewSession(
 // LoadSession reopens a conversation the agent already has, replaying its history
 // as session/update notifications.
 //
-// The handle it returns is new even for a session this connection has seen before:
-// handles are connection-bound, and a caller keeps the [SessionID] rather than an
-// old handle.
+// A connection keeps one canonical handle per session identifier, so loading an
+// identifier already seen on this connection returns that handle and all callers
+// share the same turn invariant. Loading it through a new connection returns a
+// new handle, because handles never silently move between transports.
 func (c *ClientConn) LoadSession(
 	ctx context.Context,
 	params *LoadSessionRequest,
@@ -267,9 +255,13 @@ func (c *ClientConn) Authenticate(
 }
 
 func (c *ClientConn) session(id SessionID) *ClientSession {
-	return c.sessions.lookup(id, func(id SessionID) *ClientSession {
+	handle, within := c.sessions.lookup(id, func(id SessionID) *ClientSession {
 		return &ClientSession{id: id, conn: c}
 	})
+	if !within {
+		c.tooManySessions()
+	}
+	return handle
 }
 
 // An AgentSession is the same conversation as the agent sees it.
@@ -345,9 +337,13 @@ func (s *AgentSession) RequestPermission(
 }
 
 func (c *AgentConn) session(id SessionID) *AgentSession {
-	return c.sessions.lookup(id, func(id SessionID) *AgentSession {
+	handle, within := c.sessions.lookup(id, func(id SessionID) *AgentSession {
 		return &AgentSession{id: id, conn: c}
 	})
+	if !within {
+		c.tooManySessions()
+	}
+	return handle
 }
 
 // newSession serves session/new and builds the handle from the identifier the

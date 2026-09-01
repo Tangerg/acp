@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // An ExtRequest is a request for a method the specification does not define.
@@ -44,16 +45,27 @@ func errReservedMethod(method string) error {
 		"does not send it: call the operation for it instead", method)
 }
 
-func extensionCall(ctx context.Context, l *link, method string, params, result any) error {
+func validateExtensionMethod(method string) error {
 	if isStandardMethod(method) {
 		return errReservedMethod(method)
+	}
+	if !strings.HasPrefix(method, "_") {
+		return fmt.Errorf("acp: extension method %q must begin with an underscore; "+
+			"the protocol reserves every other name", method)
+	}
+	return nil
+}
+
+func extensionCall(ctx context.Context, l *link, method string, params, result any) error {
+	if err := validateExtensionMethod(method); err != nil {
+		return err
 	}
 	return l.call(ctx, method, params, result)
 }
 
 func extensionNotify(ctx context.Context, l *link, method string, params any) error {
-	if isStandardMethod(method) {
-		return errReservedMethod(method)
+	if err := validateExtensionMethod(method); err != nil {
+		return err
 	}
 	return l.notify(ctx, method, params)
 }

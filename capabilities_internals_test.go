@@ -160,17 +160,12 @@ func TestTheTerminalCapabilityCoversAllFiveMethods(t *testing.T) {
 // at construction, before a connection exists to break the promise on.
 //
 // This used to be a hole: only loadSession and the fs/terminal handlers were
-// checked, so an agent could advertise session listing or providers and a client
-// could advertise elicitation, and the inbound gate would then refuse a method the
-// peer had been told was there.
+// checked, so a peer could advertise an unsupported method and the inbound gate
+// would then refuse a method the peer had been told was there.
 func TestAdvertisingAnUnimplementedMethodIsRefusedAtConstruction(t *testing.T) {
 	agentCases := map[string]*AgentCapabilities{
 		"session listing": {SessionCapabilities: SessionCapabilities{List: OptValue(SessionListCapabilities{})}},
-		"session forking": {SessionCapabilities: SessionCapabilities{Fork: OptValue(SessionForkCapabilities{})}},
 		"logout":          {Auth: AgentAuthCapabilities{Logout: OptValue(LogoutCapabilities{})}},
-		"providers":       {Providers: OptValue(ProvidersCapabilities{})},
-		"next edits":      {Nes: OptValue(NesCapabilities{})},
-		"MCP over ACP":    {McpCapabilities: McpCapabilities{Acp: true}},
 	}
 	for name, capabilities := range agentCases {
 		t.Run("an agent advertising "+name, func(t *testing.T) {
@@ -201,6 +196,40 @@ func TestAdvertisingAnUnimplementedMethodIsRefusedAtConstruction(t *testing.T) {
 	})
 }
 
+// These capability fields explicitly define both omitted and null as false. Opt
+// keeps those states separate for round trips, so the authority check must not
+// confuse "present null" with "present capability object".
+func TestNullCapabilityObjectsDoNotAdvertiseMethods(t *testing.T) {
+	_, err := NewAgent(&AgentConfig{
+		NewSession: newSessionStub,
+		Prompt:     promptStub,
+		Cancel:     func(context.Context, *AgentSession, *CancelNotification) {},
+		Capabilities: &AgentCapabilities{
+			Auth: AgentAuthCapabilities{Logout: OptNull[LogoutCapabilities]()},
+			SessionCapabilities: SessionCapabilities{
+				List:   OptNull[SessionListCapabilities](),
+				Delete: OptNull[SessionDeleteCapabilities](),
+				Resume: OptNull[SessionResumeCapabilities](),
+				Close:  OptNull[SessionCloseCapabilities](),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAgent rejected null capabilities as advertisements: %v", err)
+	}
+
+	_, err = NewClient(&ClientConfig{
+		SessionUpdate: func(context.Context, *SessionNotification) {},
+		RequestPermission: func(context.Context, *RequestPermissionRequest) (*RequestPermissionResponse, error) {
+			return &RequestPermissionResponse{Outcome: &RequestPermissionOutcomeCancelled{}}, nil
+		},
+		Capabilities: &ClientCapabilities{Elicitation: OptNull[ElicitationCapabilities]()},
+	})
+	if err != nil {
+		t.Fatalf("NewClient rejected a null elicitation capability as an advertisement: %v", err)
+	}
+}
+
 // An agent that offers authentication methods must be able to serve the method it
 // tells a client to call.
 func TestOfferingAuthMethodsWithoutTheHandlerIsRefused(t *testing.T) {
@@ -225,7 +254,7 @@ func TestBaselineIsAllowedAndUnimplementedIsNot(t *testing.T) {
 			t.Errorf("the baseline method %q was refused", name)
 		}
 	}
-	for _, name := range []string{methodLogout, methodMcpMessage, methodNesStart} {
+	for _, name := range []string{methodLogout, methodSessionList, methodElicitationCreate} {
 		if silent.permits(name) == nil {
 			t.Errorf("%q is not implemented yet but the gate allowed it", name)
 		}
@@ -245,15 +274,10 @@ func TestAnUnknownMethodIsRefused(t *testing.T) {
 }
 
 // The generated table agrees with the schema about how many methods there are,
-// which is the number the documentation quotes. Forty-two names, forty-three
-// entries in the directory: mcp/message is listed under both directions, which is
-// how the schema says either peer may send it.
+// which is the number the documentation quotes.
 func TestTheMethodTableIsTheSizeTheSchemaSays(t *testing.T) {
-	if got, want := len(standardMethods), 42; got != want {
+	if got, want := len(standardMethods), 25; got != want {
 		t.Fatalf("the method table has %d methods, want %d", got, want)
-	}
-	if standardMethods[methodMcpMessage].side != sideBoth {
-		t.Error("mcp/message is the one method either peer may send, and the table does not say so")
 	}
 	if standardMethods[methodCancelRequest].side != sideProtocol {
 		t.Error("$/cancel_request belongs to the connection rather than to either peer")

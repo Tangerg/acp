@@ -63,8 +63,14 @@ func TestAuthenticationIsControlFlow(t *testing.T) {
 	defer conn.Close() //nolint:errcheck // idempotent.
 
 	// The agent said what it accepts, which is how a client knows what to offer.
-	methods := conn.Peer().AgentCapabilities
-	_ = methods
+	methods := conn.Peer().AuthMethods
+	if len(methods) != 1 {
+		t.Fatalf("initialize advertised %d authentication methods, want one", len(methods))
+	}
+	method, ok := methods[0].(*acp.AuthMethodAgent)
+	if !ok || method.ID != "oauth" {
+		t.Fatalf("initialize advertised %#v, want the oauth agent method", methods[0])
+	}
 
 	_, _, err = conn.NewSession(ctx, &acp.NewSessionRequest{Cwd: "/w"})
 	if !errors.Is(err, acp.ErrAuthRequired) {
@@ -224,6 +230,9 @@ func TestExtensionNotifications(t *testing.T) {
 	}
 	if err := session.Conn().Call(ctx, "initialize", nil, nil); err == nil {
 		t.Error("the extension API sent initialize")
+	}
+	if err := session.Conn().Notify(ctx, "future/notification", nil); err == nil {
+		t.Error("the extension API sent a name reserved for a future ACP notification")
 	}
 }
 

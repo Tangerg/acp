@@ -53,9 +53,15 @@ type ioTransport struct {
 	writer io.WriteCloser
 }
 
-func (t *ioTransport) Connect(context.Context) (Connection, error) {
+func (t *ioTransport) Connect(ctx context.Context) (Connection, error) {
 	if err := t.claim(); err != nil {
 		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if t.reader == nil || t.writer == nil {
+		return nil, errors.New("acp: an IO transport needs both a reader and a writer")
 	}
 	lines := bufio.NewReaderSize(t.reader, 64<<10)
 	return &ioConnection{reader: t.reader, writer: t.writer, lines: lines}, nil
@@ -110,13 +116,13 @@ func (c *ioConnection) readLine() ([]byte, error) {
 	for {
 		chunk, err := c.lines.ReadSlice('\n')
 		line = append(line, chunk...)
+		if len(line) > maxMessageBytes {
+			return nil, fmt.Errorf("acp: a message exceeded %d bytes", maxMessageBytes)
+		}
 		switch {
 		case err == nil:
 			return line, nil
 		case errors.Is(err, bufio.ErrBufferFull):
-			if len(line) > maxMessageBytes {
-				return nil, fmt.Errorf("acp: a message exceeded %d bytes", maxMessageBytes)
-			}
 			continue
 		case errors.Is(err, io.EOF) && len(line) > 0:
 			// A final message with no trailing newline is still a message.
@@ -195,7 +201,11 @@ type CommandConfig struct {
 // sequence, so that a client that stops talking to an agent neither leaves one
 // running nor waits on one for ever.
 func NewCommandTransport(config *CommandConfig) Transport {
-	return &commandTransport{config: *config}
+	var owned CommandConfig
+	if config != nil {
+		owned = *config
+	}
+	return &commandTransport{config: owned}
 }
 
 type commandTransport struct {
@@ -203,26 +213,45 @@ type commandTransport struct {
 	config CommandConfig
 }
 
-func (t *commandTransport) Connect(context.Context) (Connection, error) {
+func (t *commandTransport) Connect(ctx context.Context) (Connection, error) {
 	if err := t.claim(); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
 	cmd := t.config.Command
+	if cmd == nil {
+		return nil, errors.New("acp: a command transport needs Command")
+	}
+	if t.config.TerminationGrace < 0 {
+		return nil, errors.New("acp: command TerminationGrace cannot be negative")
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("acp: connecting to the agent's stdin: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("acp: connecting to the agent's stdout: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("acp: connecting to the agent's stdout: %w", err),
+			stdin.Close(),
+		)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, errors.Join(err, stdin.Close(), stdout.Close())
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("acp: starting the agent: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("acp: starting the agent: %w", err),
+			stdin.Close(),
+			stdout.Close(),
+		)
 	}
 
 	grace := t.config.TerminationGrace
-	if grace <= 0 {
+	if grace == 0 {
 		grace = terminationGrace
 	}
 	return &commandConnection{

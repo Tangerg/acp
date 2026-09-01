@@ -193,8 +193,8 @@ func TestAnUnadvertisedMethodIsRefused(t *testing.T) {
 	}
 }
 
-// The extension boundary: a name outside the specification reaches the fallback,
-// and a name inside it never does.
+// The extension boundary: an underscore-prefixed name outside the specification
+// reaches the fallback; standard and protocol-reserved names never do.
 func TestExtensionMethodsAndTheReservedSet(t *testing.T) {
 	var seen string
 	client, err := acp.NewClient(&acp.ClientConfig{
@@ -209,11 +209,12 @@ func TestExtensionMethodsAndTheReservedSet(t *testing.T) {
 		t.Fatalf("NewClient: %v", err)
 	}
 
-	var extErr, reservedErr error
+	var extErr, standardErr, futureErr error
 	var result struct{ Answered bool }
 	agent := testAgent(t, func(ctx context.Context, session *acp.AgentSession, _ *acp.PromptRequest) (*acp.PromptResponse, error) {
 		extErr = session.Conn().Call(ctx, "_vendor.example/thing", map[string]int{"n": 1}, &result)
-		reservedErr = session.Conn().Call(ctx, "session/prompt", nil, nil)
+		standardErr = session.Conn().Call(ctx, "session/prompt", nil, nil)
+		futureErr = session.Conn().Call(ctx, "future/method", nil, nil)
 		return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 	})
 
@@ -231,11 +232,14 @@ func TestExtensionMethodsAndTheReservedSet(t *testing.T) {
 	if !result.Answered {
 		t.Error("the extension's result did not come back")
 	}
-	if reservedErr == nil {
+	if standardErr == nil {
 		t.Fatal("the extension API sent session/prompt, bypassing the typed codec and the gate")
 	}
-	if !strings.Contains(reservedErr.Error(), "the extension API does not send it") {
-		t.Errorf("the refusal does not say why: %v", reservedErr)
+	if !strings.Contains(standardErr.Error(), "the extension API does not send it") {
+		t.Errorf("the refusal does not say why: %v", standardErr)
+	}
+	if futureErr == nil || !strings.Contains(futureErr.Error(), "must begin with an underscore") {
+		t.Errorf("the extension API did not preserve future ACP method names: %v", futureErr)
 	}
 }
 

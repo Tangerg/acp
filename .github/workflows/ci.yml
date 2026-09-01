@@ -49,9 +49,7 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
           cache: true
-          # go.mod rather than go.sum: the module has no dependencies yet, and
-          # setup-go fails outright on a cache path that matches no file.
-          cache-dependency-path: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build
         run: go build ./...
@@ -79,9 +77,7 @@ jobs:
         with:
           go-version: "1.25.x"
           check-latest: true
-          # go.mod rather than go.sum: the module has no dependencies yet, and
-          # setup-go fails outright on a cache path that matches no file.
-          cache-dependency-path: go.mod
+          cache-dependency-path: go.sum
 
       # gorelease owns both halves of this promise: exported Go API compatibility
       # and the module/dependency facts that make a release usable. Pinning the
@@ -150,9 +146,7 @@ jobs:
         with:
           go-version: "1.25.x"
           check-latest: true
-          # go.mod rather than go.sum: the module has no dependencies yet, and
-          # setup-go fails outright on a cache path that matches no file.
-          cache-dependency-path: go.mod
+          cache-dependency-path: go.sum
 
       # Pinned rather than floating: a linter that changes under a repository is
       # one whose findings arrive as unrelated failures on somebody else's change.
@@ -193,9 +187,7 @@ jobs:
         with:
           go-version: "1.25.x"
           check-latest: true
-          # go.mod rather than go.sum: the module has no dependencies yet, and
-          # setup-go fails outright on a cache path that matches no file.
-          cache-dependency-path: go.mod
+          cache-dependency-path: go.sum
       - name: Fuzz every target
         run: |
           set -euo pipefail
@@ -244,9 +236,7 @@ jobs:
         with:
           go-version: "1.25.x"
           check-latest: true
-          # go.mod rather than go.sum: the module has no dependencies yet, and
-          # setup-go fails outright on a cache path that matches no file.
-          cache-dependency-path: go.mod
+          cache-dependency-path: go.sum
 
       # gofumpt rather than gofmt: it is gofmt plus the decisions gofmt left open,
       # and a repository that argues about them in review is one that has not made
@@ -323,9 +313,7 @@ jobs:
         with:
           go-version: "1.25.x"
           check-latest: true
-          # go.mod rather than go.sum: the module has no dependencies yet, and
-          # setup-go fails outright on a cache path that matches no file.
-          cache-dependency-path: go.mod
+          cache-dependency-path: go.sum
 
       # Vet rather than build, because vet type-checks the tests too. A test file
       # that names a syscall package with no build tag on it compiles here and

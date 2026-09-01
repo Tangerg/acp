@@ -1,11 +1,13 @@
-// Decides every fixture's expected outcome using the TypeScript SDK's own
-// validators, and writes the answers back into the fixture files.
+// Decides every fixture's expected outcome using TypeScript SDK validators
+// generated from the published stable schema, and writes the answers back into
+// the fixture files.
 //
 // It runs inside a checkout of agentclientprotocol/typescript-sdk, pinned by
 // scripts/update-fixtures.sh, because the answers have to come from the
-// reference implementation rather than from this repository's reading of the
-// schema. Two endpoints built from one Go implementation can agree with each
-// other and both be wrong.
+// reference implementation's deserialisation rules rather than from this Go
+// implementation. The generator input is replaced with this module's pinned
+// published schema by scripts/update-fixtures.sh: the SDK's normal v1 input is
+// explicitly unstable and therefore cannot be a stable-protocol oracle.
 //
 // The published npm package cannot be used for this. Its exports map reaches
 // dist/acp.js, the experimental entry points and the raw schema JSON, and
@@ -52,14 +54,13 @@ function validatorFor(typeName: string) {
   return validator as { safeParse(value: unknown): { success: boolean; data?: unknown } };
 }
 
-// The fixture files spell Go's names for two definitions the schema spells
+// The fixture files spell Go's names for three definitions the schema spells
 // differently, because Go's initialism convention is not the schema's. The
 // oracle is asked about the schema's.
 const schemaNames: Record<string, string> = {
   SessionID: "SessionId",
   McpServerHTTP: "McpServerHttp",
   HTTPHeader: "HttpHeader",
-  McpServerAcpID: "McpServerAcpId",
 };
 
 let changed = 0;

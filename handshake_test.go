@@ -79,11 +79,9 @@ func TestAClientServesNothingBeforeItsHandshakeIsAnswered(t *testing.T) {
 
 // What the agent may advertise depends on the client in front of it.
 //
-// Two fields of the initialize response are the connection's rather than the
-// configuration's, and both were copied straight out of the configuration. The
-// schema says a terminal authentication method may be advertised "only when the
-// client enabled its terminal authentication capability", and that the position
-// encoding is "selected by the agent from the client's supported encodings".
+// A terminal authentication method belongs to this negotiation rather than the
+// reusable configuration: the schema permits advertising it only when this
+// particular client enabled terminal authentication.
 func TestTheInitializeAnswerIsBuiltForTheClientInFrontOfIt(t *testing.T) {
 	terminal := &acp.AuthMethodTerminal{ID: "tui", Name: "Sign in with a terminal"}
 	byAgent := &acp.AuthMethodAgent{ID: "oauth", Name: "Sign in"}
@@ -145,98 +143,6 @@ func TestTheInitializeAnswerIsBuiltForTheClientInFrontOfIt(t *testing.T) {
 	}
 }
 
-// The position encoding the agent answers with is one the client offered, or
-// none.
-//
-// An encoding the client never offered is not a selection. Sending one anyway
-// leaves the two peers counting character offsets differently, which is a
-// disagreement about what every position in the conversation means.
-func TestThePositionEncodingIsChosenFromWhatTheClientOffered(t *testing.T) {
-	tests := map[string]struct {
-		configured acp.Opt[acp.PositionEncodingKind]
-		offered    string
-		expected   acp.Opt[acp.PositionEncodingKind]
-	}{
-		"an encoding the client offered": {
-			configured: acp.OptValue(acp.PositionEncodingKindUtf8),
-			offered:    `["utf-8","utf-16"]`,
-			expected:   acp.OptValue(acp.PositionEncodingKindUtf8),
-		},
-		"an encoding the client did not offer": {
-			configured: acp.OptValue(acp.PositionEncodingKindUtf8),
-			offered:    `["utf-16"]`,
-		},
-		"a client that offered none": {
-			configured: acp.OptValue(acp.PositionEncodingKindUtf8),
-			offered:    `[]`,
-		},
-		"an agent that configured none": {
-			offered: `["utf-8","utf-16"]`,
-		},
-	}
-
-	for name, test := range tests {
-		t.Run(name, func(t *testing.T) {
-			agent, err := acp.NewAgent(&acp.AgentConfig{
-				NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
-					return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
-				},
-				Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
-					return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
-				},
-				Cancel:       func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
-				Capabilities: &acp.AgentCapabilities{PositionEncoding: test.configured},
-			})
-			if err != nil {
-				t.Fatalf("NewAgent: %v", err)
-			}
-			conn, stream, ctx := rawClientFor(t, agent)
-
-			answered := answerInitializeRaw(ctx, t, stream,
-				`{"protocolVersion":1,"clientCapabilities":{"positionEncodings":`+test.offered+`}}`)
-
-			got, selected := answered.AgentCapabilities.PositionEncoding.Get()
-			want, wanted := test.expected.Get()
-			if selected != wanted || got != want {
-				t.Fatalf("answered with (%q, %t), want (%q, %t)", got, selected, want, wanted)
-			}
-			// And the connection's own snapshot says the same thing.
-			if peer := conn.Peer().AgentCapabilities.PositionEncoding; peer != test.expected {
-				t.Errorf("the connection reports %v", peer)
-			}
-		})
-	}
-}
-
-// A client refuses an encoding it never offered rather than proceed under two
-// readings of the same offsets.
-func TestAClientRefusesAPositionEncodingItDidNotOffer(t *testing.T) {
-	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
-		RequestPermission: denyingPermission,
-		Capabilities: &acp.ClientCapabilities{
-			PositionEncodings: []acp.PositionEncodingKind{acp.PositionEncodingKindUtf16},
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-
-	stream, connected, ctx := rawAgentPending(t, client)
-	request := readRaw(ctx, t, stream)
-	writeRaw(ctx, t, stream, `{"jsonrpc":"2.0","id":`+idOf(t, request)+
-		`,"result":{"protocolVersion":1,"agentCapabilities":{"positionEncoding":"utf-8"}}}`)
-
-	result := <-connected
-	if result.err == nil {
-		_ = result.conn.Close()
-		t.Fatal("the client accepted an encoding it never offered")
-	}
-	if !strings.Contains(result.err.Error(), "position encoding") {
-		t.Errorf("Connect failed with %v, which does not say what was wrong", result.err)
-	}
-}
-
 // A terminal-only agent needs no Authenticate handler, and a client must not call
 // authenticate with a terminal method.
 //
@@ -284,6 +190,33 @@ func TestTerminalAuthenticationNeedsNoHandlerAndCannotBeCalled(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "terminal") {
 		t.Errorf("refused with %v, which does not say why", err)
+	}
+}
+
+// The client retains the authentication catalogue as an authority boundary, so
+// it must reject ambiguity and methods the agent was not entitled to advertise
+// before publishing the handshake.
+func TestAClientRejectsAnInvalidAuthenticationCatalogue(t *testing.T) {
+	tests := map[string]string{
+		"duplicate identifiers": `{"protocolVersion":1,"authMethods":[` +
+			`{"id":"oauth","name":"One"},{"id":"oauth","name":"Two"}]}`,
+		"terminal without opt-in": `{"protocolVersion":1,"authMethods":[` +
+			`{"type":"terminal","id":"tui","name":"Terminal"}]}`,
+	}
+
+	for name, answer := range tests {
+		t.Run(name, func(t *testing.T) {
+			stream, connected, ctx := rawAgentPending(t, testClient(t))
+			handshake := expectCall(ctx, t, stream, "initialize")
+			answerCall(ctx, t, stream, handshake, answer)
+
+			if result := <-connected; result.err == nil {
+				if result.conn != nil {
+					_ = result.conn.Close()
+				}
+				t.Fatal("Client.Connect accepted an invalid authentication catalogue")
+			}
+		})
 	}
 }
 
@@ -388,8 +321,8 @@ func TestAnAgentWaitsForTheHandshakeRatherThanRefusing(t *testing.T) {
 // negotiated peer on the goroutine that called Connect, which runs after the read
 // loop has queued the answer and after the delivery loop has handed it over — so
 // the agent's next message could be refused for arriving before a handshake that
-// had already been answered. Publication is now part of ordered delivery, and
-// whether a message preceded the answer is the read loop's to say.
+// had already been answered. Publication is now part of the same ordered
+// delivery that admits the following message.
 func TestAClientServesWhatTheAgentSendsAfterAnswering(t *testing.T) {
 	// Repeated, because the failure it guards against was a race between three
 	// goroutines and one run proves little.
@@ -594,5 +527,25 @@ func TestDuplicateAuthenticationIdentifiersAreRefused(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "share the identifier") {
 		t.Errorf("NewAgent failed with %v, which does not say why", err)
+	}
+}
+
+func TestANilAuthenticationMethodIsRefusedAtConstruction(t *testing.T) {
+	var method *acp.AuthMethodAgent
+	_, err := acp.NewAgent(&acp.AgentConfig{
+		AuthMethods: []acp.AuthMethod{method},
+		Authenticate: func(context.Context, *acp.AuthenticateRequest) (*acp.AuthenticateResponse, error) {
+			return &acp.AuthenticateResponse{}, nil
+		},
+		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
+		},
+		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
+			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+		},
+		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
+	})
+	if err == nil {
+		t.Fatal("NewAgent accepted a typed nil authentication method")
 	}
 }

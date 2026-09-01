@@ -9,15 +9,16 @@ import (
 // null, and keeps the three states those two facts produce apart: absent, null,
 // and present with a value.
 //
-// The schema distinguishes an omitted property from one present as null in 357
+// The stable schema distinguishes an omitted property from one present as null in 222
 // places, so a pointer with omitempty cannot carry this part of the grammar — a
 // nil pointer would have to mean both. The zero Opt is the absent state, which
 // is what the encoder's omitzero tag option consults through [Opt.IsZero]: an
 // absent field emits nothing while an explicit null emits null.
 //
-// Where the schema itself says the two are equivalent — several capability
-// fields document that omitted and null both mean not advertised — the
-// generated field collapses them and does not use an Opt.
+// Where the schema says the two are semantically equivalent — several capability
+// fields document that omitted and null both mean not advertised — the wire
+// representation still retains both states. Domain code decides whether they
+// mean the same thing; the codec does not erase a distinction the schema permits.
 type Opt[T any] struct {
 	state optState
 	value T

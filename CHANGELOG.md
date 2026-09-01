@@ -42,6 +42,16 @@ both directions.
   local subprocess, and `acp.NewIOTransport` for any closeable stream pair. A
   custom transport implements `acp.Transport`; the concurrency and shutdown
   contract it is being asked to promise is in the interface's own documentation.
+- **Bounded appetite.** A message's size and the time this side will wait were
+  already bounded; its count was not, and count is what a peer controls for free.
+  A connection now holds at most 1024 messages read but not yet delivered, 1024
+  inbound calls at once, and 1024 session handles — the last because a handle
+  keeps the one-prompt-at-a-time rule and so can never be reclaimed. Breaching one
+  ends the connection with an error that says which. It is not backpressure:
+  refusing to read until the backlog drains would turn the documented rule that a
+  notification handler must not wait on its own connection into a deadlock,
+  because the response that would release it arrives on the read loop that is no
+  longer reading.
 - **Bounded ownership of a subprocess agent.** Closing a command connection closes
   the pipes, then waits, asks the process to stop, waits again, and finally kills
   it. Each step has `CommandConfig.TerminationGrace` as its deadline, five seconds
@@ -57,6 +67,11 @@ both directions.
   write, and the request it sends next is served on a different goroutine from the
   one still finishing the handshake — so a flag refused handlers that were only
   running because the handshake had already succeeded.
+- **A rejected initialize does not poison the connection.** Invalid parameters
+  establish no capability agreement, so after the error response settles the
+  next queued or later request may negotiate. Attempts are serialized in wire
+  order, and every attempt ordered after an accepted one remains an invalid
+  renegotiation.
 - **Terminal handles are spent once released.** `TerminalHandle.Release` documented
   that the handle was unusable afterwards; now it is. Every operation on a released
   handle, including a second `Release`, returns `acp.ErrTerminalReleased`. A
@@ -70,12 +85,14 @@ both directions.
   backs the capability gate, and a caller who could mutate it could widen its own
   authority. The configuration a client or agent is built from is copied the same
   way, so changing it afterwards changes nothing that was already validated.
-- **A handshake built for the peer in front of it.** Two fields of the initialize
-  response depend on what this client offered, and the schema says so. A terminal
+- **An owned `_meta` boundary.** `Meta` encodes extension values when they are set
+  and stores only JSON. This prevents an arbitrary Go object with hidden mutable
+  state from leaking through a configuration or `Peer()` snapshot. Construct one
+  with `NewMeta`, change it with `Set`, and read a typed value with `Decode`.
+- **A handshake built for the peer in front of it.** One field of the initialize
+  response depends on what this client offered, and the schema says so. A terminal
   authentication method is advertised only to a client that enabled
-  `clientCapabilities.auth.terminal`; the agent's `positionEncoding` is chosen from
-  the encodings the client offered, or omitted. A client refuses an encoding it
-  never offered rather than proceed under two readings of the same offsets.
+  `clientCapabilities.auth.terminal`.
 - **`authenticate` names a method the handshake advertised.** The schema says the
   identifier "must be one of the methods advertised in the initialize response",
   and that a terminal method must not be passed to `authenticate` at all — it is
@@ -86,10 +103,11 @@ both directions.
   that share an identifier, which the schema calls unique and which a client
   selects by.
 - **The extension boundary**: `Call`, `Notify` and fallback handlers, in both
-  directions, for methods the specification does not define. A method it does
-  define is refused there, because it has exactly one path through the typed codec
-  and the capability gate.
-- **The complete capability table.** All 42 methods are classified as baseline,
+  directions, for `_`-prefixed methods the specification reserves for extensions.
+  Every other name is reserved for ACP and refused there, so a private fallback
+  cannot claim a future standard method before the typed codec and capability gate
+  know it.
+- **The complete capability table.** All 25 methods are classified as baseline,
   gated by a named predicate, or not implemented yet, with the schema's own words
   quoted beside each. A test holds it against the generated method table in both
   directions, construction refuses an advertisement whose method this package does
@@ -99,20 +117,43 @@ both directions.
   as a call is answered "invalid request", and a request method sent as a
   notification is dropped, because `terminal/kill` sent that way would kill a
   terminal and answer nobody. A response must carry a result or an error and
-  exactly one of them; an empty object is a result, a missing one is not.
+  exactly one of them; its error must carry the schema's exact `code` and
+  `message` members. JSON member names are matched case-sensitively, malformed
+  and trailing values are rejected, and an empty object remains a result
+  while a missing one is not. Request IDs preserve the schema's absent,
+  explicit-null, string and int64 states;
+  non-integral and overflowing numbers are rejected rather than silently
+  coerced, while JSON number spellings such as `1.0` are accepted when their
+  exact value is an int64. Reusing an ID while its first request is active ends
+  the connection instead of overwriting that request's cancellation and answer
+  ownership.
 - **The generated protocol types**, from `schema/schema.json` at upstream release
   `schema-v1.21.0`. Generation now reaches every operation the API implements —
-  167 of the schema's 265 definitions — and the generator handles all but the six
-  JSON-RPC envelopes, which are deliberately not generated: `internal/jsonrpc2`
-  owns JSON-RPC's grammar, and a second set of types for it would be two sources
-  of truth.
+  129 of the published schema's 170 definitions. JSON-RPC envelopes are
+  deliberately not generated: `internal/jsonrpc2` owns JSON-RPC's grammar, and a
+  second set of types for it would be two sources of truth.
+
+### Changed
+
+- The vendored v1.21.0 files now come directly from the published release assets.
+  Experimental additions found only in the local TypeScript SDK checkout —
+  providers, ACP-carried MCP, document sync, NES, session forking, compaction and
+  position encoding — were removed from the generated Go API. Migration: use
+  extension methods for private experiments, or wait for those shapes to enter a
+  published ACP schema.
+- `Meta` is no longer `map[string]any`. Migration: replace map literals with
+  `acp.NewMeta`, use `Set` for updates, and use `Decode` to read a value.
+- `jsonrpc.Response.Error` is now `*jsonrpc.Error`, the only error shape a
+  JSON-RPC response can carry. Migration: custom transports construct the
+  structured wire error directly instead of assigning an arbitrary Go error.
 
 ### How this is known to work
 
-- **125 cross-SDK fixtures**, whose expected outcomes come from the reference
-  implementation's own validators rather than from this repository's reading of the
-  schema. `scripts/update-fixtures.sh` produces them from a pinned SDK commit; `go
-  test` replays them with no network and no Node.
+- **125 cross-SDK fixtures**, whose expected outcomes come from the TypeScript
+  SDK's deserialisation machinery regenerated from the pinned published schema.
+  The updater runs in an isolated archive, so neither the local reference
+  checkout nor its unstable v1 schema can change the oracle. `go test` replays
+  the results with no network and no Node.
 - **Four recorded interoperability transcripts**, produced by running this module's
   client against an agent built on the reference SDK as a real subprocess: a turn
   with a permission prompt, a cancelled turn whose final updates still arrive,
@@ -123,7 +164,7 @@ both directions.
 - **Cancellation and shutdown tested with `testing/synctest`** rather than with
   sleeps.
 
-### Two contracts worth reading before writing a handler
+### Three contracts worth reading before writing a handler
 
 - **A notification handler must not make a call on the same connection and wait
   for it.** Notifications are served in arrival order and a response is delivered
@@ -137,8 +178,9 @@ both directions.
   meant. A second overlapping prompt returns `acp.ErrPromptInProgress`, and a
   second one arriving from any peer is refused on the wire for the same reason.
   Cancelling a `Prompt` context stops *that caller* waiting; it does not end the
-  turn, so the session stays claimed until the agent's answer arrives, and a
-  waiter stays behind to observe it. `Cancel` is the operation that ends a turn,
+  turn, so the session stays claimed until the agent's answer arrives, and the
+  connection keeps the pending call only to observe that transition. `Cancel` is
+  the operation that ends a turn,
   and it holds the session until its notification is on the wire: `session/cancel`
   names only a session, so a prompt that started before it went out would be the
   turn the agent applies it to.

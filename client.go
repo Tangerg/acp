@@ -7,9 +7,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
-	"maps"
 	"slices"
-	"sync"
 
 	"github.com/Tangerg/acp/jsonrpc"
 )
@@ -273,16 +271,14 @@ type ClientConn struct {
 	client   *Client
 	sessions sessions[ClientSession]
 
-	// turns is this client's per-session turn state: which turn is running, the
-	// permission requests it is waiting on, and whether a cancellation is in
-	// progress. One lock rather than three maps, because the races it settles are
-	// between them. See cancel.go.
-	turnsMu sync.Mutex
-	turns   map[SessionID]*clientTurn
+	turns clientTurns
 }
 
 // initialize performs the handshake.
 func (c *ClientConn) initialize(ctx context.Context) error {
+	if !c.handshake.begin() {
+		return errors.New("acp: this connection is already initializing")
+	}
 	request := &InitializeRequest{
 		ProtocolVersion:    CurrentProtocolVersion,
 		ClientCapabilities: c.client.capabilities,
@@ -290,14 +286,14 @@ func (c *ClientConn) initialize(ctx context.Context) error {
 	if info := c.client.config.Info; info != nil {
 		request.ClientInfo = OptValue(*info)
 	}
-	if len(c.client.config.Meta) > 0 {
-		request.Meta = OptValue(maps.Clone(c.client.config.Meta))
+	if c.client.config.Meta.Len() > 0 {
+		request.Meta = OptValue(deepCopy(c.client.config.Meta))
 	}
 
 	// The answer is checked and published from the delivery loop, so that anything
 	// the agent sent after answering is served by a connection that already knows
 	// what was agreed. See link.handshake.
-	return c.handshake(ctx, methodInitialize, request, func(answer *jsonrpc.Response) error {
+	return c.callHandshake(ctx, methodInitialize, request, func(answer *jsonrpc.Response) error {
 		var response InitializeResponse
 		if err := decodeResponse(answer, &response); err != nil {
 			return err
@@ -318,20 +314,16 @@ func (c *ClientConn) accept(request *InitializeRequest, response *InitializeResp
 			"and this package implements %d and no other",
 			response.ProtocolVersion, CurrentProtocolVersion)
 	}
-
-	// The schema calls the agent's positionEncoding "the position encoding
-	// selected by the agent from the client's supported encodings". One this
-	// client never offered is not a selection, and accepting it would leave the
-	// two peers reading every character offset they exchange differently — which
-	// is a disagreement about the meaning of the data rather than about a feature.
-	if encoding, selected := response.AgentCapabilities.PositionEncoding.Get(); selected {
-		if !slices.Contains(c.client.capabilities.PositionEncodings, encoding) {
-			return fmt.Errorf("acp: the agent selected the position encoding %q, which this client "+
-				"did not offer; it offered %v", encoding, c.client.capabilities.PositionEncodings)
-		}
+	auth, err := ownAuthenticationMethods(response.AuthMethods)
+	if err != nil {
+		return fmt.Errorf("acp: the agent's authentication methods are invalid: %w", err)
 	}
+	if err := auth.validateOffer(request.ClientCapabilities); err != nil {
+		return err
+	}
+	response.AuthMethods = auth
 
-	c.negotiated(PeerInfo{
+	c.handshake.accept(PeerInfo{
 		ProtocolVersion:    response.ProtocolVersion,
 		ClientCapabilities: deepCopy(c.client.capabilities),
 		ClientInfo:         request.ClientInfo,
@@ -341,6 +333,7 @@ func (c *ClientConn) accept(request *InitializeRequest, response *InitializeResp
 		AgentMeta:          response.Meta,
 		AuthMethods:        response.AuthMethods,
 	})
+	c.handshake.publish()
 	return nil
 }
 
@@ -361,35 +354,22 @@ func (c *ClientConn) Notify(ctx context.Context, method string, params any) erro
 // awaitHandshake holds an inbound message until this side knows what was
 // negotiated, or refuses one that genuinely arrived first.
 //
-// Those are two different questions and the connection answers them from two
-// places. Whether the message arrived first is the read loop's, which saw both it
-// and the handshake answer in the order the agent sent them. Whether this side has
-// published what it read is the delivery loop's, and a request is dispatched on a
-// goroutine of its own — so that a permission answer is not queued behind a stream
-// of updates — which takes it out of that ordering and leaves it to wait.
-func (c *ClientConn) awaitHandshake(ctx context.Context, request *jsonrpc.Request) error {
-	if c.isInitialized() {
+// The delivery queue processes the initialize answer before every message that
+// followed it, so an unaccepted handshake here proves the peer sent the request
+// too early rather than exposing a publication race.
+func (c *ClientConn) awaitHandshake(request *jsonrpc.Request) error {
+	if c.handshake.isAccepted() {
 		return nil
 	}
-	if !c.answeredHandshake() {
-		return newError(ErrorCodeInvalidRequest,
-			"%s arrived before initialize was answered", request.Method)
-	}
-	select {
-	case <-c.settled:
-		return nil
-	case <-c.over():
-		return newError(ErrorCodeInvalidRequest, "the connection ended during initialize")
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return newError(ErrorCodeInvalidRequest,
+		"%s arrived before initialize was answered", request.Method)
 }
 
 // serve dispatches the requests an agent makes of a client.
 func (c *ClientConn) serve(ctx context.Context, request *jsonrpc.Request) (any, error) {
 	config := &c.client.config
 
-	if err := c.awaitHandshake(ctx, request); err != nil {
+	if err := c.awaitHandshake(request); err != nil {
 		return nil, err
 	}
 

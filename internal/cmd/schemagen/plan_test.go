@@ -176,6 +176,33 @@ func TestUnimplementedKeywordsAreReported(t *testing.T) {
 	}
 }
 
+// The local projection below deliberately knows only the ACP generator's
+// vocabulary. These cases prove that narrowing the projection does not also make
+// it the authority on the JSON Schema standard.
+func TestLoadDocumentRejectsInvalidJSONSchema(t *testing.T) {
+	tests := []struct {
+		name string
+		doc  string
+	}{
+		{
+			name: "unresolved reference",
+			doc:  `{"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"Thing":{"$ref":"#/$defs/Missing"}}}`,
+		},
+		{
+			name: "default outside its schema",
+			doc:  `{"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"Thing":{"type":"string","default":42}}}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := loadDocument([]byte(test.doc)); err == nil {
+				t.Fatalf("loadDocument accepted %s", test.doc)
+			}
+		})
+	}
+}
+
 // Property order decides the generated field order and the encoded key order, so
 // a message can be read against the schema that defines it. Go maps have no order
 // and the schema document does, so this is read out of the raw bytes.

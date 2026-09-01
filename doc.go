@@ -12,11 +12,11 @@
 //
 // # The wire types are generated
 //
-// The protocol's 265 type definitions are generated from schema/schema.json,
-// which is vendored and pinned to an upstream release, and the output is
-// committed as schema.gen.go. Their doc comments are the specification's own
-// prose. Where one repeats upstream's **UNSTABLE** marker, that symbol is exempt
-// from this module's compatibility guarantee.
+// The protocol's 170 stable type definitions are read from schema/schema.json,
+// which is vendored from a published upstream release. The public closure is
+// generated and committed as schema.gen.go, so a schema change is a reviewable
+// source diff rather than a build-time download. Generated doc comments preserve
+// the specification's prose.
 package acp
 
 //go:generate go run ./internal/cmd/schemagen

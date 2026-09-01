@@ -36,7 +36,6 @@
     "Error",
     "ErrorCode"
   ],
-  "markers": [],
   "internal": {
     "$comment": "Generated but not exported: JSON-RPC plumbing a caller never names. Each value says why. An exported definition that reaches one of these is a generation failure, because a published type whose field a caller cannot name is worse than no type.",
     "CancelRequestNotification": "the params of $/cancel_request, which the connection sends on its own behalf; a caller cancels by cancelling a context",

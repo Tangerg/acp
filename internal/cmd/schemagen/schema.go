@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
+
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // A Schema is one JSON Schema node, holding every keyword the published Agent
@@ -97,7 +100,7 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 }
 
 // Nullable reports whether the schema permits null, either as a member of a type
-// set or as an anyOf arm. The two spellings appear 357 times between them and
+// set or as an anyOf arm. The two spellings appear 222 times between them and
 // mean the same thing.
 func (s *Schema) Nullable() bool {
 	if s.Type.Has("null") {
@@ -201,6 +204,17 @@ type Document struct {
 }
 
 func loadDocument(data []byte) (*Document, error) {
+	var standard jsonschema.Schema
+	if err := json.Unmarshal(data, &standard); err != nil {
+		return nil, fmt.Errorf("decode JSON Schema: %w", err)
+	}
+	// ACP owns the extension keywords and this generator owns their code-generation
+	// policy, but neither is a reason to duplicate the standard's structural,
+	// reference, and default validation here.
+	if _, err := standard.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true}); err != nil {
+		return nil, fmt.Errorf("resolve JSON Schema: %w", err)
+	}
+
 	var doc Document
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil, err
@@ -361,10 +375,5 @@ func kind(data []byte) byte {
 // not, and a generator whose output — or whose first reported error — depends on
 // it cannot be checked by regenerating it.
 func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }

@@ -15,9 +15,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 )
 
 // schemaTag is the upstream release the vendored schema is pinned to. It is
@@ -99,16 +100,16 @@ func run(root string, check bool) error {
 		if err := os.WriteFile(path, want, 0o600); err != nil {
 			return err
 		}
+		//nolint:gosec // committed generated source must be readable in module archives.
+		if err := os.Chmod(path, 0o644); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
 func verify(outputs map[string][]byte) error {
-	paths := make([]string, 0, len(outputs))
-	for path := range outputs {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
+	paths := slices.Sorted(maps.Keys(outputs))
 	for _, path := range paths {
 		got, err := readRepositoryFile(path)
 		if err != nil {
@@ -150,25 +151,13 @@ func exportedList(plan *Plan) []byte {
 	out.WriteString("# transitive $ref closure of manifest.json is ")
 	fmt.Fprintf(&out, "%d of the schema's\n", len(plan.Closure))
 	out.WriteString("# definitions; exported_test.go holds the package's exports against this list.\n")
-	out.WriteString("#\n")
-	out.WriteString("# A name marked UNSTABLE comes from a definition carrying upstream's UNSTABLE\n")
-	out.WriteString("# marker. Those symbols are exempt from this module's compatibility guarantee,\n")
-	out.WriteString("# so a gorelease finding against one is reviewed rather than blocking.\n")
 	names := plan.goNames()
-	sort.Slice(names, func(i, j int) bool { return names[i].name < names[j].name })
+	slices.Sort(names)
 	for _, name := range names {
-		out.WriteString(name.name)
-		if name.unstable {
-			out.WriteString("\tUNSTABLE")
-		}
+		out.WriteString(name)
 		out.WriteString("\n")
 	}
 	return out.Bytes()
-}
-
-type exportedName struct {
-	name     string
-	unstable bool
 }
 
 // goNames returns every exported Go name the plan produces.
@@ -176,15 +165,15 @@ type exportedName struct {
 // The unexported ones are left out on purpose: this file is what the package's
 // published surface is checked against, and JSON-RPC plumbing is generated
 // precisely so that it is not part of that surface.
-func (p *Plan) goNames() []exportedName {
-	var names []exportedName
+func (p *Plan) goNames() []string {
+	var names []string
 	for _, def := range p.Defs {
 		if def.GoName != def.Ident {
 			continue
 		}
-		names = append(names, exportedName{def.GoName, def.Unstable})
+		names = append(names, def.GoName)
 		for _, value := range def.Values {
-			names = append(names, exportedName{value.GoName, def.Unstable})
+			names = append(names, value.GoName)
 		}
 	}
 	return names

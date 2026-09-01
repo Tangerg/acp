@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sync/atomic"
+
+	"github.com/Tangerg/acp/jsonrpc"
 )
 
 // The operations an agent performs on a client's workspace: the filesystem, and
@@ -96,7 +98,10 @@ type TerminalHandle struct {
 	id      TerminalID
 	session *AgentSession
 
-	// released is set by Release, once and for good.
+	// released is claimed before Release starts so concurrent operations cannot
+	// begin behind it. A failure before the request reaches the transport rolls the
+	// claim back; after a successful write it is permanent because the client may
+	// already have acted.
 	//
 	// The contract is enforced rather than documented because a released
 	// identifier is the client's to reuse. An operation on a handle after release
@@ -108,11 +113,10 @@ type TerminalHandle struct {
 // ErrTerminalReleased is returned by an operation on a terminal handle that has
 // been released.
 //
-// Release is one-way, and the first caller to reach it wins: a concurrent or
-// later Release gets this too. A Release that fails on the wire still leaves the
-// handle released, because the request went out and the client may have acted on
-// it — retrying could release a terminal the client has since given the same
-// identifier to.
+// Once a Release reaches the transport it is one-way, and a concurrent or later
+// Release gets this too. A response error still leaves the handle released,
+// because the client may have acted before producing it — retrying could release
+// a terminal the client has since given the same identifier to.
 var ErrTerminalReleased = errors.New("acp: this terminal has been released")
 
 // ID is the identifier the client gave this terminal.
@@ -172,9 +176,10 @@ func (t *TerminalHandle) Kill(
 	return callGated[KillTerminalResponse](ctx, t.session.conn, methodTerminalKill, request)
 }
 
-// Release frees the terminal and everything it holds. The handle is not usable
-// afterwards: every operation on it, including a second Release, returns
-// [ErrTerminalReleased].
+// Release frees the terminal and everything it holds. Once the request is sent,
+// the handle is not usable afterwards: every operation on it, including a second
+// Release, returns [ErrTerminalReleased]. A local refusal before transport
+// delivery restores the handle so the caller can correct the context and retry.
 func (t *TerminalHandle) Release(
 	ctx context.Context,
 	params *ReleaseTerminalParams,
@@ -182,11 +187,25 @@ func (t *TerminalHandle) Release(
 	if !t.released.CompareAndSwap(false, true) {
 		return nil, ErrTerminalReleased
 	}
+	rollback := func() { t.released.CompareAndSwap(true, false) }
 	request := &ReleaseTerminalRequest{SessionID: t.session.id, TerminalID: t.id}
 	if params != nil {
 		request.Meta = params.Meta
 	}
-	return callGated[ReleaseTerminalResponse](ctx, t.session.conn, methodTerminalRelease, request)
+	conn := t.session.conn
+	response, call, err := beginGatedCall[ReleaseTerminalResponse](
+		ctx, conn, methodTerminalRelease, request,
+	)
+	if err != nil {
+		if !conn.ended() {
+			rollback()
+		}
+		return nil, err
+	}
+	if err := conn.await(ctx, call); err != nil {
+		return nil, err
+	}
+	return response, nil
 }
 
 // callGated makes a call the peer must have advertised.
@@ -196,15 +215,37 @@ func (t *TerminalHandle) Release(
 // the same, and asking wastes a round trip while making a developer read a wire
 // trace to find out what they forgot.
 func callGated[Response any](ctx context.Context, c *AgentConn, method string, request any) (*Response, error) {
-	if err := c.awaitHandshake(ctx, method); err != nil {
+	response, call, err := beginGatedCall[Response](ctx, c, method, request)
+	if err != nil {
 		return nil, err
 	}
-	if err := c.Peer().permits(method); err != nil {
-		return nil, err
-	}
-	response := new(Response)
-	if err := c.call(ctx, method, request, response); err != nil {
+	if err := c.await(ctx, call); err != nil {
 		return nil, err
 	}
 	return response, nil
+}
+
+// beginGatedCall stops before the transport on every local refusal. Release uses
+// that boundary to know whether its one-way state may still be rolled back; the
+// ordinary workspace operations immediately await the returned call.
+func beginGatedCall[Response any](
+	ctx context.Context,
+	c *AgentConn,
+	method string,
+	request any,
+) (*Response, outboundCall, error) {
+	if err := c.awaitHandshake(ctx, method); err != nil {
+		return nil, outboundCall{}, err
+	}
+	if err := c.Peer().permits(method); err != nil {
+		return nil, outboundCall{}, err
+	}
+	response := new(Response)
+	call, err := c.send(ctx, method, request, func(answer *jsonrpc.Response) error {
+		return decodeResponse(answer, response)
+	}, nil)
+	if err != nil {
+		return nil, outboundCall{}, err
+	}
+	return response, call, nil
 }

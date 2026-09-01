@@ -7,12 +7,6 @@ package acp
 // as a copy, all the way down. The same value backs the capability gate, and a
 // caller who could mutate it could widen its own authority.
 //
-// The copy covers everything the schema defines. It does not cover a value a
-// caller put in a _meta map that reflection cannot rebuild — a struct that keeps
-// its state unexported — because rebuilding one of those returns the zero value
-// of everything it hides, and a shared value is a smaller problem than a silently
-// wrong one.
-//
 // Both halves are here whichever side holds it. A client needs the agent's
 // capabilities to know what it may call, and its own to know what it promised;
 // the agent needs exactly the same two facts from the other direction.
@@ -55,9 +49,7 @@ type PeerInfo struct {
 // it. Capabilities nest more than twenty reserved _meta maps inside each other,
 // the auth methods are a slice of interfaces holding pointers, and a caller who
 // could reach any of them would be holding the same memory the connection reads.
-// See clone.go for why this is one reflective copy rather than a method per type,
-// and for the one thing it shares: a value a caller put in a _meta map that
-// reflection cannot rebuild.
+// See clone.go for why this is one reflective copy rather than a method per type.
 func (p PeerInfo) clone() PeerInfo {
 	return deepCopy(p)
 }
@@ -70,20 +62,5 @@ func (p PeerInfo) clone() PeerInfo {
 // interactive terminal, so there is no call to make. An unadvertised identifier
 // is the client guessing, which is the thing AuthMethods exists to stop.
 func (p PeerInfo) authenticates(methodID AuthMethodID) error {
-	for _, method := range p.AuthMethods {
-		switch method := method.(type) {
-		case *AuthMethodAgent:
-			if method.ID == methodID {
-				return nil
-			}
-		case *AuthMethodTerminal:
-			if method.ID == methodID {
-				return newError(ErrorCodeInvalidParams,
-					"%s is a terminal authentication method, which is performed by running the agent "+
-						"in a terminal rather than by calling authenticate", methodID)
-			}
-		}
-	}
-	return newError(ErrorCodeInvalidParams,
-		"%s is not one of the authentication methods advertised in the initialize response", methodID)
+	return authenticationMethods(p.AuthMethods).accepts(methodID)
 }

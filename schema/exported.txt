@@ -1,12 +1,8 @@
 # Written by internal/cmd/schemagen. Do not edit.
 #
 # Every exported Go name generation produces, one per line, sorted. The
-# transitive $ref closure of manifest.json is 168 of the schema's
+# transitive $ref closure of manifest.json is 129 of the schema's
 # definitions; exported_test.go holds the package's exports against this list.
-#
-# A name marked UNSTABLE comes from a definition carrying upstream's UNSTABLE
-# marker. Those symbols are exempt from this module's compatibility guarantee,
-# so a gorelease finding against one is reviewed rather than blocking.
 AgentAuthCapabilities
 AgentCapabilities
 AgentMessageChunk
@@ -28,17 +24,7 @@ BooleanConfigOptionCapabilities
 CancelNotification
 CancelParams
 ClientCapabilities
-ClientNesCapabilities
 ClientSessionCapabilities
-CompactionCapabilities	UNSTABLE
-CompactionID	UNSTABLE
-CompactionStatus	UNSTABLE
-CompactionStatusCancelled	UNSTABLE
-CompactionStatusCompleted	UNSTABLE
-CompactionStatusFailed	UNSTABLE
-CompactionStatusInProgress	UNSTABLE
-CompactionSummaryChunk	UNSTABLE
-CompactionUpdate	UNSTABLE
 ConfigOptionUpdate
 Content
 ContentBlock
@@ -80,32 +66,12 @@ LoadSessionResponse
 LogoutCapabilities
 McpCapabilities
 McpServer
-McpServerAcp	UNSTABLE
-McpServerAcpID	UNSTABLE
 McpServerHTTP
 McpServerSse
 McpServerStdio
 MessageID
 MultiSelectItems
 MultiSelectItemsOther
-NesCapabilities
-NesContextCapabilities
-NesDiagnosticsCapabilities
-NesDocumentDidChangeCapabilities
-NesDocumentDidCloseCapabilities
-NesDocumentDidFocusCapabilities
-NesDocumentDidOpenCapabilities
-NesDocumentDidSaveCapabilities
-NesDocumentEventCapabilities
-NesEditHistoryCapabilities
-NesEventCapabilities
-NesJumpCapabilities
-NesOpenFilesCapabilities
-NesRecentFilesCapabilities
-NesRelatedSnippetsCapabilities
-NesRenameCapabilities
-NesSearchAndReplaceCapabilities
-NesUserActionsCapabilities
 NewSessionRequest
 NewSessionResponse
 PermissionOption
@@ -116,7 +82,6 @@ PermissionOptionKindAllowOnce
 PermissionOptionKindRejectAlways
 PermissionOptionKindRejectOnce
 Plan
-PlanCapabilities	UNSTABLE
 PlanEntry
 PlanEntryPriority
 PlanEntryPriorityHigh
@@ -126,23 +91,11 @@ PlanEntryStatus
 PlanEntryStatusCompleted
 PlanEntryStatusInProgress
 PlanEntryStatusPending
-PlanFile	UNSTABLE
-PlanID	UNSTABLE
-PlanItems	UNSTABLE
-PlanMarkdown	UNSTABLE
-PlanRemoved	UNSTABLE
-PlanUpdate	UNSTABLE
-PlanUpdateContent	UNSTABLE
-PositionEncodingKind
-PositionEncodingKindUtf16
-PositionEncodingKindUtf32
-PositionEncodingKindUtf8
 PromptCapabilities
 PromptParams
 PromptRequest
 PromptResponse
 ProtocolVersion
-ProvidersCapabilities	UNSTABLE
 ReadTextFileParams
 ReadTextFileRequest
 ReadTextFileResponse
@@ -181,7 +134,6 @@ SessionConfigSelectOptionsGrouped
 SessionConfigSelectOptionsUngrouped
 SessionConfigValueID
 SessionDeleteCapabilities
-SessionForkCapabilities	UNSTABLE
 SessionID
 SessionInfoUpdate
 SessionListCapabilities
@@ -209,9 +161,6 @@ TerminalOutputParams
 TerminalOutputRequest
 TerminalOutputResponse
 TextContent
-TextDocumentSyncKind
-TextDocumentSyncKindFull
-TextDocumentSyncKindIncremental
 TextResourceContents
 TitledMultiSelectItems
 ToolCall
@@ -236,7 +185,6 @@ ToolKindSearch
 ToolKindSwitchMode
 ToolKindThink
 UnstructuredCommandInput
-Usage	UNSTABLE
 UsageUpdate
 UserMessageChunk
 WaitForTerminalExitParams

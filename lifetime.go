@@ -54,10 +54,12 @@ func newLifetime() *lifetime {
 
 // endReading records why the connection is over and stops the read side, once.
 //
-// release runs inside, because releasing what the connection owns is its last
-// obligation and failing it is a terminal condition rather than a detail for a
-// log: a subprocess that could not be reaped is still running, and a connection
-// that answered "closed cleanly" to that would be reporting it as gone.
+// Cancellation precedes release so a transport whose Close waits for handler
+// work cannot form a cycle with work that is still waiting for its context.
+// Release still runs inside because failing it is a terminal condition rather
+// than a detail for a log: a subprocess that could not be reaped is still
+// running, and a connection that answered "closed cleanly" would be reporting it
+// as gone.
 func (l *lifetime) endReading(cause error, release func() error) {
 	l.endOnce.Do(func() {
 		// A clean end of stream is not a failure. Neither is a read that was
@@ -70,12 +72,12 @@ func (l *lifetime) endReading(cause error, release func() error) {
 		case errors.Is(cause, ErrConnectionClosed):
 			cause = nil
 		}
+		l.cancel()
 		if err := release(); err != nil && cause == nil {
 			cause = err
 		}
 		l.terminal = cause
 
-		l.cancel()
 		close(l.readEnded)
 	})
 }
@@ -91,15 +93,14 @@ func (l *lifetime) finishDelivering(release func()) {
 	close(l.delivered)
 }
 
-// spawn runs work the connection owns, and reports whether it started.
-//
-// It reports false when the connection is already over, because a caller that was
-// relying on the work to finish something has to finish it another way.
-func (l *lifetime) spawn(fn func()) bool {
+// spawn runs work the connection owns while delivery is still open. Once the
+// delivery loop has shut the work pool, no peer can observe newly scheduled
+// work, so starting it would create a goroutine Wait no longer owns.
+func (l *lifetime) spawn(fn func()) {
 	l.mu.Lock()
 	if l.stopped {
 		l.mu.Unlock()
-		return false
+		return
 	}
 	l.work.Add(1)
 	l.mu.Unlock()
@@ -108,7 +109,6 @@ func (l *lifetime) spawn(fn func()) bool {
 		defer l.work.Done()
 		fn()
 	}()
-	return true
 }
 
 func (l *lifetime) run(fn func()) { l.work.Go(fn) }
@@ -140,7 +140,10 @@ func (l *lifetime) wait() error {
 
 // failure is what an operation on an ended connection returns.
 func (l *lifetime) failure() error {
-	<-l.delivered
+	// terminal is final before readEnded closes. Waiting for delivery here would
+	// let an unrelated slow notification handler hold a failed write — and its
+	// caller's deadline — after the transport is already irrecoverably closed.
+	<-l.readEnded
 	if l.terminal != nil {
 		return l.terminal
 	}

@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/Tangerg/acp/jsonrpc"
@@ -16,25 +17,45 @@ import (
 // claims first answers, and the loser is dropped rather than sending a second
 // response for one request.
 type requests struct {
-	mu       sync.Mutex
-	serving  map[jsonrpc.ID]context.CancelFunc
-	answered map[jsonrpc.ID]bool
+	mu      sync.Mutex
+	serving map[jsonrpc.ID]*inboundRequest
+}
+
+// inboundRequest keeps the right to answer and the work it controls together.
+// Splitting them across maps allowed cancellation to change the context without
+// leaving the fact needed to choose the protocol-mandated response.
+type inboundRequest struct {
+	cancel    context.CancelFunc
+	settled   chan struct{}
+	answered  bool
+	cancelled bool
+}
+
+type requestClaim struct {
+	cancelled bool
 }
 
 func newRequests() *requests {
-	return &requests{
-		serving:  make(map[jsonrpc.ID]context.CancelFunc),
-		answered: make(map[jsonrpc.ID]bool),
-	}
+	return &requests{serving: make(map[jsonrpc.ID]*inboundRequest)}
 }
 
-// accept puts a request on record, which has to happen before anything asks about
-// it: claiming the right to answer a request is only possible once there is a
-// request to claim.
-func (r *requests) accept(id jsonrpc.ID, cancel context.CancelFunc) {
+// accept puts a request on record, or says why this connection will not serve it.
+// Both refusals are terminal: an answer written under a reused identifier would
+// be ambiguous, and a peer past the in-flight bound is one this side cannot
+// follow.
+func (r *requests) accept(id jsonrpc.ID, cancel context.CancelFunc) error {
 	r.mu.Lock()
-	r.serving[id] = cancel
-	r.mu.Unlock()
+	defer r.mu.Unlock()
+	if _, occupied := r.serving[id]; occupied {
+		cancel()
+		return fmt.Errorf("acp: the peer reused active request id %v", id.Raw())
+	}
+	if len(r.serving) >= maxInflightRequests {
+		cancel()
+		return fmt.Errorf("%w: %d", errTooManyInflight, maxInflightRequests)
+	}
+	r.serving[id] = &inboundRequest{cancel: cancel, settled: make(chan struct{})}
+	return nil
 }
 
 // release forgets a request and stops the work descending from it. It is the last
@@ -43,40 +64,67 @@ func (r *requests) accept(id jsonrpc.ID, cancel context.CancelFunc) {
 // away.
 func (r *requests) release(id jsonrpc.ID) {
 	r.mu.Lock()
-	cancel := r.serving[id]
+	request := r.serving[id]
 	delete(r.serving, id)
-	delete(r.answered, id)
 	r.mu.Unlock()
 
-	if cancel != nil {
-		cancel()
+	if request != nil {
+		request.cancel()
+		close(request.settled)
 	}
 }
 
-// cancel stops the work descending from a request without answering it. What the
-// handler does about being cancelled is the handler's, and for a turn the protocol
-// says what that is: answer with the cancelled stop reason.
-func (r *requests) cancel(id jsonrpc.ID) {
-	r.mu.Lock()
-	cancel := r.serving[id]
-	r.mu.Unlock()
-
-	if cancel != nil {
-		cancel()
-	}
-}
-
-// claim takes the right to answer a request, once.
-func (r *requests) claim(id jsonrpc.ID) bool {
+// settlement lets cancellation preserve the peer-visible ordering of a
+// permission answer whose handler has already claimed it. A claim says who will
+// answer; this channel says the answer's write has actually settled.
+func (r *requests) settlement(id jsonrpc.ID) <-chan struct{} {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.answered[id] {
-		return false
+	if request := r.serving[id]; request != nil {
+		return request.settled
 	}
-	if _, serving := r.serving[id]; !serving {
+	return nil
+}
+
+// cancel marks a $/cancel_request as well as stopping its work. If the handler
+// cannot produce a valid response, that fact makes -32800 mandatory instead of
+// letting an ordinary Go context error escape as -32603.
+func (r *requests) cancel(id jsonrpc.ID) {
+	r.mu.Lock()
+	request := r.serving[id]
+	if request != nil {
+		request.cancelled = true
+	}
+	r.mu.Unlock()
+
+	if request != nil {
+		request.cancel()
+	}
+}
+
+// interrupt is cancellation of work required by a higher-level ACP operation.
+// session/cancel still requires a valid PromptResponse, so it must not be
+// mistaken for the protocol-level request cancellation above.
+func (r *requests) interrupt(id jsonrpc.ID) {
+	r.mu.Lock()
+	request := r.serving[id]
+	r.mu.Unlock()
+
+	if request != nil {
+		request.cancel()
+	}
+}
+
+// claim takes the right to answer a request, once, and carries the wire fact
+// needed to choose that answer without exposing mutable request state.
+func (r *requests) claim(id jsonrpc.ID) (requestClaim, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	request := r.serving[id]
+	if request == nil || request.answered {
 		// Already finished, or never ours.
-		return false
+		return requestClaim{}, false
 	}
-	r.answered[id] = true
-	return true
+	request.answered = true
+	return requestClaim{cancelled: request.cancelled}, true
 }

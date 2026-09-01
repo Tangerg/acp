@@ -314,7 +314,7 @@
     },
     {
       "name": "a plan update, whose content is another union",
-      "why": "PlanUpdateContent has three arms and the outer arm's payload is named PlanUpdate too",
+      "why": "plan_update is not part of the published stable schema",
       "input": {
         "sessionId": "sess-1",
         "update": {
@@ -326,22 +326,11 @@
           }
         }
       },
-      "accepted": true,
-      "normalized": {
-        "sessionId": "sess-1",
-        "update": {
-          "plan": {
-            "planId": "plan-1",
-            "content": "# steps",
-            "type": "markdown"
-          },
-          "sessionUpdate": "plan_update"
-        }
-      }
+      "accepted": false
     },
     {
       "name": "a plan removal",
-      "why": "an arm whose payload carries only an identifier",
+      "why": "plan_removed is not part of the published stable schema",
       "input": {
         "sessionId": "sess-1",
         "update": {
@@ -349,14 +338,7 @@
           "planId": "plan-1"
         }
       },
-      "accepted": true,
-      "normalized": {
-        "sessionId": "sess-1",
-        "update": {
-          "planId": "plan-1",
-          "sessionUpdate": "plan_removed"
-        }
-      }
+      "accepted": false
     },
     {
       "name": "available commands",
@@ -586,7 +568,7 @@
     },
     {
       "name": "a compaction",
-      "why": "its status is an open string union, so an unlisted value is valid",
+      "why": "compaction_update is not part of the published stable schema",
       "input": {
         "sessionId": "sess-1",
         "update": {
@@ -595,19 +577,11 @@
           "status": "in_progress"
         }
       },
-      "accepted": true,
-      "normalized": {
-        "sessionId": "sess-1",
-        "update": {
-          "compactionId": "c-1",
-          "status": "in_progress",
-          "sessionUpdate": "compaction_update"
-        }
-      }
+      "accepted": false
     },
     {
       "name": "a compaction with an unlisted status",
-      "why": "the open arm of the union is a bare string, so this is kept as received",
+      "why": "compaction_update remains non-standard even with an extension-like status",
       "input": {
         "sessionId": "sess-1",
         "update": {
@@ -616,19 +590,11 @@
           "status": "_vendor_paused"
         }
       },
-      "accepted": true,
-      "normalized": {
-        "sessionId": "sess-1",
-        "update": {
-          "compactionId": "c-1",
-          "status": "_vendor_paused",
-          "sessionUpdate": "compaction_update"
-        }
-      }
+      "accepted": false
     },
     {
       "name": "a compaction summary chunk",
-      "why": "the fifteenth arm",
+      "why": "compaction_summary_chunk is not part of the published stable schema",
       "input": {
         "sessionId": "sess-1",
         "update": {
@@ -640,18 +606,7 @@
           }
         }
       },
-      "accepted": true,
-      "normalized": {
-        "sessionId": "sess-1",
-        "update": {
-          "compactionId": "c-1",
-          "content": {
-            "text": "summary",
-            "type": "text"
-          },
-          "sessionUpdate": "compaction_summary_chunk"
-        }
-      }
+      "accepted": false
     },
     {
       "name": "an unknown update arm",

@@ -36,8 +36,12 @@ type Transport interface {
 //     pending Read. Without that last part, a Read and the goroutine blocked in
 //     it cannot be stopped, which is why this interface takes a closeable stream
 //     pair rather than a bare reader and writer.
-//   - A failed read or write ends the logical connection. The failure is the
-//     connection's terminal error, and every caller of Wait sees the same one.
+//   - A failed read ends the logical connection. A failed write does too, except
+//     when it returns exactly ctx.Err: that is the transport's promise that it
+//     committed no part of the message and the connection remains usable. A
+//     transport whose commit state is uncertain must return another error, even
+//     when cancellation caused it. A terminal failure is the connection's error,
+//     and every caller of Wait sees the same one.
 //
 // Untested concurrency contracts are not contracts, so these are tested with
 // testing/synctest rather than with sleeps.
@@ -46,7 +50,8 @@ type Connection interface {
 	// the stream cleanly.
 	Read(ctx context.Context) (jsonrpc.Message, error)
 
-	// Write sends a message.
+	// Write sends a message. Returning exactly ctx.Err reports that no part of the
+	// message was committed; all other errors may be terminal.
 	Write(ctx context.Context, message jsonrpc.Message) error
 
 	// Close releases the stream and unblocks a pending Read.

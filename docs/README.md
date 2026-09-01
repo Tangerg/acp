@@ -30,7 +30,7 @@ because what a decision was corrected *from* is often the useful part:
 ## Sources
 
 Every factual claim in these pages comes from one of the following. Where a page
-states a number — 43 methods, 265 definitions — it was counted from the vendored
+states a number — 25 methods, 170 definitions — it was counted from the vendored
 schema, not recalled.
 
 ### The specification
@@ -58,8 +58,8 @@ The files these notes lean on:
 
 | Path | What it gave |
 | --- | --- |
-| `schema/meta.json` | The method table: 28 agent, 14 client, 1 protocol |
-| `schema/schema.json` | 265 definitions, 41 unions |
+| `schema/meta.json` | The local SDK's experimental method table; useful as design reference, not as the stable wire authority |
+| `schema/schema.json` | The local SDK's experimental type set; useful as implementation reference, not as the stable wire authority |
 | `src/acp.ts:118` | `methods` — the method names grouped by area |
 | `src/acp.ts:3723` | `interface Client` — what an editor must implement |
 | `src/acp.ts:3890` | `interface Agent` — what an agent must implement |
@@ -80,6 +80,20 @@ bidirectional JSON-RPC protocol, capability-gated optional methods, a large
 generated type set, and a spec that keeps moving. Its `design/design.md` argues
 each choice rather than just stating it.
 
+That design document predates one package boundary in the checked-out source:
+JSON Schema is no longer implemented inside the MCP module. The SDK depends on
+`github.com/google/jsonschema-go` v0.4.3, the independently maintained package
+extracted for schema parsing, resolution, validation, and Go-type inference.
+This module uses the same version to validate the published ACP schema before
+its generator applies ACP-specific extension semantics.
+
+The SDK puts `github.com/segmentio/encoding/json` behind an exact-name decoder.
+ACP needs the same wire property but not the dependency: its envelope already has
+to decode into `map[string]json.RawMessage` to preserve member presence, and map
+lookup is case-sensitive. Making that map the only decoded representation keeps
+encoding and decoding on the standard library and avoids parsing every message
+twice merely to copy MCP's implementation choice.
+
 | Path | What it gave |
 | --- | --- |
 | `design/design.md:29` | Package layout — one package for the API |
@@ -92,6 +106,8 @@ each choice rather than just stating it.
 | `mcp/content.go:22` | `Content` as a sealed interface with per-arm wire encoding |
 | `mcp/client.go` | `ClientOptions` — handler fields that imply capabilities |
 | `jsonrpc/jsonrpc.go:28` | `MakeID`, `EncodeMessage`, `DecodeMessage` — the minimum a public message type needs |
+| `internal/json/json.go` | Why MCP needs exact JSON member matching; ACP gets it from its required raw-member map instead |
+| `go.mod` and `github.com/google/jsonschema-go/jsonschema` | JSON Schema is a separate concern; use its parser and resolver rather than reimplementing the standard |
 
 ### The engineering setup
 

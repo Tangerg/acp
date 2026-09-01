@@ -8,35 +8,47 @@
 package jsonrpc2
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 )
 
 // ID is a Request identifier, which is defined by the spec to be a string, integer, or null.
 // https://www.jsonrpc.org/specification#request_object
 type ID struct {
 	value any
+	valid bool
 }
 
-// MakeID coerces the given Go value to an ID. The value is assumed to be the
-// default JSON marshaling of a Request identifier -- nil, float64, or string.
-//
-// Returns an error if the value type was a valid Request ID type.
-//
-// TODO: ID can't be a json.Marshaler/Unmarshaler, because we want to omitzero.
-// Simplify this package by making ID json serializable once we can rely on
-// omitzero.
-func MakeID(v any) (ID, error) {
-	switch v := v.(type) {
-	case nil:
-		return ID{}, nil
-	case float64:
-		return Int64ID(int64(v)), nil
-	case string:
-		return StringID(v), nil
+func (id ID) MarshalJSON() ([]byte, error) {
+	if !id.valid || id.value == nil {
+		return []byte("null"), nil
 	}
-	return ID{}, fmt.Errorf("%w: invalid ID type %T", ErrParse, v)
+	return json.Marshal(id.value)
+}
+
+func (id *ID) UnmarshalJSON(data []byte) error {
+	if id == nil {
+		return fmt.Errorf("%w: decode request ID into nil target", ErrParse)
+	}
+	data = bytes.TrimSpace(data)
+	if bytes.Equal(data, []byte("null")) {
+		*id = NullID()
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		*id = StringID(text)
+		return nil
+	}
+	number, ok := new(big.Rat).SetString(string(data))
+	if !ok || !number.IsInt() || !number.Num().IsInt64() {
+		return fmt.Errorf("%w: request ID %s is not a string, null, or int64", ErrParse, data)
+	}
+	*id = Int64ID(number.Num().Int64())
+	return nil
 }
 
 // Message is the interface to all jsonrpc2 message types.
@@ -53,7 +65,8 @@ type Message interface {
 // If it has an ID it is a call, otherwise it is a notification.
 type Request struct {
 	// ID of this request, used to tie the Response back to the request.
-	// This will be nil for notifications.
+	// This is the zero ID for notifications; an explicit null is valid and
+	// distinct from that zero.
 	ID ID
 	// Method is a string containing the method name to invoke.
 	Method string
@@ -64,23 +77,30 @@ type Request struct {
 // Response is a Message used as a reply to a call Request.
 // It will have the same ID as the call it is a response to.
 type Response struct {
-	// result is the content of the response.
+	// Result is the content of the response.
 	Result json.RawMessage
-	// err is set only if the call failed.
-	Error error
-	// id of the request this is a response to.
+	// Error is set only if the call failed.
+	Error *WireError
+	// ID is the identifier of the request this answers.
 	ID ID
 }
 
 // StringID creates a new string request identifier.
-func StringID(s string) ID { return ID{value: s} }
+func StringID(s string) ID { return ID{value: s, valid: true} }
 
 // Int64ID creates a new integer request identifier.
-func Int64ID(i int64) ID { return ID{value: i} }
+func Int64ID(i int64) ID { return ID{value: i, valid: true} }
+
+// NullID creates the discouraged but valid null arm of ACP's RequestId union.
+func NullID() ID { return ID{valid: true} }
 
 // IsValid returns true if the ID is a valid identifier.
 // The default value for ID will return false.
-func (id ID) IsValid() bool { return id.value != nil }
+func (id ID) IsValid() bool { return id.valid }
+
+// IsZero keeps an absent ID out of an envelope while allowing an explicit null
+// ID to remain present, as the ACP RequestId union requires.
+func (id ID) IsZero() bool { return !id.valid }
 
 // Raw returns the underlying value of the ID.
 func (id ID) Raw() any { return id.value }
@@ -95,6 +115,9 @@ func NewNotification(method string, params any) (*Request, error) {
 // NewCall constructs a new Call message for the supplied ID, method and
 // parameters.
 func NewCall(id ID, method string, params any) (*Request, error) {
+	if !id.IsValid() {
+		return nil, errors.New("constructing jsonrpc call: request has no id")
+	}
 	p, merr := marshalToRaw(params)
 	return &Request{ID: id, Method: method, Params: p}, merr
 }
@@ -102,44 +125,61 @@ func NewCall(id ID, method string, params any) (*Request, error) {
 func (msg *Request) IsCall() bool { return msg.ID.IsValid() }
 
 func (msg *Request) marshal(to *wireCombined) {
-	to.ID = msg.ID.value
-	to.Method = msg.Method
+	to.ID = msg.ID
+	to.Method = &msg.Method
 	to.Params = msg.Params
 }
 
-// NewResponse constructs a new Response message that is a reply to the
-// supplied. If err is set result may be ignored.
-func NewResponse(id ID, result any, rerr error) (*Response, error) {
-	r, merr := marshalToRaw(result)
-	return &Response{ID: id, Result: r, Error: rerr}, merr
+// NewResponse constructs a response with exactly one of result or rerr.
+func NewResponse(id ID, result any, rerr *WireError) (*Response, error) {
+	if !id.IsValid() {
+		return nil, errors.New("constructing jsonrpc response: response has no request id")
+	}
+	r, err := marshalToRaw(result)
+	if err != nil {
+		return nil, err
+	}
+	response := &Response{ID: id, Result: r, Error: rerr}
+	if err := response.validate(); err != nil {
+		return nil, fmt.Errorf("constructing jsonrpc response: %w", err)
+	}
+	return response, nil
 }
 
 func (msg *Response) marshal(to *wireCombined) {
-	to.ID = msg.ID.value
-	to.Error = toWireError(msg.Error)
+	to.ID = msg.ID
+	to.Error = msg.Error
 	to.Result = msg.Result
 }
 
-func toWireError(err error) *WireError {
-	if err == nil {
-		// no error, the response is complete
+func (msg *Response) validate() error {
+	switch {
+	case msg == nil:
+		return errors.New("nil response")
+	case !msg.ID.IsValid():
+		return errors.New("response has no request id")
+	case msg.Error != nil && len(msg.Result) > 0:
+		return errors.New("response has both result and error")
+	case msg.Error == nil && len(msg.Result) == 0:
+		return errors.New("response has neither result nor error")
+	default:
 		return nil
 	}
-	if err, ok := err.(*WireError); ok {
-		// already a wire error, just use it
-		return err
-	}
-	result := &WireError{Message: err.Error()}
-	var wrapped *WireError
-	if errors.As(err, &wrapped) {
-		// if we wrapped a wire error, keep the code from the wrapped error
-		// but the message from the outer error
-		result.Code = wrapped.Code
-	}
-	return result
 }
 
 func EncodeMessage(msg Message) ([]byte, error) {
+	switch msg := msg.(type) {
+	case *Request:
+		if msg == nil {
+			return nil, errors.New("marshaling jsonrpc message: nil request")
+		}
+	case *Response:
+		if err := msg.validate(); err != nil {
+			return nil, fmt.Errorf("marshaling jsonrpc message: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("marshaling jsonrpc message: unsupported %T", msg)
+	}
 	wire := wireCombined{VersionTag: wireVersion}
 	msg.marshal(&wire)
 	data, err := json.Marshal(&wire)
@@ -150,36 +190,65 @@ func EncodeMessage(msg Message) ([]byte, error) {
 }
 
 func DecodeMessage(data []byte) (Message, error) {
-	msg := wireCombined{}
-	if err := json.Unmarshal(data, &msg); err != nil {
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(data, &members); err != nil {
 		return nil, fmt.Errorf("unmarshaling jsonrpc message: %w", err)
 	}
-	if msg.VersionTag != wireVersion {
-		return nil, fmt.Errorf("invalid message version tag %q; expected %q", msg.VersionTag, wireVersion)
+	if members == nil {
+		return nil, ErrInvalidRequest
 	}
-	id, err := MakeID(msg.ID)
-	if err != nil {
-		return nil, err
+
+	var version string
+	if err := json.Unmarshal(members["jsonrpc"], &version); err != nil {
+		return nil, ErrInvalidRequest
 	}
-	if msg.Method != "" {
-		// has a method, must be a call
+	if version != wireVersion {
+		return nil, fmt.Errorf("invalid message version tag %q; expected %q", version, wireVersion)
+	}
+
+	var id ID
+	if rawID, present := members["id"]; present {
+		if err := json.Unmarshal(rawID, &id); err != nil {
+			return nil, fmt.Errorf("unmarshaling jsonrpc message: %w", err)
+		}
+	}
+
+	if rawMethod, hasMethod := members["method"]; hasMethod {
+		// Presence, not a non-empty value, distinguishes requests from responses.
+		// An empty method is still a request for the dispatcher to reject; treating
+		// it as a response would reinterpret the peer's envelope.
+		var method string
+		if err := json.Unmarshal(rawMethod, &method); err != nil || bytes.Equal(bytes.TrimSpace(rawMethod), []byte("null")) {
+			return nil, ErrInvalidRequest
+		}
 		return &Request{
-			Method: msg.Method,
+			Method: method,
 			ID:     id,
-			Params: msg.Params,
+			Params: members["params"],
 		}, nil
 	}
-	// no method, should be a response
 	if !id.IsValid() {
 		return nil, ErrInvalidRequest
 	}
+
+	var wireErr *WireError
+	rawError, hasError := members["error"]
+	if hasError {
+		if bytes.Equal(bytes.TrimSpace(rawError), []byte("null")) {
+			return nil, errors.New("invalid response: error is null")
+		}
+		wireErr = new(WireError)
+		if err := json.Unmarshal(rawError, wireErr); err != nil {
+			return nil, fmt.Errorf("invalid response: %w", err)
+		}
+	}
 	resp := &Response{
 		ID:     id,
-		Result: msg.Result,
+		Result: members["result"],
+		Error:  wireErr,
 	}
-	// we have to check if msg.Error is nil to avoid a typed error
-	if msg.Error != nil {
-		resp.Error = msg.Error
+	if err := resp.validate(); err != nil {
+		return nil, fmt.Errorf("invalid response: %w", err)
 	}
 	return resp, nil
 }

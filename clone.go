@@ -1,9 +1,6 @@
 package acp
 
-import (
-	"reflect"
-	"sync"
-)
+import "reflect"
 
 // One deep-copy boundary, for the values this package retains after construction
 // and hands back out.
@@ -22,17 +19,10 @@ import (
 // description of a shape the schema already owns, and a schema bump would make
 // them quietly wrong rather than loudly broken.
 //
-// What it copies is what JSON has: maps, slices, pointers, interfaces, and the
-// structs it can faithfully rebuild. It preserves the dynamic types it finds,
-// which a round trip through the codec would not: a caller who put an int in
-// _meta gets an int back.
-//
-// What it does not copy, it shares. A [Meta] map holds whatever a caller put
-// there, and a struct that keeps its state unexported cannot be rebuilt from
-// outside: rebuilding one field by field returns the zero value of everything it
-// hides, which for a time.Time is the zero time. A shared value is a smaller
-// problem than a silently wrong one, so anything reflection cannot reconstruct is
-// copied by assignment and the snapshot contract says as much.
+// Meta and Opt own their hidden representation and copy themselves. Every other
+// retained schema type is generated with exported fields, so reaching an
+// unexported field here is an internal invariant violation rather than a value to
+// share behind the caller's back.
 
 func deepCopy[T any](value T) T {
 	var copied T
@@ -106,45 +96,17 @@ func copyValue(value reflect.Value) reflect.Value {
 		return copied
 
 	case reflect.Struct:
-		if hidesState(value.Type()) {
-			return value
-		}
 		copied := reflect.New(value.Type()).Elem()
 		for i := range value.NumField() {
+			if !copied.Field(i).CanSet() {
+				panic("acp: deep copy reached unexported state in " + value.Type().String())
+			}
 			copied.Field(i).Set(copyValue(value.Field(i)))
 		}
 		return copied
 
 	default:
-		// Scalars, funcs, channels: assignment is the copy, and anything else a
-		// caller put in a _meta map stays shared, because this package has no idea
-		// what copying it would mean.
+		// Scalars and functions have no mutable representation to rebuild here.
 		return value
 	}
 }
-
-// hidesState reports whether a struct keeps state reflection cannot write.
-//
-// Such a type is copied whole rather than rebuilt. Every generated type in this
-// package has only exported fields, so the schema's tree is rebuilt; the values a
-// caller puts in a _meta map are the ones this catches, and the one that made it
-// matter is time.Time, which is nothing but unexported state.
-//
-// The answer is cached because a Meta map can hold many values of one type, and
-// the shape of a type does not change.
-func hidesState(structType reflect.Type) bool {
-	if cached, ok := hidden.Load(structType); ok {
-		return cached.(bool) //nolint:forcetypeassert // only bools are stored.
-	}
-	answer := false
-	for i := range structType.NumField() {
-		if !structType.Field(i).IsExported() {
-			answer = true
-			break
-		}
-	}
-	hidden.Store(structType, answer)
-	return answer
-}
-
-var hidden sync.Map

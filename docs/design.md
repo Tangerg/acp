@@ -14,9 +14,9 @@ differs from MCP, this page says so and says what changed.
 
 ## Two numbers decide most of it
 
-- **265 definitions** means the wire types are generated, not written. Nobody
+- **170 definitions** means the wire types are generated, not written. Nobody
   hand-maintains that against a moving upstream.
-- **14 of the 43 directory entries run agent → client**, so this is not a client
+- **11 of the 25 methods run agent → client**, so this is not a client
   library with a server mode bolted on. Both directions are the same machinery
   seen from opposite ends, and the package is built that way from the first
   commit.
@@ -58,7 +58,7 @@ object so one property can fail on its own, the two array decoders that
 retained catch-all properties, and JSON pointer paths for failures. It names no
 method, no capability and no message type, and it imports nothing from `acp` —
 which is what lets the generated code, which names all of those, sit in the
-exported package and still share one runtime. The alternative was 265 restatements
+exported package and still share one runtime. The alternative was 170 restatements
 of the same six rules.
 
 ## The wire types are generated
@@ -72,7 +72,11 @@ runs to prove the committed output still matches
 - `schema/schema.json` is vendored and pinned to a release tag, currently
   `schema-v1.21.0`. The wire contract becomes a repository artifact that shows up
   in a diff when it moves.
-- `internal/cmd/schemagen` reads it and emits the types.
+- `github.com/google/jsonschema-go/jsonschema`, the package extracted from the
+  MCP Go SDK, checks the document's standard JSON Schema structure, references,
+  and defaults before generation.
+- `internal/cmd/schemagen` applies the ACP-specific `x-deserialize-*`, `x-method`,
+  and `x-side` rules and emits the types.
 - The output is committed, so `go get` needs no generator and pkg.go.dev has
   something to document.
 - CI runs the generator and fails if the tree changes — the same promise as
@@ -82,9 +86,15 @@ Generated code stays inside the lint gate. `.golangci.yml` already disables
 golangci-lint's implicit exclusion of generated files, because these are the
 types every caller touches and so the ones most worth checking.
 
+The public elicitation types remain generated from ACP's narrower schema rather
+than becoming aliases for the general-purpose `jsonschema.Schema`. The latter
+accepts the full JSON Schema vocabulary; exposing it on the ACP wire would allow
+messages the protocol does not permit. The shared package owns the standard,
+while ACP's generated types own the protocol grammar.
+
 ## Unions
 
-Go has no sum type and the schema has 41 unions. An earlier draft of this page
+Go has no sum type and the schema has 32 unions. An earlier draft of this page
 split them into "14 open string enumerations and 27 discriminated struct unions"
 and gave every struct union an unknown arm. Both halves of that were wrong, and
 [design-review.md](./design-review.md#1-the-union-model-disagrees-with-the-v1-schema)
@@ -92,21 +102,9 @@ is why this section was rewritten. The correction matters because it inverts the
 forward-compatibility rule: the schema, not this package, decides which unions
 are open.
 
-Classified by actual wire shape, the 41 are:
-
-| Class | Count | Examples |
-| --- | --- | --- |
-| Closed string enumerations | 14 | `StopReason`, `ToolKind`, `ToolCallStatus`, `Role` |
-| Open string unions — const arms plus a bare `string` | 3 | `LlmProtocol`, `CompactionStatus`, `SessionConfigOptionCategory` |
-| Closed discriminated object unions | 16 | `SessionUpdate`, `ContentBlock`, `ToolCallContent` |
-| Open object unions, with a schema `not` catch-all | 4 | `CreateElicitationRequest`, `CreateElicitationResponse`, `ElicitationPropertySchema`, `MultiSelectItems` |
-| Primitive, value and mixed unions | 4 | `RequestId` (`string`\|integer\|`null`), `ErrorCode` (integer), `ElicitationContentValue`, `SessionConfigSelectOptions` |
-
-The schema says which is which, explicitly, and the TypeScript generator already
-honours it. `zStopReason` is five `z.literal` arms and nothing else;
-`zLlmProtocol` is five literals **plus `z.string()`**
-(`acp-typescript-sdk/src/schema/zod.gen.ts:2075` and `:1671`). Exactly four
-unions carry the `not` catch-all that makes an object union open.
+They include closed enumerations, open string unions, discriminated object
+unions, and primitive/value unions. The schema says which is which explicitly;
+the generator preserves that decision instead of adding a universal unknown arm.
 
 So:
 
@@ -240,7 +238,7 @@ the schema gives this construct none: it is an object and a `oneOf` side by side
 
 `encoding/json` checks JSON syntax and Go field types. It does not implement this
 schema. The v1 schema uses two extension keywords heavily —
-**378 occurrences of `x-deserialize-default-on-error`** and **35 of
+**249 occurrences of `x-deserialize-default-on-error`** and **27 of
 `x-deserialize-skip-invalid-items`** — and neither has any meaning to a plain
 decoder. `ClientCapabilities.fs` carries both a default and
 `x-deserialize-default-on-error`, so a malformed `fs` object must become
@@ -316,7 +314,7 @@ null, and null there is a value rather than an absence.
 ### Omitted, null and present are three states, not two
 
 The schema distinguishes an absent property from one present as `null`, and it
-does so **357 times**: that is how many optional-and-nullable property
+does so **222 times**: that is how many optional-and-nullable property
 occurrences are under `$defs`.
 
 Go's ordinary answer, a pointer with `omitempty`, has only two states — a nil
@@ -406,7 +404,7 @@ here rather than contradicted there.
 
 **Scope: authoritative through layer 5.** It shows every operation layers 1–5 of
 [roadmap.md](./roadmap.md) implement and deliberately no others — `ResumeSession`,
-`session/close`, `session/set_config_option`, `elicitation/*`, `providers/*` and
+`session/close`, `session/set_config_option`, `elicitation/*` and
 the rest arrive with layer 6 and are added here then. A partial table cannot also
 be the final authority, so it says which surface it is final for. The exported
 API is not frozen until this table covers everything a release claims.
@@ -654,16 +652,21 @@ So cancelling a `Prompt` context sends `$/cancel_request` and returns
 fixed the public meaning but left the obligations unowned, and they cannot be an
 application's problem:
 
-**The connection owns pending permission requests, indexed by session.** When
-`session/cancel` is sent or received, every pending
-`session/request_permission` for that session must be answered with the
-`cancelled` outcome — while the user's handler may still be blocked on a dialog.
+**The connection owns permission requests that arrive during an active turn,
+indexed by session.** The schema does not make a permission request invalid when
+no prompt is running; such a request is dispatched but remains outside the turn
+aggregate, where its own `$/cancel_request` still applies. When `session/cancel`
+is sent or received, every pending turn-owned `session/request_permission` for
+that session must be answered with the `cancelled` outcome — while the user's
+handler may still be blocked on a dialog.
 When `Cancel` is called, the connection **synchronously claims** those pending
 requests — before the notification goes out and before `Cancel` returns — then
 cancels their handler contexts and resolves each response exactly once. Claiming
 first is what makes the race decidable: a user decision arriving afterwards finds
 the request already answered and is dropped, rather than racing a resolution that
-has not happened yet.
+has not happened yet. If the permission handler already claimed its response,
+`Cancel` waits for that response write to settle before sending `session/cancel`;
+claiming an answer is not the same as putting it on the wire.
 
 **The agent side owns one context per turn.** Receiving `session/cancel` cancels
 the turn's context and the work descending from it; other sessions and unrelated
@@ -676,11 +679,14 @@ touches neither its parent nor its siblings. The previous revision wrote "each
 level is cancelled only by its own signal", which is not how `context` works and
 would have described a tree where cancelling a connection left its turns running.
 
-**Request cancellation is four steps, not one.** When a call's context finishes,
-the connection retires the local pending call, returns the exact `ctx.Err()`,
-sends `$/cancel_request` on an *independent bounded* context so an unresponsive
-peer cannot hold the caller past its own deadline, and discards any late response
-without reviving the retired call. That is the MCP SDK's behaviour
+**Request cancellation is four steps, not one.** When an ordinary call's context
+finishes, the connection retires the local pending call, returns the exact
+`ctx.Err()`, sends `$/cancel_request` on an *independent bounded* context so an
+unresponsive peer cannot hold the caller past its own deadline, and discards any
+late response without reviving the retired call. `Prompt` keeps its pending call
+only to observe when the turn is free again after its caller leaves; that internal
+obligation does not delay the caller's return. This follows the MCP SDK's
+behaviour for ordinary calls
 (`go-sdk/mcp/transport.go:281`) and all four parts are load-bearing. The
 TypeScript SDK is cited above for *which message* per-request cancellation sends,
 not for returning locally: it settles its promise from the peer's response.
@@ -767,7 +773,7 @@ from the config above.
 ### The capability table is hand-maintained and checked
 
 "Whatever the schema's capability types say" is not implementable. The schema
-annotates method payloads with `x-method` and `x-side` — 74 occurrences each —
+annotates method payloads with `x-method` and `x-side` — 46 occurrences each —
 and has **no annotation linking a method to a capability**. Those links exist
 only in prose descriptions, and some capabilities describe accepted data rather
 than an optional method.
@@ -862,8 +868,11 @@ or a half-initialized peer.
 sent `initialize`. It cannot wait for a handshake it does not control. Until
 `initialize` arrives the connection answers every other method with
 `-32600 Invalid request`; the only legal inbound message before it is
-`initialize` itself, and a second `initialize` on the same connection is also
-`-32600`.
+`initialize` itself. Initialize attempts are serialized in wire order. Once one
+is accepted, every later attempt is `-32600`; if parameter validation rejects an
+attempt before acceptance, its response settles before the next queued or later
+attempt can negotiate. The client may therefore correct the request and retry
+without reconnecting, while two attempts can never negotiate concurrently.
 
 The context passed to `Connect` scopes **setup only**, on both sides. It does not
 own the connection's lifetime — a caller who passed a five-second handshake
@@ -872,7 +881,9 @@ owned by `Close`, and observed by `Wait`. `Agent.Run` is the exception and says
 so: it is `Connect` then `Wait` then `Close`, and its context owns the whole run.
 
 `Wait` returns the connection's terminal error: nil for a local `Close` or a
-clean EOF, and the read or write failure otherwise. It is safe to call
+clean EOF, and the read or terminal write failure otherwise. A transport may
+return exactly the caller's `ctx.Err()` to report that no part of a message was
+committed; that operation fails without ending the connection. It is safe to call
 concurrently and from many goroutines, and every caller gets the same value every
 time — a terminal condition that reported differently depending on who asked
 first would be unusable for deciding whether to reconnect.
@@ -896,12 +907,13 @@ The specification puts those updates before the response on the wire on purpose;
 this keeps them there. It is also what the reference implementation does, by being
 a single event loop.
 
-**An inbound request is served concurrently, and is not in that queue.** It has
-to be: an agent waiting for a permission answer still has to be cancellable, and a
-client asked for permission has to be able to answer while updates are still
-arriving. `$/cancel_request` goes further and is handled in the read loop itself,
-because a cancellation queued behind the work it was meant to stop is the same as
-no cancellation.
+**An inbound request is admitted in that queue and served concurrently.** Ordered
+admission records the handshake, turn, and permission-request state before a
+later wire message can act on it; only its handler leaves the queue. That keeps an
+agent waiting for a permission answer cancellable without letting scheduler order
+replace wire order. `$/cancel_request` goes further and is handled in the read
+loop itself, because a cancellation queued behind the work it was meant to stop
+is the same as no cancellation.
 
 The consequence for a handler is worth stating plainly, because it is the one
 thing this design asks of an application: **a notification handler must not make a
@@ -917,21 +929,24 @@ message on the wire.
 
 The v1 schema defines `ExtRequest`, `ExtResponse` and `ExtNotification` in both
 directions. Without an escape hatch an ACP extension cannot be implemented
-through this package at all, so `Call` and `Notify` exist — but they take an
-arbitrary string, and an unrestricted string is a hole straight through every
-invariant above. A caller could pass `session/prompt` and bypass the generated
-params type, outbound validation, session-ID binding and the capability gate; a
-fallback handler could intercept a standard method that was merely misspelled.
+through this package at all, so `Call` and `Notify` exist — but an unrestricted
+string is a hole straight through every invariant above. A caller could pass
+`session/prompt` and bypass the generated params type, outbound validation,
+session-ID binding and the capability gate; a fallback handler could intercept a
+future standard method before this package knows it.
 
-**The generated standard-method set is reserved.** `Call` and `Notify` reject
-those names, and fallback handlers run only for names outside the set. A standard
-method has exactly one path through the typed codec and the capability gate. If a
-diagnostic tool ever needs raw access to a standard method, that is a separately
-named unsafe API, not a side effect of ordinary extension support.
+**Only names beginning with `_` are extensions.** That is the published
+extensibility rule; every other name is reserved for ACP. `Call` and `Notify`
+enforce it before writing, fallback handlers see only that namespace, and known
+standard methods still have exactly one path through the typed codec and
+capability gate. An unknown reserved notification is ignored, while an unknown
+reserved call receives method-not-found. If a diagnostic tool ever needs raw
+access to a standard method, that is a separately named unsafe API, not a side
+effect of ordinary extension support.
 
 ## What is generated, and what is exported
 
-Generating all 265 definitions as exported types would contradict the package
+Generating all 170 definitions as exported types would contradict the package
 layout: `AgentRequest`, `ClientResponse` and the envelope types are JSON-RPC
 plumbing, and exporting them from `acp` would publish what the layout says is
 hidden and overlap the `jsonrpc` package. So the generator classifies output:
@@ -964,16 +979,12 @@ Neither source is sufficient alone, so both are read. `meta.json` lists the
 methods and which peer serves each; it says nothing about whether a method expects
 a response. The schema's `x-method` and `x-side` annotations say that — a method
 with a `…Response` payload is a request, one with a `…Notification` payload is a
-notification — but they are spread across 74 definitions. Generation cross-checks
+notification — but they are spread across 46 definitions. Generation cross-checks
 the two and stops on a disagreement, which is the check
 [roadmap.md](./roadmap.md#2-wire) asks CI for, made structural rather than
 periodic.
 
-**Counting them turned up an error in these pages.** There are **42 distinct
-method names and 43 directory entries**: `mcp/message` is listed under both
-directions, which is how the schema says either peer may send it, and it is
-consequently the one method whose shape is *either* — request or notification.
-`protocol.md` said 43 methods and now says both numbers.
+There are **25 distinct method names** in the published stable method table.
 
 **The envelopes are not generated at all**, and the previous revision's
 "envelopes and generated routing unions stay unexported" understated it.
@@ -981,9 +992,9 @@ consequently the one method whose shape is *either* — request or notification.
 an id, a method name, params — which `internal/jsonrpc2` owns; generating a second
 set of types for it would be two sources of truth for one thing. The routing
 unions inside them, "every request an agent can send", are of no use either: a
-connection dispatches on the method name, not by trying fifteen arms. Those six
-definitions are the only ones in the schema the generator does not plan, and a
-test names them so that the boundary is a decision rather than an omission.
+connection dispatches on the method name rather than trying routing-union arms.
+The root manifest keeps the envelopes outside the public closure, and a test
+holds that boundary against schema changes.
 
 ### Some generated types are not exported
 
@@ -1004,7 +1015,7 @@ into a helper's name is neither readable nor conventional.
 
 ### The capability table is complete before it is needed
 
-Every one of the 42 methods has a row, classified as baseline, gated by a named
+Every one of the 25 methods has a row, classified as baseline, gated by a named
 predicate, or not implemented yet. It is hand-maintained because it has to be: the
 schema has `x-method` and `x-side` and **no annotation linking a method to a
 capability**, so those links exist only in prose. Each row quotes the schema's own
@@ -1036,19 +1047,20 @@ So the roots are a committed manifest, naming separately:
 - protocol plumbing those operations need — `Error` and `ErrorCode` are reached
   from response envelopes rather than from any method's params, so they are roots
   in their own right the moment `Error` is exported;
-- marker types the extension boundary requires;
+- private JSON-RPC plumbing the connection needs, with a reason each definition
+  must not be exported;
 
 plus, until the payload roots reach them, the definitions rooted only to exercise
 a wire shape — the layer-1 spike's probes, each recording which shape it proves.
 
 The closure's size is an output. The generator writes every exported name it
-produces to `schema/exported.txt`, marking the ones whose definition carries
-upstream's UNSTABLE marker, and two gates read it: regenerating in `-check` mode
-proves the file matches the manifest, and a test parses the package's own
+produces to `schema/exported.txt`, and two gates read it: regenerating in `-check`
+mode proves the file matches the manifest, and a test parses the package's own
 declarations and holds them against it in both directions. So a generated name
-that vanished and a type added by hand to a surface meant to be generated are both
-failures, and the hand-written exports are a closed list with a reason beside each
-one.
+that vanished and a type added by hand to a surface meant to be generated are
+both failures, and the hand-written exports are a closed list with a reason
+beside each one. The manifest has no compatibility carve-out for experimental
+definitions because only the published stable schema is an input.
 
 ### Names are the schema's, put through Go's initialism rule
 
@@ -1068,8 +1080,8 @@ ours to design, and that extends to what it calls things — so the constant is
 ### The doc comments are the specification's prose
 
 A generated doc comment is the schema's `description`, reproduced rather than
-rewritten, including upstream's `**UNSTABLE**` marker. Two things are added, both
-punctuation:
+rewritten, including its emphasis and status labels. The generator does not
+interpret prose as API policy. Two things are added, both punctuation:
 
 - The symbol's name and an em dash, prefixed to the first line, because Go's
   convention and the linter that enforces it both want a doc comment to begin with
@@ -1120,7 +1132,10 @@ what a custom transport is being asked to promise:
 - `Read` may run concurrently with `Close`.
 - `Close` is idempotent and safe to call concurrently, and it unblocks a pending
   `Read`.
-- A failed read or write closes the logical connection.
+- A failed read closes the logical connection. A failed write also closes it
+  unless the transport returns exactly `ctx.Err()`, which promises that no part
+  of the message was committed. A transport that cannot prove that returns a
+  different error even when context cancellation caused the failure.
 - Every goroutine the connection owns has a defined exit condition.
 - `Wait` returns the connection's terminal error, consistently, to every caller.
 
@@ -1158,13 +1173,30 @@ out — and the connection is written against the message types instead.
 
 What is forked is `messages.go` and `wire.go`: request identifiers, the envelope,
 and the result-or-error discrimination. Those are exactly the parts a hand-written
-implementation gets wrong first, and they are stable. Two things were removed and
-`internal/jsonrpc2/doc.go` says why: an indented encoder nothing in a protocol
-stream wants, and upstream's non-standard error sentinels — it uses `-32000` for
+implementation gets wrong first, and they are stable. The small fork delta is in
+`internal/jsonrpc2/doc.go`: an indented encoder nothing in a protocol stream
+wants was removed, as were upstream's non-standard error sentinels — it uses `-32000` for
 "overloaded" and `-32002` for "server is closing", which the Agent Client Protocol
 defines as authentication required and resource not found. Two meanings for one
 code in one binary is a bug waiting to be found by somebody debugging a live
 connection.
+
+Request IDs also keep explicit `null` distinct from an absent ID and normalize an
+exact integral JSON number into `int64`. The exact parser accepts equivalent JSON
+number spellings such as `1.0` and `1e0`, while rejecting a non-integral value or
+an int64 overflow. Upstream's generic JSON-RPC representation decodes through
+`float64`, which could lose a large identifier and answer the wrong call. Error
+codes are separately checked against the schema's int32 union rather than
+truncated or replaced with a code the peer did not send.
+
+Inbound envelopes decode once into `map[string]json.RawMessage`. Exact map lookup
+rejects `JSONRPC` where decoding a tagged struct would accept it as `jsonrpc`, and
+the raw values preserve member presence before zero values can erase it. Response
+and error objects can therefore validate their required, mutually exclusive
+members without a second whole-document decode. MCP needs its internal exact-name
+decoder because it decodes many tagged structures directly; copying that
+dependency here would preserve an implementation detail rather than the design
+property ACP actually needs.
 
 ACP's request cancellation is `$/cancel_request`, LSP's spelling rather than
 MCP's `notifications/cancelled`, so the fork's cancellation wiring is closer to
@@ -1216,40 +1248,14 @@ What replaying gives up: it cannot notice the reference implementation changing.
 Re-recording notices that, which is why the updater is pinned and scheduled rather
 than run once.
 
-## The v1 schema lane only, which is not the same as stable
+## The published stable schema is the authority
 
-Upstream ships v1 (`schema.json`, tag `schema-v1.21.0`) and an unstable v2
-(`schema/v2/schema.unstable.json`, tag `schema-v2.0.0-alpha.3`), and the
-TypeScript SDK carries both. This module implements the v1 lane and nothing else
-until v2 stabilises. Two type sets in one package would double the generated
-surface and grow every union arms that exist only in a draft.
-
-That is a statement about lanes, not about stability. **52 of the v1 schema's 265
-definitions carry an UNSTABLE marker** — "This capability is not part of the spec
-yet, and may be removed or changed at any point."
-
-The obvious response is to defer generating the unstable ones. Counting says that
-is not available:
-
-- **38** definitions are marked unstable *as types*. Those could be deferred.
-- **14** are stable types with unstable *fields* — and they are the central ones:
-  `AgentCapabilities`, `ClientCapabilities`, `SessionUpdate`, `PromptResponse`,
-  `ToolCall`, `ToolCallUpdate`. Nothing can be deferred here.
-- Following every `$ref` from the operations layers 3 to 5 implement, **18 of the
-  38 type-level-unstable types are inside the closure**. `SessionUpdate` has plan
-  and compaction arms; `NewSessionRequest` takes MCP servers. Only 20 are out of
-  reach.
-
-So instability cannot be the axis, and two rules replace it. **A generated type
-is generated whole** — every field, every union arm. Upstream's marker warns that
-a shape may change; it is not permission to omit it, and dropping an unstable arm
-of `SessionUpdate` would fail to decode a message an agent may legitimately send.
-**The compatibility promise carves them out explicitly, before v1.0**: symbols
-whose schema definition carries the UNSTABLE marker are exempt from the module's
-compatibility guarantee, their doc comments repeat upstream's warning verbatim,
-and `gorelease` findings against them are reviewed rather than automatically
-blocking. Pre-1.0 this costs nothing, which is why it is written down now instead
-of discovered at the v1.0 tag.
+This module vendors the `schema.json` and `meta.json` assets attached to the
+`schema-v1.21.0` release. The local TypeScript checkout contains experimental
+providers, ACP-carried MCP, document sync, NES, forking and compaction additions;
+they are useful implementation references but are not part of those release
+assets. Encoding them here would create a local dialect, so they are excluded
+until they appear in a published schema release.
 
 ## What is deliberately not copied from the TypeScript SDK
 

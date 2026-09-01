@@ -7,9 +7,9 @@ import (
 // docComment renders a schema description as Go comment lines.
 //
 // The description is the specification's prose and is reproduced rather than
-// rewritten — including upstream's **UNSTABLE** marker, which the module's
-// compatibility promise carves out and which therefore has to be visible in
-// godoc. Two mechanical changes are made, both punctuation:
+// rewritten, including emphasis and status labels. Treating a word in prose as
+// generator policy would create a second, implicit schema. Two mechanical
+// changes are made, both punctuation:
 //
 // When symbol is not empty the first line is prefixed with "symbol — ", because
 // Go's convention and the linter that enforces it both want a doc comment to

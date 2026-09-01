@@ -159,6 +159,20 @@ func TestACancelledCallDoesNotWaitForThePeerToBeTold(t *testing.T) {
 	})
 }
 
+func TestAnAlreadyCancelledCallDoesNotEndTheConnection(t *testing.T) {
+	session := connectAndOpen(t, testClient(t), testAgent(t, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := session.Conn().Call(ctx, "_vendor.example/cancelled", nil, nil); !errors.Is(
+		err, context.Canceled,
+	) {
+		t.Fatalf("Call returned %v, want context.Canceled", err)
+	}
+	if _, err := session.Prompt(context.Background(), &acp.PromptParams{}); err != nil {
+		t.Fatalf("the next turn failed after a call that never reached the transport: %v", err)
+	}
+}
+
 // blockingCancelWrites answers initialize and then blocks any write of a
 // cancellation, which is what an unresponsive peer looks like from here.
 type blockingCancelWrites struct {

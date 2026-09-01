@@ -3,6 +3,7 @@ package acp_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"testing"
@@ -217,13 +218,80 @@ func TestAClosedOutputWithABlockedInputEndsTheConnection(t *testing.T) {
 	}
 }
 
+func TestACallerDeadlineBeforeCommitDoesNotEndTheConnection(t *testing.T) {
+	for name, operation := range map[string]func(context.Context, *acp.AgentConn) error{
+		"call": func(ctx context.Context, conn *acp.AgentConn) error {
+			return conn.Call(ctx, "_vendor.example/thing", nil, nil)
+		},
+		"notification": func(ctx context.Context, conn *acp.AgentConn) error {
+			return conn.Notify(ctx, "_vendor.example/thing", nil)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				transport := &scriptedWrites{
+					inbound: []string{`{"jsonrpc":"2.0","id":1,"method":"initialize",` +
+						`"params":{"protocolVersion":1,"clientCapabilities":{}}}`},
+					succeed:                  1,
+					succeedAfterContextError: true,
+				}
+				conn, err := testAgent(t, nil).Connect(context.Background(), transport)
+				if err != nil {
+					t.Fatalf("Agent.Connect: %v", err)
+				}
+
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				if err := operation(ctx, conn); !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("operation reported %v, want its write deadline", err)
+				}
+				if err := conn.Notify(context.Background(), "_vendor.example/after", nil); err != nil {
+					t.Fatalf("the next write failed after a message that was never committed: %v", err)
+				}
+				if err := conn.Close(); err != nil {
+					t.Fatalf("Close: %v", err)
+				}
+				if err := conn.Wait(); err != nil {
+					t.Fatalf("Wait reported %v after a healthy local close", err)
+				}
+			})
+		})
+	}
+}
+
+func TestAWrappedCallerDeadlineEndsTheConnection(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		transport := &scriptedWrites{
+			inbound: []string{`{"jsonrpc":"2.0","id":1,"method":"initialize",` +
+				`"params":{"protocolVersion":1,"clientCapabilities":{}}}`},
+			succeed:     1,
+			wrapContext: true,
+		}
+		conn, err := testAgent(t, nil).Connect(context.Background(), transport)
+		if err != nil {
+			t.Fatalf("Agent.Connect: %v", err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := conn.Notify(ctx, "_vendor.example/thing", nil); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Notify reported %v, want its write deadline", err)
+		}
+		if err := conn.Wait(); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Wait reported %v, want the uncertain write failure", err)
+		}
+	})
+}
+
 // scriptedWrites delivers a fixed list of inbound messages and then blocks its
-// reads. The first succeed writes go through; everything after that fails with
-// failure, or blocks until the writer's own deadline when there is none.
+// reads. The first succeed writes go through; the next one fails with failure or
+// its context, and a recovery test may let later writes through.
 type scriptedWrites struct {
-	inbound []string
-	succeed int
-	failure error
+	inbound                  []string
+	succeed                  int
+	failure                  error
+	succeedAfterContextError bool
+	wrapContext              bool
 
 	mu      sync.Mutex
 	read    int
@@ -240,9 +308,9 @@ func (t *scriptedWrites) Connect(context.Context) (acp.Connection, error) {
 func (t *scriptedWrites) Write(ctx context.Context, _ jsonrpc.Message) error {
 	t.mu.Lock()
 	t.written++
-	through := t.written <= t.succeed
+	attempt := t.written
 	t.mu.Unlock()
-	if through {
+	if attempt <= t.succeed || t.succeedAfterContextError && attempt > t.succeed+1 {
 		return nil
 	}
 	if t.failure != nil {
@@ -250,6 +318,9 @@ func (t *scriptedWrites) Write(ctx context.Context, _ jsonrpc.Message) error {
 	}
 	select {
 	case <-ctx.Done():
+		if t.wrapContext {
+			return fmt.Errorf("the message may have been committed: %w", ctx.Err())
+		}
 		return ctx.Err()
 	case <-t.closed:
 		return acp.ErrConnectionClosed

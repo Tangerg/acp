@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"sync"
 
 	"github.com/Tangerg/acp/jsonrpc"
 )
@@ -44,28 +45,46 @@ type clientTurn struct {
 	// observed, which is not the same as this caller's patience.
 	running bool
 	// cancelled is set once this turn has been cancelled and cleared when it ends.
-	// A permission request that arrives while it is set is answered cancelled
-	// without reaching the application: it belongs to a turn that is already over,
-	// and asking a user about it would be asking about work nobody is waiting for.
+	// A permission request owned by this still-running turn is then answered
+	// cancelled without reaching the application: asking a user would ask about
+	// work nobody is waiting for. Requests outside a turn are not owned here.
 	cancelled bool
-	// sending counts the cancellations of this turn whose notification has not yet
+	// cancelling counts the cancellations of this turn whose notification has not yet
 	// gone out, which is a different fact from the turn having been cancelled and
 	// was once the same field. The turn is not over while one is outstanding:
 	// session/cancel names only a session, so a prompt that started before the
 	// notification went out would be the turn the agent applies it to.
-	sending int
+	cancelling int
 	// pending is the permission requests this session is waiting on the user for.
 	pending map[jsonrpc.ID]struct{}
 }
 
-// One turn per session, because session/cancel names none: a session with two
-// turns would have no way to say which one a cancellation meant.
-func (c *ClientConn) beginTurn(session SessionID) (uint64, bool) {
-	c.turnsMu.Lock()
-	defer c.turnsMu.Unlock()
+// clientTurns owns every state transition whose meaning depends on
+// session/cancel naming a session rather than a turn.
+type clientTurns struct {
+	mu       sync.Mutex
+	sessions map[SessionID]*clientTurn
+}
 
-	turn := c.turnFor(session)
-	if turn.running || turn.sending > 0 {
+type clientCancellation struct {
+	generation uint64
+	pending    []jsonrpc.ID
+}
+
+type permissionAdmission uint8
+
+const (
+	permissionUnowned permissionAdmission = iota
+	permissionOwned
+	permissionCancelled
+)
+
+func (t *clientTurns) begin(session SessionID) (uint64, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	turn := t.session(session)
+	if turn.running || turn.cancelling > 0 {
 		return 0, false
 	}
 	turn.generation++
@@ -76,51 +95,55 @@ func (c *ClientConn) beginTurn(session SessionID) (uint64, bool) {
 
 // A late answer to an abandoned turn must not end the turn that started after it,
 // and without a generation the two are indistinguishable.
-func (c *ClientConn) endTurn(session SessionID, generation uint64) {
-	c.turnsMu.Lock()
-	defer c.turnsMu.Unlock()
+func (t *clientTurns) complete(session SessionID, generation uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
-	turn := c.turns[session]
+	turn := t.sessions[session]
 	if turn == nil || turn.generation != generation {
 		return
 	}
 	turn.running = false
-	// The turn is over, so a session that was cancelled is open to the next turn's
-	// permission requests again. A session is not cancelled for ever.
-	turn.cancelled = false
+	if turn.cancelling == 0 {
+		turn.cancelled = false
+	}
 }
 
-// Callers hold turnsMu.
-func (c *ClientConn) turnFor(session SessionID) *clientTurn {
-	if c.turns == nil {
-		c.turns = make(map[SessionID]*clientTurn)
+// Callers hold t.mu because returning mutable turn state is intentionally not
+// part of the aggregate's API.
+func (t *clientTurns) session(id SessionID) *clientTurn {
+	if t.sessions == nil {
+		t.sessions = make(map[SessionID]*clientTurn)
 	}
-	turn := c.turns[session]
+	turn := t.sessions[id]
 	if turn == nil {
 		turn = &clientTurn{pending: make(map[jsonrpc.ID]struct{})}
-		c.turns[session] = turn
+		t.sessions[id] = turn
 	}
 	return turn
 }
 
-// Registration is on the read loop, before dispatch, so that a cancellation
+// Registration is on the ordered delivery loop, before dispatch, so that a cancellation
 // cannot slip between a request arriving and being registered.
-func (c *ClientConn) registerPermission(session SessionID, id jsonrpc.ID) bool {
-	c.turnsMu.Lock()
-	defer c.turnsMu.Unlock()
+func (t *clientTurns) registerPermission(session SessionID, id jsonrpc.ID) permissionAdmission {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
-	turn := c.turnFor(session)
+	turn := t.sessions[session]
+	if turn == nil || !turn.running {
+		return permissionUnowned
+	}
 	if turn.cancelled {
-		return false
+		return permissionCancelled
 	}
 	turn.pending[id] = struct{}{}
-	return true
+	return permissionOwned
 }
 
-func (c *ClientConn) forgetPermission(session SessionID, id jsonrpc.ID) {
-	c.turnsMu.Lock()
-	defer c.turnsMu.Unlock()
-	if turn := c.turns[session]; turn != nil {
+func (t *clientTurns) forgetPermission(session SessionID, id jsonrpc.ID) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if turn := t.sessions[session]; turn != nil {
 		delete(turn.pending, id)
 	}
 }
@@ -136,46 +159,40 @@ func (c *ClientConn) forgetPermission(session SessionID, id jsonrpc.ID) {
 //
 // The turn is held until endCancel, which is what stops the next prompt starting
 // underneath a notification that has not gone out yet.
-func (c *ClientConn) beginCancel(session SessionID) uint64 {
-	c.turnsMu.Lock()
-	turn := c.turnFor(session)
+func (t *clientTurns) beginCancellation(session SessionID) clientCancellation {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	turn := t.session(session)
 	turn.cancelled = true
-	turn.sending++
-	generation := turn.generation
+	turn.cancelling++
 	pending := make([]jsonrpc.ID, 0, len(turn.pending))
 	for id := range turn.pending {
 		pending = append(pending, id)
 	}
 	turn.pending = make(map[jsonrpc.ID]struct{})
-	c.turnsMu.Unlock()
-
-	// Written here rather than spawned, and before the caller sends the
-	// cancellation: the agent is still waiting for these answers, and it should
-	// have them before it is told the turn is over.
-	for _, id := range pending {
-		if write := c.answerCancelled(id); write != nil {
-			write()
-		}
-	}
-	return generation
+	return clientCancellation{generation: turn.generation, pending: pending}
 }
 
 // endCancel releases a cancellation once its notification is on the wire.
 //
 // Two concurrent cancellations of one turn each hold it, so the session reopens
 // when the last of them has been sent rather than when the first returns.
-func (c *ClientConn) endCancel(session SessionID, generation uint64) {
-	c.turnsMu.Lock()
-	defer c.turnsMu.Unlock()
-	if turn := c.turns[session]; turn != nil && turn.generation == generation {
-		turn.sending--
+func (t *clientTurns) finishCancellation(session SessionID, generation uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if turn := t.sessions[session]; turn != nil && turn.generation == generation {
+		turn.cancelling--
+		if turn.cancelling == 0 && !turn.running {
+			turn.cancelled = false
+		}
 	}
 }
 
 // The claim is taken now, on whatever goroutine is asking, because it is what
 // decides the race. Where the write goes is the caller's to say: cancelPermissions
-// needs it on the wire before the cancellation notification, and the read loop
-// needs it off the read loop.
+// needs it on the wire before the cancellation notification, and ordered
+// delivery needs the write off its own loop.
 func (c *ClientConn) answerCancelled(id jsonrpc.ID) func() {
 	if !c.claimAnswer(id) {
 		return nil
@@ -184,7 +201,7 @@ func (c *ClientConn) answerCancelled(id jsonrpc.ID) func() {
 		c.writeResponse(id, &RequestPermissionResponse{
 			Outcome: &RequestPermissionOutcomeCancelled{},
 		}, nil)
-		c.cancelRequest(id)
+		c.interruptRequest(id)
 	}
 }
 
@@ -198,7 +215,9 @@ func (c *ClientConn) register(request *jsonrpc.Request) registration {
 		return registration{dispatch: true}
 	}
 
-	if !c.registerPermission(session, request.ID) {
+	switch c.turns.registerPermission(session, request.ID) {
+	case permissionOwned:
+	case permissionCancelled:
 		// The turn is being cancelled. Answering here rather than dispatching is
 		// the difference between a dialog the user never sees and one they see and
 		// whose answer is then thrown away.
@@ -206,14 +225,20 @@ func (c *ClientConn) register(request *jsonrpc.Request) registration {
 			c.spawn(write)
 		}
 		return registration{}
+	case permissionUnowned:
+		// The published grammar does not make permission requests children of a
+		// prompt. Without an active turn there is nothing for session/cancel to
+		// claim, but the request itself is still valid and cancellable through
+		// $/cancel_request.
+		return registration{dispatch: true}
 	}
 	return registration{
 		dispatch: true,
-		finished: func() { c.forgetPermission(session, request.ID) },
+		settled:  func() { c.turns.forgetPermission(session, request.ID) },
 	}
 }
 
-// Registration has already happened, on the read loop, and forgetting it belongs
+// Registration has already happened in wire order, and forgetting it belongs
 // to the request lifecycle. If the turn was cancelled between then and now the
 // request has been answered, and the claim in respond is what stops this answer
 // being a second one.
@@ -236,8 +261,71 @@ func (c *ClientConn) requestPermission(ctx context.Context, request *jsonrpc.Req
 // An agentTurn is what an agent knows about one session's current turn.
 type agentTurn struct {
 	// id is the prompt request being served, when one is.
-	id      jsonrpc.ID
-	running bool
+	id jsonrpc.ID
+	// cancelled makes session/cancel a semantic PromptResponse outcome; the
+	// request context alone cannot distinguish it from connection shutdown.
+	cancelled bool
+	// committed means the handler has chosen the semantic result. A cancellation
+	// that linearizes afterwards is too late to change it, even if the transport
+	// is still writing the response.
+	committed bool
+}
+
+// agentTurns owns the request identifier targeted by session/cancel. Keeping the
+// map behind this object prevents connection code from observing a half-updated
+// turn.
+type agentTurns struct {
+	mu       sync.Mutex
+	sessions map[SessionID]agentTurn
+}
+
+func (t *agentTurns) claim(session SessionID, id jsonrpc.ID) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.sessions == nil {
+		t.sessions = make(map[SessionID]agentTurn)
+	}
+	if turn, running := t.sessions[session]; running && !turn.committed {
+		return false
+	}
+	t.sessions[session] = agentTurn{id: id}
+	return true
+}
+
+func (t *agentTurns) release(session SessionID, id jsonrpc.ID) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	turn, running := t.sessions[session]
+	if running && turn.id == id {
+		delete(t.sessions, session)
+	}
+}
+
+func (t *agentTurns) cancel(session SessionID) (jsonrpc.ID, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	turn, running := t.sessions[session]
+	if running && !turn.committed {
+		turn.cancelled = true
+		t.sessions[session] = turn
+		return turn.id, true
+	}
+	return turn.id, false
+}
+
+// commit decides the result against cancellation exactly once. Checking a flag
+// and then writing outside the aggregate would leave a window in which both a
+// normal result and cancellation appeared to win.
+func (t *agentTurns) commit(session SessionID, id jsonrpc.ID) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	turn, running := t.sessions[session]
+	if !running || turn.id != id {
+		return false
+	}
+	turn.committed = true
+	t.sessions[session] = turn
+	return turn.cancelled
 }
 
 // This is where the ordering the peer intended becomes the ordering this
@@ -252,8 +340,16 @@ type agentTurn struct {
 func (c *AgentConn) register(request *jsonrpc.Request) registration {
 	switch request.Method {
 	case methodInitialize:
-		// This side may send once the client has been told what it agreed to.
-		return registration{dispatch: true, answered: c.openOutbound}
+		// The attempt is queued in wire order, not claimed in a concurrent handler.
+		// A later request waits for the preceding answer to settle, then either owns
+		// the still-idle negotiation or observes the accepted agreement.
+		attempt := c.handshake.registerAttempt()
+		return registration{
+			dispatch: true,
+			admit:    attempt.await,
+			settled:  attempt.settle,
+			answered: attempt.publish,
+		}
 
 	case methodSessionPrompt:
 		session, ok := sessionOf(request)
@@ -261,7 +357,7 @@ func (c *AgentConn) register(request *jsonrpc.Request) registration {
 			// It will fail its own decode in the handler, with a better message.
 			return registration{dispatch: true}
 		}
-		if !c.claimTurn(session, request.ID) {
+		if !c.turns.claim(session, request.ID) {
 			// Refused here rather than in the handler, because the handler is not
 			// where the ordering is intact. The rule is the one the client handle
 			// keeps locally, kept here against any peer.
@@ -272,11 +368,13 @@ func (c *AgentConn) register(request *jsonrpc.Request) registration {
 			}
 			return registration{}
 		}
-		// Released when the handler returns and before the answer goes out: the
-		// client may send the next prompt the moment it reads this one's answer.
+		// Released only after the answer write settles. The peer may send the next
+		// prompt after it reads that answer, while one it pipelines before then must
+		// still find this turn in flight.
 		return registration{
 			dispatch: true,
-			finished: func() { c.releaseTurn(session, request.ID) },
+			served:   func() { c.turns.commit(session, request.ID) },
+			settled:  func() { c.turns.release(session, request.ID) },
 		}
 
 	default:
@@ -284,49 +382,16 @@ func (c *AgentConn) register(request *jsonrpc.Request) registration {
 	}
 }
 
-// The read loop needs the identifier and nothing else, and it must not spend the
+// Ordered admission needs the identifier and nothing else, and must not spend the
 // time to decode a whole prompt to get it.
 func sessionOf(request *jsonrpc.Request) (SessionID, bool) {
 	var params struct {
-		SessionID SessionID `json:"sessionId"`
+		SessionID *SessionID `json:"sessionId"`
 	}
-	if err := decodeInto(request.Params, &params); err != nil {
+	if err := decodeInto(request.Params, &params); err != nil || params.SessionID == nil {
 		return "", false
 	}
-	return params.SessionID, true
-}
-
-// One turn per session, which is why the record is a single identifier rather
-// than a set: session/cancel carries no turn identifier, so a session with two
-// turns would have no way to say which one it meant.
-func (c *AgentConn) claimTurn(session SessionID, id jsonrpc.ID) (claimed bool) {
-	c.turnsMu.Lock()
-	defer c.turnsMu.Unlock()
-	if c.turns == nil {
-		c.turns = make(map[SessionID]*agentTurn)
-	}
-
-	turn := c.turns[session]
-	if turn == nil {
-		turn = &agentTurn{}
-		c.turns[session] = turn
-	}
-	if turn.running {
-		return false
-	}
-	turn.id = id
-	turn.running = true
-	return true
-}
-
-// The identifier is checked because a second prompt that was refused must not
-// release the turn the first one is holding.
-func (c *AgentConn) releaseTurn(session SessionID, id jsonrpc.ID) {
-	c.turnsMu.Lock()
-	defer c.turnsMu.Unlock()
-	if turn := c.turns[session]; turn != nil && turn.id == id {
-		turn.running = false
-	}
+	return *params.SessionID, true
 }
 
 // It does not answer the prompt. The protocol says what the answer is — the
@@ -338,29 +403,37 @@ func (c *AgentConn) releaseTurn(session SessionID, id jsonrpc.ID) {
 // has to solve: the request's context is created when the request is read, so
 // cancelling it now means the handler starts already cancelled.
 func (c *AgentConn) cancelTurn(session SessionID) {
-	c.turnsMu.Lock()
-	turn := c.turns[session]
-	if turn == nil || !turn.running {
-		// A cancellation for a session with no turn on record. Nothing to do: the
-		// turn is claimed on the read loop, so a prompt this cancellation follows
-		// has already been claimed.
-		c.turnsMu.Unlock()
+	id, cancellable := c.turns.cancel(session)
+	if !cancellable {
+		// Nothing to interrupt: either no turn is on record, or its handler already
+		// committed the result. The turn is claimed in wire order, so a prompt this
+		// cancellation follows cannot be missing merely because its handler has not
+		// started.
 		return
 	}
-	id := turn.id
-	c.turnsMu.Unlock()
-
-	c.cancelRequest(id)
+	c.interruptRequest(id)
 }
 
-// The turn was claimed on the read loop and is released by the request lifecycle,
+// The turn was claimed in wire order and is released by the request lifecycle,
 // so what is left here is the handler.
 func (c *AgentConn) prompt(ctx context.Context, request *jsonrpc.Request) (any, error) {
 	params, err := decodeParams[PromptRequest](request)
 	if err != nil {
+		// Ordered admission may have claimed the session from the small prefix it
+		// could decode. Once the full payload is known invalid, commit that failure
+		// so a later cancellation cannot reinterpret it as a valid cancelled turn.
+		if session, ok := sessionOf(request); ok {
+			c.turns.commit(session, request.ID)
+		}
 		return nil, err
 	}
 	response, err := c.agent.config.Prompt(ctx, c.session(params.SessionID), params)
+	if c.turns.commit(params.SessionID, request.ID) {
+		// session/cancel is a semantic turn result, not a failed JSON-RPC call.
+		// This boundary catches abort errors from model and tool libraries so they
+		// cannot leak as -32603, which the protocol explicitly warns against.
+		return &PromptResponse{StopReason: StopReasonCancelled}, nil
+	}
 	if err != nil {
 		return nil, err
 	}

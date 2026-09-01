@@ -167,6 +167,52 @@ func TestByteStreamFramingRefusesWhatIsNotAMessage(t *testing.T) {
 	}
 }
 
+// Constructors retain configuration for Connect, so invalid zero values must be
+// reported at that boundary rather than dereferenced in a read, write, or process
+// setup path. Only a zero grace has default meaning; a negative duration is a
+// configuration error rather than a second spelling of the default.
+func TestTransportConfigurationErrorsDoNotPanic(t *testing.T) {
+	tests := map[string]acp.Transport{
+		"nil IO reader":      acp.NewIOTransport(nil, nopWriteCloser{io.Discard}),
+		"nil IO writer":      acp.NewIOTransport(io.NopCloser(strings.NewReader("")), nil),
+		"nil command config": acp.NewCommandTransport(nil),
+		"nil command":        acp.NewCommandTransport(&acp.CommandConfig{}),
+		"negative grace": acp.NewCommandTransport(&acp.CommandConfig{
+			Command:          exec.CommandContext(context.Background(), "true"),
+			TerminationGrace: -time.Second,
+		}),
+	}
+	for name, transport := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := transport.Connect(context.Background()); err == nil {
+				t.Fatal("Connect accepted an invalid transport configuration")
+			}
+		})
+	}
+}
+
+func TestByteStreamTransportsDoNotOpenAfterSetupCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	command := exec.CommandContext(context.Background(), "true")
+	for name, transport := range map[string]acp.Transport{
+		"IO": acp.NewIOTransport(
+			io.NopCloser(strings.NewReader("")),
+			nopWriteCloser{io.Discard},
+		),
+		"command": acp.NewCommandTransport(&acp.CommandConfig{Command: command}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := transport.Connect(ctx); !errors.Is(err, context.Canceled) {
+				t.Fatalf("Connect returned %v, want context.Canceled", err)
+			}
+		})
+	}
+	if command.Process != nil {
+		t.Fatal("the command was started after its setup context was cancelled")
+	}
+}
+
 // The command transport starts a process and reaps it. The agent here is a
 // program that answers initialize and nothing else, which is enough to prove the
 // pipes are wired to the right ends.

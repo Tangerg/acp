@@ -126,25 +126,33 @@ func TestARequestMethodSentAsANotificationIsDropped(t *testing.T) {
 // A response must carry a result or an error, and exactly one of them.
 func TestAMalformedResponseEnvelopeIsRefused(t *testing.T) {
 	tests := map[string]struct {
-		answer string
+		answer func(jsonrpc.ID) *jsonrpc.Response
 		accept bool
 		says   string
 	}{
 		"an empty object is a result": {
 			// Which is what a response type with only optional properties looks
 			// like, and what the TypeScript agent answers authenticate with.
-			answer: `"result":{}`,
+			answer: func(id jsonrpc.ID) *jsonrpc.Response {
+				return &jsonrpc.Response{ID: id, Result: json.RawMessage(`{}`)}
+			},
 			accept: true,
 		},
 		"neither a result nor an error": {
 			// It used to be read as a zero-valued success for every result type in
 			// the schema.
-			answer: `"result_omitted":true`,
+			answer: func(id jsonrpc.ID) *jsonrpc.Response { return &jsonrpc.Response{ID: id} },
 			says:   "neither a result nor an error",
 		},
 		"both a result and an error": {
-			answer: `"result":{},"error":{"code":-32000,"message":"no"}`,
-			says:   "both a result and an error",
+			answer: func(id jsonrpc.ID) *jsonrpc.Response {
+				return &jsonrpc.Response{
+					ID:     id,
+					Result: json.RawMessage(`{}`),
+					Error:  &jsonrpc.Error{Code: -32000, Message: "no"},
+				}
+			},
+			says: "both a result and an error",
 		},
 	}
 
@@ -158,9 +166,10 @@ func TestAMalformedResponseEnvelopeIsRefused(t *testing.T) {
 				authenticated <- err
 			}()
 
-			request := readRaw(ctx, t, stream)
-			writeRaw(ctx, t, stream, fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,%s}`,
-				idOf(t, request), test.answer))
+			request := readRaw(ctx, t, stream).(*jsonrpc.Request)
+			if err := stream.Write(ctx, test.answer(request.ID)); err != nil {
+				t.Fatalf("write malformed response: %v", err)
+			}
 
 			err := <-authenticated
 			if test.accept {

@@ -154,21 +154,11 @@
       "type": "PromptResponse",
       "why": "the stop reason is a closed enumeration, and a caller's switch over it was promised to be exhaustive",
       "input": {
-        "stopReason": "end_turn",
-        "usage": {
-          "totalTokens": 5,
-          "inputTokens": 4,
-          "outputTokens": 1
-        }
+        "stopReason": "end_turn"
       },
       "accepted": true,
       "normalized": {
-        "stopReason": "end_turn",
-        "usage": {
-          "totalTokens": 5,
-          "inputTokens": 4,
-          "outputTokens": 1
-        }
+        "stopReason": "end_turn"
       }
     },
     {

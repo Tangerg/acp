@@ -101,10 +101,10 @@ func TestDocCommentsQuoteTheSchema(t *testing.T) {
 			want:        []string{"T — A sentence."},
 		},
 		{
-			name:        "the unstable marker leads, where upstream put it",
+			name:        "an emphasized status label stays where upstream put it",
 			symbol:      "LlmProtocol",
-			description: "**UNSTABLE**\n\nNot part of the spec yet.",
-			want:        []string{"LlmProtocol — **UNSTABLE**", "", "Not part of the spec yet."},
+			description: "**PREVIEW**\n\nSubject to change.",
+			want:        []string{"LlmProtocol — **PREVIEW**", "", "Subject to change."},
 		},
 		{
 			name:        "line breaks are upstream's",

@@ -145,7 +145,7 @@
     },
     {
       "name": "every server arm",
-      "why": "three tagged arms and one untagged one, the last selected by the absence of a tag",
+      "why": "the published stable union has two tagged arms and one untagged arm",
       "input": {
         "cwd": "/work",
         "mcpServers": [
@@ -165,11 +165,6 @@
             "name": "s",
             "url": "https://s",
             "headers": []
-          },
-          {
-            "type": "acp",
-            "name": "a",
-            "serverId": "srv-1"
           },
           {
             "name": "d",
@@ -206,11 +201,6 @@
             "url": "https://s",
             "headers": [],
             "type": "sse"
-          },
-          {
-            "name": "a",
-            "serverId": "srv-1",
-            "type": "acp"
           },
           {
             "name": "d",

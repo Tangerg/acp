@@ -8,8 +8,8 @@ wire grammar shows up in a diff when it moves.
 
 | File | What it is |
 | --- | --- |
-| `schema.json` | The v1 JSON Schema: 265 definitions, 41 unions. |
-| `meta.json` | The method table: 28 agent, 14 client, 1 protocol. |
+| `schema.json` | The published stable v1 JSON Schema: 170 definitions, 32 unions. |
+| `meta.json` | The method table: 13 agent, 11 client, 1 protocol. |
 | `manifest.json` | The generator's roots. See [manifest.json](#manifestjson). |
 
 ## Provenance
@@ -19,13 +19,13 @@ wire grammar shows up in a diff when it moves.
 | Release tag | `schema-v1.21.0` |
 | Published by | Zed Industries, under the Apache License, Version 2.0 |
 | Upstream | <https://github.com/agentclientprotocol/agent-client-protocol> |
-| Obtained from | `agentclientprotocol/typescript-sdk` at `5dac09aaae3ebde1eaaf4a11840f7543f4806e20`, which downloads the release assets in `scripts/generate.js` |
-| `schema.json` SHA-256 | `7f77702b34e0a0558e77220e9007bf8ee161a976bb8ac5021aba1b7e7b2c5708` |
-| `meta.json` SHA-256 | `3026898232badf413624010d1343e20bef853e6705c62d6b56387cf9de6b0543` |
+| Obtained from | The two assets attached to the upstream `schema-v1.21.0` release |
+| `schema.json` SHA-256 | `caf62ff962ada396878372ced11efb2c6764e59d90919a38583c319948931a42` |
+| `meta.json` SHA-256 | `061edb6efa8fb2aa2792459a86ec7268de5fe665bba48b2ffe7939df01481f88` |
 
-The unstable v2 line (`schema-v2.0.0-alpha.3`) is deliberately not vendored;
-[docs/design.md](../docs/design.md#the-v1-schema-lane-only-which-is-not-the-same-as-stable)
-says why.
+The TypeScript checkout also contains experimental additions under the same v1
+tag. They are deliberately not copied: the release assets are the published wire
+contract, and repository-local SDK additions cannot widen it.
 
 ## Moving the pin
 
@@ -59,12 +59,16 @@ apart because they retire at different times:
 - `plumbing` — types reached from the JSON-RPC envelope rather than from any
   method's params, which is how `Error` and `ErrorCode` become roots the moment
   `Error` is exported.
-- `markers` — types the extension boundary requires.
+- `internal` — protocol plumbing the connection needs but callers must not name;
+  every entry records why it stays unexported.
 - `probes` — definitions rooted only to exercise a wire shape no implemented
   payload reaches yet. This list exists for the layer-1 spike described in
   [docs/roadmap.md](../docs/roadmap.md#1-wire-semantics-spike) and empties as the
   payload roots grow to reach the same shapes; every entry records the shape it
   is there to prove.
+
+Projection sources are roots too. They currently duplicate payload roots, but
+the generator derives that fact rather than relying on it.
 
 ## Licence
 

@@ -93,7 +93,7 @@ disagree, the schema is right and this is a bug.
 
 Design notes, written before the code and meant to be argued with:
 
-- [docs/protocol.md](./docs/protocol.md) — what ACP is: roles, the 43 methods, the shape of a turn
+- [docs/protocol.md](./docs/protocol.md) — what ACP is: roles, the 25 methods, the shape of a turn
 - [docs/design.md](./docs/design.md) — what it looks like in Go, and why that and not something else
 - [docs/repository.md](./docs/repository.md) — how this repository is built and what each gate proves
 - [docs/roadmap.md](./docs/roadmap.md) — the order of work, and what is still open

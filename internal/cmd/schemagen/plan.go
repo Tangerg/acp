@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -56,7 +56,6 @@ type Def struct {
 	Description string
 	Doc         []string
 	Kind        defKind
-	Unstable    bool
 
 	// kindStruct.
 	Fields []*Field
@@ -192,7 +191,6 @@ type ValueType struct {
 type Manifest struct {
 	Payloads []string `json:"payloads"`
 	Plumbing []string `json:"plumbing"`
-	Markers  []string `json:"markers"`
 	// Internal names the definitions that are generated but not exported, each
 	// with the reason. JSON-RPC plumbing is in the closure because a payload
 	// reaches it, not because a caller ever names it.
@@ -232,7 +230,7 @@ type ProjectionSpec struct {
 // Roots returns every root the manifest names, sorted. A projection's source is a
 // root too: there is nothing to project from otherwise.
 func (m *Manifest) Roots() []string {
-	roots := slices.Concat(m.Payloads, m.Plumbing, m.Markers)
+	roots := slices.Concat(m.Payloads, m.Plumbing)
 	specs, err := m.ProjectionSpecs()
 	if err == nil {
 		for _, spec := range specs {
@@ -247,15 +245,8 @@ func (m *Manifest) Roots() []string {
 
 // definitionKeys drops the comment key a JSON object uses to explain itself.
 func definitionKeys(m map[string]string) []string {
-	names := make([]string, 0, len(m))
-	for name := range m {
-		if strings.HasPrefix(name, "$") {
-			continue
-		}
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return names
+	names := slices.Sorted(maps.Keys(m))
+	return slices.DeleteFunc(names, func(name string) bool { return strings.HasPrefix(name, "$") })
 }
 
 type planner struct {
@@ -474,12 +465,7 @@ func (p *planner) closure(roots []string) ([]string, error) {
 		seen[name] = true
 		queue = append(queue, refNames(def)...)
 	}
-	names := make([]string, 0, len(seen))
-	for name := range seen {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names, nil
+	return slices.Sorted(maps.Keys(seen)), nil
 }
 
 // Plan resolves the manifest into everything the emitter needs.
@@ -518,7 +504,9 @@ func (p *planner) Plan(manifest *Manifest, schemaTag string) (*Plan, error) {
 		}
 		defs = append(defs, p.wrappers[goTypeName])
 	}
-	sort.Slice(defs, func(i, j int) bool { return defs[i].GoName < defs[j].GoName })
+	slices.SortFunc(defs, func(left, right *Def) int {
+		return strings.Compare(left.GoName, right.GoName)
+	})
 	if err := p.checkVisibility(defs); err != nil {
 		return nil, err
 	}
@@ -551,7 +539,6 @@ func (p *planner) planProjection(name string, spec *ProjectionSpec) error {
 		GoName:    name,
 		Ident:     name,
 		Kind:      kindStruct,
-		Unstable:  source.Unstable,
 		Retained:  source.Retained,
 		Flattened: source.Flattened,
 		Doc: append([]string{
@@ -644,7 +631,6 @@ func (p *planner) plan(name string) (*Def, error) {
 		GoName:      p.goNames[name],
 		Ident:       p.idents[name],
 		Description: schema.Description,
-		Unstable:    isUnstable(schema.Description),
 	}
 	def.Doc = docComment(def.GoName, schema.Description)
 	p.planned[def.GoName] = def
@@ -974,7 +960,6 @@ func (p *planner) planFlattenedUnion(def *Def, schema *Schema) error {
 		GoName:      goType,
 		Ident:       ident,
 		Description: schema.Description,
-		Unstable:    def.Unstable,
 	}
 	if err := p.planObjectUnion(union, schema); err != nil {
 		return err
@@ -1092,10 +1077,9 @@ func (p *planner) planObjectUnion(def *Def, schema *Schema) error {
 // nothing but its discriminant, so there is no existing type to be.
 func (p *planner) planWrapperArm(goType string, arm *Schema, union *Def, payload string) (*Def, error) {
 	def := &Def{
-		GoName:   goType,
-		Ident:    goName(goType),
-		Kind:     kindStruct,
-		Unstable: isUnstable(arm.Description),
+		GoName: goType,
+		Ident:  goName(goType),
+		Kind:   kindStruct,
 	}
 
 	doc := []string{goType + " — one arm of " + union.GoName + "."}
@@ -1490,10 +1474,4 @@ func refNames(schema *Schema) []string {
 	walk(schema)
 	slices.Sort(names)
 	return slices.Compact(names)
-}
-
-// isUnstable reports upstream's UNSTABLE marker, which the doc comment repeats
-// verbatim and the module's compatibility promise carves out.
-func isUnstable(description string) bool {
-	return strings.Contains(description, "**UNSTABLE**")
 }

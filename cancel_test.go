@@ -80,6 +80,43 @@ func TestAPromptDeadlineIsReportedAsADeadline(t *testing.T) {
 	})
 }
 
+// Model and tool libraries commonly return a context error when their work is
+// aborted. ACP requires session/cancel to end the prompt with a semantic
+// cancelled stop reason, so that implementation detail cannot become -32603.
+func TestSessionCancelTurnsAHandlerAbortIntoACancelledPrompt(t *testing.T) {
+	started := make(chan struct{})
+	agent := testAgent(t, func(ctx context.Context, _ *acp.AgentSession, _ *acp.PromptRequest) (*acp.PromptResponse, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	session := connectAndOpen(t, testClient(t), agent)
+
+	answered := make(chan struct {
+		response *acp.PromptResponse
+		err      error
+	}, 1)
+	go func() {
+		response, err := session.Prompt(context.Background(), &acp.PromptParams{})
+		answered <- struct {
+			response *acp.PromptResponse
+			err      error
+		}{response: response, err: err}
+	}()
+
+	<-started
+	if err := session.Cancel(context.Background(), nil); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	result := <-answered
+	if result.err != nil {
+		t.Fatalf("Prompt returned an error after session/cancel: %v", result.err)
+	}
+	if result.response == nil || result.response.StopReason != acp.StopReasonCancelled {
+		t.Fatalf("Prompt returned %#v, want the cancelled stop reason", result.response)
+	}
+}
+
 // The obligation a cancelled turn leaves: every pending permission request for
 // that session is answered with the cancelled outcome, while the client's own
 // handler may still be blocked on a dialog.

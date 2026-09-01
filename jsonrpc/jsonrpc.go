@@ -27,7 +27,8 @@ type (
 	// identifier of the call it answers.
 	Response = jsonrpc2.Response
 
-	// An ID is a request identifier: a string, an integer, or absent.
+	// An ID is a request identifier: a string, an integer, or explicit null. Its
+	// zero value represents an absent identifier and therefore a notification.
 	ID = jsonrpc2.ID
 
 	// An Error is the structured error a response may carry instead of a result.

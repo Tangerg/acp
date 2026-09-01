@@ -26,41 +26,56 @@ import (
 func TestAPermissionRequestArrivingDuringCancellationIsAnsweredCancelled(t *testing.T) {
 	conn := newTestClientConn()
 	const session SessionID = "sess-1"
+	generation, claimed := conn.turns.begin(session)
+	if !claimed {
+		t.Fatal("the turn was already claimed")
+	}
 
 	first := jsonrpc2.Int64ID(1)
-	if !conn.registerPermission(session, first) {
+	if got := conn.turns.registerPermission(session, first); got != permissionOwned {
 		t.Fatal("the first registration was refused before any cancellation")
 	}
 
 	// Cancelling closes the session. What was pending is claimed; what arrives
 	// next is refused registration and answered by the caller.
-	generation := conn.beginCancel(session)
+	cancellation := conn.turns.beginCancellation(session)
 
-	if conn.registerPermission(session, jsonrpc2.Int64ID(2)) {
+	if got := conn.turns.registerPermission(session, jsonrpc2.Int64ID(2)); got != permissionCancelled {
 		t.Fatal("a permission request registered while the session was cancelling, so it would " +
 			"have reached the application and its answer would then have been thrown away")
 	}
 
 	// The cancellation being on the wire is not the turn being over: until the
 	// agent answers the prompt it may still ask, and the answer is still cancelled.
-	conn.endCancel(session, generation)
-	if conn.registerPermission(session, jsonrpc2.Int64ID(3)) {
+	conn.turns.finishCancellation(session, cancellation.generation)
+	if got := conn.turns.registerPermission(session, jsonrpc2.Int64ID(3)); got != permissionCancelled {
 		t.Fatal("a permission request reached the application after the cancellation was sent " +
 			"but before the turn it cancelled had ended")
 	}
 
 	// And the session reopens when the turn ends, because a session is not
 	// cancelled for ever: the next prompt is a new turn.
-	conn.endTurn(session, generation)
-	if !conn.registerPermission(session, jsonrpc2.Int64ID(4)) {
-		t.Fatal("the session stayed closed after the cancelled turn ended")
+	conn.turns.complete(session, generation)
+	if got := conn.turns.registerPermission(session, jsonrpc2.Int64ID(4)); got != permissionUnowned {
+		t.Fatal("a permission request outside a turn was incorrectly attached to one")
 	}
+}
+
+func TestACancellationOutsideATurnDoesNotClaimPermissionRequests(t *testing.T) {
+	conn := newTestClientConn()
+	const session SessionID = "sess-1"
+
+	cancellation := conn.turns.beginCancellation(session)
+	if got := conn.turns.registerPermission(session, jsonrpc2.Int64ID(1)); got != permissionUnowned {
+		t.Fatal("session/cancel claimed a permission request although there was no prompt turn")
+	}
+	conn.turns.finishCancellation(session, cancellation.generation)
 }
 
 // A cancellation that arrives before the turn's handler has started is applied to
 // that turn, not lost.
 //
-// The read loop sees the prompt before the cancellation, because that is the order
+// Ordered delivery sees the prompt before the cancellation, because that is the order
 // the peer sent them. The goroutines that serve them do not, so the turn is claimed
 // where the ordering is still intact — and the request's context exists from the
 // moment it was read, so cancelling it before its handler runs means the handler
@@ -74,10 +89,12 @@ func TestACancellationBeforeTheHandlerStartsIsNotLost(t *testing.T) {
 	const session SessionID = "sess-1"
 	id := jsonrpc2.Int64ID(1)
 
-	// What the read loop does with a request before spawning anything to serve it.
+	// What ordered admission does before spawning anything to serve the request.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	conn.requests.accept(id, cancel)
+	if err := conn.requests.accept(id, cancel); err != nil {
+		t.Fatalf("accepting the request: %v", err)
+	}
 	if entry := conn.register(rawRequest(id, methodSessionPrompt, promptParams)); !entry.dispatch {
 		t.Fatal("the prompt was refused although the session had no turn")
 	}
@@ -96,7 +113,7 @@ func TestACancellationBeforeTheHandlerStartsIsNotLost(t *testing.T) {
 //
 // A client that cancels a turn answers the turn's outstanding permission requests
 // before it sends the cancellation, because the agent is still waiting for those
-// answers. Applying the cancellation on the read loop would overtake them, and the
+// answers. Applying the cancellation as a preemptive read-side effect would overtake them, and the
 // agent's own call would return "cancelled" instead of the cancelled outcome the
 // client had already sent.
 func TestACancellationDoesNotOvertakeTheAnswersSentBeforeIt(t *testing.T) {
@@ -105,15 +122,17 @@ func TestACancellationDoesNotOvertakeTheAnswersSentBeforeIt(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	conn.requests.accept(id, cancel)
+	if err := conn.requests.accept(id, cancel); err != nil {
+		t.Fatalf("accepting the request: %v", err)
+	}
 	conn.register(rawRequest(id, methodSessionPrompt, promptParams))
 
-	// The read loop has now seen the cancellation. Nothing may have happened to
+	// Registration has now seen the cancellation. Nothing may have happened to
 	// the turn yet: the queue in front of it has not been served.
 	conn.register(rawNotification(methodSessionCancel, `{"sessionId":"sess-1"}`))
 	select {
 	case <-ctx.Done():
-		t.Fatal("the cancellation was applied on the read loop, so it overtook every response the " +
+		t.Fatal("the cancellation was applied before ordered delivery, so it overtook every response the " +
 			"client had already sent for this turn")
 	default:
 	}
@@ -130,23 +149,78 @@ func TestASecondPromptForOneSessionIsRefused(t *testing.T) {
 
 	first := jsonrpc2.Int64ID(1)
 	second := jsonrpc2.Int64ID(2)
-	if !conn.claimTurn(session, first) {
+	if !conn.turns.claim(session, first) {
 		t.Fatal("the first prompt did not claim the turn")
 	}
-	if conn.claimTurn(session, second) {
+	if conn.turns.claim(session, second) {
 		t.Fatal("a second prompt claimed the same session's turn, so a cancellation could name neither")
 	}
 	// The refused prompt does not end the turn it was refused for. If it did, the
 	// second prompt failing would free the session out from under the first.
-	conn.releaseTurn(session, second)
-	if conn.claimTurn(session, second) {
+	conn.turns.release(session, second)
+	if conn.turns.claim(session, second) {
 		t.Fatal("a refused prompt released the turn the first prompt is holding")
 	}
 
 	// And the session is free again once the first turn ends.
-	conn.releaseTurn(session, first)
-	if !conn.claimTurn(session, second) {
+	conn.turns.release(session, first)
+	if !conn.turns.claim(session, second) {
 		t.Fatal("the session stayed claimed after its turn ended")
+	}
+}
+
+// The agent can end model work at result commit, before the transport finishes
+// writing it. A second prompt is unsafe before that point and safe afterwards;
+// the old response's later settlement must not release the new turn.
+func TestAPromptReopensOnlyAfterResultCommit(t *testing.T) {
+	conn := newTestAgentConn()
+	const session SessionID = "sess-1"
+	first := jsonrpc2.Int64ID(1)
+	second := jsonrpc2.Int64ID(2)
+
+	entry := conn.register(rawRequest(first, methodSessionPrompt, promptParams))
+	if !entry.dispatch || entry.served == nil || entry.settled == nil {
+		t.Fatal("the first prompt did not retain its commit and settlement obligations")
+	}
+	if conn.turns.claim(session, second) {
+		t.Fatal("a second turn started before the first result committed")
+	}
+
+	entry.served()
+	if !conn.turns.claim(session, second) {
+		t.Fatal("the first result committed but the session remained occupied")
+	}
+	entry.settled()
+	if conn.turns.claim(session, first) {
+		t.Fatal("settling the old response released the newer turn")
+	}
+}
+
+func TestAgentTurnCompletionAndCancellationHaveOneWinner(t *testing.T) {
+	const session SessionID = "sess-1"
+	first := jsonrpc2.Int64ID(1)
+	second := jsonrpc2.Int64ID(2)
+	var turns agentTurns
+
+	if !turns.claim(session, first) {
+		t.Fatal("the first turn was not claimed")
+	}
+	if turns.commit(session, first) {
+		t.Fatal("an uncancelled turn committed as cancelled")
+	}
+	if _, cancellable := turns.cancel(session); cancellable {
+		t.Fatal("cancellation changed a result that had already committed")
+	}
+	turns.release(session, first)
+
+	if !turns.claim(session, second) {
+		t.Fatal("the second turn was not claimed")
+	}
+	if _, cancellable := turns.cancel(session); !cancellable {
+		t.Fatal("cancellation did not claim an uncommitted result")
+	}
+	if !turns.commit(session, second) {
+		t.Fatal("a cancellation that won before completion was not the committed result")
 	}
 }
 
@@ -155,7 +229,7 @@ const promptParams = `{"sessionId":"sess-1","prompt":[]}`
 // The two connections these tests drive directly: a link with no transport, which
 // is enough for registration and turn state and nothing that would need a peer.
 func newTestAgentConn() *AgentConn {
-	conn := &AgentConn{connection: newConnection(), opened: make(chan struct{})}
+	conn := &AgentConn{connection: newConnection()}
 	conn.link = newLink(nil, conn, nil)
 	return conn
 }

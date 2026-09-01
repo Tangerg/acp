@@ -23,40 +23,45 @@ type calls struct {
 	// the same lock as the map so that a call cannot be registered into a map that
 	// has already been emptied and will never be drained again.
 	closed  bool
-	waiting map[jsonrpc.ID]*waiter
+	waiting map[jsonrpc.ID]*pendingCall
 }
 
-// A waiter is one outstanding call.
-//
-// onDeliver is how a caller gets work done in the delivery queue's order rather
-// than on its own goroutine. The handshake is the one call that needs it: every
-// other message the peer sends comes after the handshake answer, so a peer that
-// answered and immediately sent would otherwise race this side publishing what it
-// had answered, and a message the peer was entitled to send would be refused.
-type waiter struct {
-	replies   chan *jsonrpc.Response
-	onDeliver func(*jsonrpc.Response)
+// outboundCall is the handle returned to the goroutine waiting for one call. The
+// response is interpreted before completed is signalled, so state derived from a
+// response changes in the same ordered delivery step that observed it.
+type outboundCall struct {
+	id        jsonrpc.ID
+	completed <-chan error
+}
+
+type pendingCall struct {
+	completed chan error
+	accept    func(*jsonrpc.Response) error
+	abandon   func()
 }
 
 func newCalls() *calls {
-	return &calls{waiting: make(map[jsonrpc.ID]*waiter)}
+	return &calls{waiting: make(map[jsonrpc.ID]*pendingCall)}
 }
 
-func (c *calls) begin(onDeliver func(*jsonrpc.Response)) (jsonrpc.ID, chan *jsonrpc.Response, bool) {
+func (c *calls) begin(
+	accept func(*jsonrpc.Response) error,
+	abandon func(),
+) (outboundCall, bool) {
 	id := jsonrpc2.Int64ID(c.next.Add(1))
-	replies := make(chan *jsonrpc.Response, 1)
+	completed := make(chan error, 1)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return id, nil, false
+		return outboundCall{id: id}, false
 	}
-	c.waiting[id] = &waiter{replies: replies, onDeliver: onDeliver}
-	return id, replies, true
+	c.waiting[id] = &pendingCall{completed: completed, accept: accept, abandon: abandon}
+	return outboundCall{id: id, completed: completed}, true
 }
 
-// deliver runs on the delivery loop, so onDeliver finishes before the loop moves
-// on to whatever the peer sent next.
+// deliver runs on the ordered delivery loop, so accepting a response finishes
+// before any later message can observe the state it changes.
 func (c *calls) deliver(response *jsonrpc.Response) {
 	c.mu.Lock()
 	pending, waiting := c.waiting[response.ID]
@@ -69,10 +74,11 @@ func (c *calls) deliver(response *jsonrpc.Response) {
 		// revives a retired call.
 		return
 	}
-	if pending.onDeliver != nil {
-		pending.onDeliver(response)
+	var err error
+	if pending.accept != nil {
+		err = pending.accept(response)
 	}
-	pending.replies <- response
+	pending.completed <- err
 }
 
 func (c *calls) retire(id jsonrpc.ID) {
@@ -87,6 +93,13 @@ func (c *calls) retire(id jsonrpc.ID) {
 func (c *calls) close() {
 	c.mu.Lock()
 	c.closed = true
-	c.waiting = make(map[jsonrpc.ID]*waiter)
+	waiting := c.waiting
+	c.waiting = make(map[jsonrpc.ID]*pendingCall)
 	c.mu.Unlock()
+
+	for _, pending := range waiting {
+		if pending.abandon != nil {
+			pending.abandon()
+		}
+	}
 }

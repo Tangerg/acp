@@ -3,12 +3,9 @@ package acp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
-	"slices"
-	"sync"
 
 	"github.com/Tangerg/acp/jsonrpc"
 )
@@ -72,6 +69,7 @@ type AgentConfig struct {
 type Agent struct {
 	config       AgentConfig
 	capabilities AgentCapabilities
+	auth         authenticationMethods
 	conns        registry[*AgentConn]
 }
 
@@ -94,15 +92,17 @@ func NewAgent(config *AgentConfig) (*Agent, error) {
 		return nil, fmt.Errorf("acp: an agent needs these baseline handlers, which are the whole of a "+
 			"turn and cannot be optional: %v", missing)
 	}
-	if err := config.checkAuthMethods(); err != nil {
-		return nil, err
-	}
-
 	capabilities, err := config.resolveCapabilities()
 	if err != nil {
 		return nil, err
 	}
-	return &Agent{config: config.clone(), capabilities: capabilities}, nil
+	auth, err := newAuthenticationMethods(config.AuthMethods, config.Authenticate != nil)
+	if err != nil {
+		return nil, err
+	}
+	cloned := config.clone()
+	cloned.AuthMethods = nil
+	return &Agent{config: cloned, capabilities: capabilities, auth: auth}, nil
 }
 
 // authenticate serves authenticate, holding the identifier to what this
@@ -131,50 +131,6 @@ func (c *AgentConn) authenticate(ctx context.Context, request *jsonrpc.Request) 
 		return nil, newError(ErrorCodeInternalError, "the handler for %s returned nothing", request.Method)
 	}
 	return response, nil
-}
-
-// checkAuthMethods holds the handler requirement to the methods that need one.
-//
-// A terminal method is not served by this agent at all: the client runs the agent
-// again as an interactive process, and the schema says the client "MUST NOT pass
-// this method to authenticate". Requiring an Authenticate handler for it rejected
-// a valid terminal-only agent, while the arm that does need the handler is the
-// agent one.
-func (config *AgentConfig) checkAuthMethods() error {
-	seen := make(map[AuthMethodID]struct{}, len(config.AuthMethods))
-	for _, method := range config.AuthMethods {
-		id, handled := authMethodID(method)
-		if _, duplicate := seen[id]; duplicate {
-			// The schema describes the identifier as unique, and a client picks by
-			// it: a terminal entry sharing a name with an agent-handled one makes
-			// the agent-handled flow unreachable.
-			return fmt.Errorf("acp: two authentication methods share the identifier %q, "+
-				"which a client selects by", id)
-		}
-		seen[id] = struct{}{}
-
-		if handled && config.Authenticate == nil {
-			return errors.New("acp: this agent offers an authentication method it handles itself and " +
-				"has no Authenticate handler, so a client that took it up would be refused the method " +
-				"it was told to call")
-		}
-	}
-	return nil
-}
-
-// authMethodID reports a method's identifier and whether this agent is the one
-// that serves it. A terminal method is not served here at all: the client runs
-// the agent again as an interactive process, and the schema says the client "MUST
-// NOT pass this method to authenticate".
-func authMethodID(method AuthMethod) (id AuthMethodID, handledHere bool) {
-	switch method := method.(type) {
-	case *AuthMethodAgent:
-		return method.ID, true
-	case *AuthMethodTerminal:
-		return method.ID, false
-	default:
-		return "", false
-	}
 }
 
 func (config *AgentConfig) resolveCapabilities() (AgentCapabilities, error) {
@@ -215,7 +171,6 @@ func (config *AgentConfig) clone() AgentConfig {
 	copied := *config
 	copied.Info = deepCopy(config.Info)
 	copied.Meta = deepCopy(config.Meta)
-	copied.AuthMethods = deepCopy(config.AuthMethods)
 	copied.Capabilities = deepCopy(config.Capabilities)
 	return copied
 }
@@ -225,8 +180,10 @@ func (config *AgentConfig) clone() AgentConfig {
 //
 // It cannot wait for a handshake it does not control — this side answers one, it
 // does not perform one — which is the asymmetry with [Client.Connect]. Until
-// initialize arrives the connection answers every other method with -32600, and a
-// second initialize on the same connection is -32600 as well.
+// initialize arrives the connection answers every other method with -32600. An
+// initialize accepted on the connection makes every later attempt -32600. If an
+// attempt is rejected before acceptance, queued or later corrected attempts are
+// evaluated in wire order without requiring a reconnect.
 //
 // The context scopes setup only. Lifetime is owned by [AgentConn.Close] and
 // observed by [AgentConn.Wait]; [Agent.Run] is the exception and says so.
@@ -236,7 +193,7 @@ func (a *Agent) Connect(ctx context.Context, transport Transport) (*AgentConn, e
 		return nil, err
 	}
 
-	conn := &AgentConn{connection: newConnection(), agent: a, opened: make(chan struct{})}
+	conn := &AgentConn{connection: newConnection(), agent: a}
 	conn.link = newLink(stream, conn, a.config.Logger)
 	conn.run()
 
@@ -284,27 +241,7 @@ type AgentConn struct {
 	agent    *Agent
 	sessions sessions[AgentSession]
 
-	// opened is closed once the initialize response has been written, and every
-	// outbound operation waits on it.
-	//
-	// A barrier rather than a flag, because a flag cannot carry both of the facts
-	// it would have to. Nothing this side sends may precede the initialize
-	// response on the wire, so the gate cannot open before that write; but the
-	// client observes the response *during* the write, and the request it sends
-	// next is served on a different goroutine from the one still finishing the
-	// handshake. A flag set after the write therefore refuses handlers that are
-	// only running because the client already has the answer — a false negative
-	// that fired about once in seventy runs.
-	//
-	// Waiting costs nothing once it is closed, and an agent that has nothing to
-	// wait for has a context to bound the wait with.
-	opened     chan struct{}
-	openedOnce sync.Once
-
-	// turns is this agent's per-session turn state: which request carries the
-	// turn. One per session, because session/cancel names no turn. See cancel.go.
-	turnsMu sync.Mutex
-	turns   map[SessionID]*agentTurn
+	turns agentTurns
 }
 
 // Call sends an extension request. Extension methods only; see [ClientConn.Call].
@@ -333,7 +270,7 @@ func (c *AgentConn) Notify(ctx context.Context, method string, params any) error
 
 func (c *AgentConn) awaitHandshake(ctx context.Context, method string) error {
 	select {
-	case <-c.opened:
+	case <-c.handshake.whenPublished():
 		return nil
 	case <-c.over():
 		return c.failure()
@@ -347,19 +284,12 @@ func (c *AgentConn) awaitHandshake(ctx context.Context, method string) error {
 // It does not open the connection. What it negotiated is held until the answer
 // has been written, because an agent that started sending on the strength of its
 // own decision could put a message ahead of the response that told the client
-// what the decision was. publishPeer is the other half, and the request lifecycle
-// runs it once the answer is on the wire.
+// what the decision was. The request lifecycle publishes it once the answer is
+// on the wire.
 //
-// The answer is built per connection and not copied from the configuration. Two
-// of its fields depend on what this client offered, and the schema says so: a
-// terminal authentication method may be advertised only to a client that enabled
-// it, and the position encoding is "selected by the agent from the client's
-// supported encodings".
-func (c *AgentConn) initialize(request *InitializeRequest) (*InitializeResponse, error) {
-	if !c.claimHandshake() {
-		return nil, newError(ErrorCodeInvalidRequest, "this connection is already initialized")
-	}
-
+// The answer is built per connection because a terminal authentication method
+// may be advertised only to a client that enabled it.
+func (c *AgentConn) initialize(request *InitializeRequest) *InitializeResponse {
 	// This package speaks version 1 and nothing else, so the answer is always the
 	// version it implements — not the lower of the two.
 	//
@@ -372,21 +302,20 @@ func (c *AgentConn) initialize(request *InitializeRequest) (*InitializeResponse,
 	version := CurrentProtocolVersion
 
 	capabilities := deepCopy(c.agent.capabilities)
-	capabilities.PositionEncoding = capabilities.selectEncoding(request.ClientCapabilities)
 
 	response := &InitializeResponse{
 		ProtocolVersion:   version,
 		AgentCapabilities: capabilities,
-		AuthMethods:       c.agent.offeredAuthMethods(request.ClientCapabilities),
+		AuthMethods:       c.agent.auth.offered(request.ClientCapabilities),
 	}
 	if info := c.agent.config.Info; info != nil {
 		response.AgentInfo = OptValue(deepCopy(*info))
 	}
-	if len(c.agent.config.Meta) > 0 {
+	if c.agent.config.Meta.Len() > 0 {
 		response.Meta = OptValue(deepCopy(c.agent.config.Meta))
 	}
 
-	c.negotiated(PeerInfo{
+	c.handshake.accept(PeerInfo{
 		ProtocolVersion:    version,
 		ClientCapabilities: deepCopy(request.ClientCapabilities),
 		ClientInfo:         request.ClientInfo,
@@ -396,49 +325,7 @@ func (c *AgentConn) initialize(request *InitializeRequest) (*InitializeResponse,
 		AgentMeta:          response.Meta,
 		AuthMethods:        response.AuthMethods,
 	})
-	return response, nil
-}
-
-// A failed handshake opens nothing: there is no connection to send on.
-func (c *AgentConn) openOutbound() {
-	if !c.isInitialized() {
-		return
-	}
-	c.openedOnce.Do(func() { close(c.opened) })
-}
-
-// The schema is explicit about the terminal arm: an agent "MUST advertise this
-// method only when the client enabled its terminal authentication capability".
-// Whether it may be offered is therefore a fact about the connection, and sending
-// the configured list unfiltered produced a schema-invalid handshake against any
-// client that had not opted in.
-func (a *Agent) offeredAuthMethods(client ClientCapabilities) []AuthMethod {
-	offered := make([]AuthMethod, 0, len(a.config.AuthMethods))
-	for _, method := range a.config.AuthMethods {
-		if _, terminal := method.(*AuthMethodTerminal); terminal && !client.Auth.Terminal {
-			continue
-		}
-		offered = append(offered, deepCopy(method))
-	}
-	if len(offered) == 0 {
-		return nil
-	}
-	return offered
-}
-
-// selectEncoding narrows this agent's configured encoding to one the client
-// offered.
-//
-// The schema calls the field "the position encoding selected by the agent from
-// the client's supported encodings", so an encoding the client never offered is
-// not a selection. Omitting it leaves both peers on the default rather than on two
-// different answers about what a character offset counts.
-func (a AgentCapabilities) selectEncoding(client ClientCapabilities) Opt[PositionEncodingKind] {
-	chosen, configured := a.PositionEncoding.Get()
-	if configured && slices.Contains(client.PositionEncodings, chosen) {
-		return OptValue(chosen)
-	}
-	return Opt[PositionEncodingKind]{}
+	return response
 }
 
 // serve dispatches the requests a client makes of an agent.
@@ -450,13 +337,13 @@ func (c *AgentConn) serve(ctx context.Context, request *jsonrpc.Request) (any, e
 		if err != nil {
 			return nil, err
 		}
-		return c.initialize(params)
+		return c.initialize(params), nil
 	}
 
 	// The only legal inbound message before initialize is initialize itself.
 	// Serving anything else would mean serving it under capabilities nobody has
 	// exchanged.
-	if !c.isInitialized() {
+	if !c.handshake.isAccepted() {
 		return nil, newError(ErrorCodeInvalidRequest,
 			"%s arrived before initialize", request.Method)
 	}

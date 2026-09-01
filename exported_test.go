@@ -24,6 +24,7 @@ var handWritten = map[string]string{
 	// The wire vocabulary the schema does not name.
 	"CurrentProtocolVersion": "version.go — the protocol version this package speaks, which is not a schema definition",
 	"Meta":                   "meta.go — the Go type of the _meta property, which the schema leaves as a free-form object",
+	"NewMeta":                "meta.go — validates and owns values crossing the free-form _meta boundary",
 	"Opt":                    "opt.go — the presence-aware optional the schema's absent/null/present distinction needs",
 	"OptNull":                "opt.go — constructs the null state",
 	"OptValue":               "opt.go — constructs the present state",
@@ -128,9 +129,7 @@ func readExportedList(t *testing.T) []string {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		// A name may carry the UNSTABLE marker the schema put on its definition,
-		// which the compatibility review reads and this test does not.
-		names = append(names, strings.Fields(line)[0])
+		names = append(names, line)
 	}
 	if err := scanner.Err(); err != nil {
 		t.Fatalf("read: %v", err)
@@ -143,10 +142,10 @@ func readExportedList(t *testing.T) []string {
 
 // parseExportedNames collects the package's exported top-level declarations.
 //
-// Methods are deliberately not collected. They belong to the type they are on,
-// and a type this test has already accounted for cannot acquire a method by
-// accident — whereas a whole type can appear in a new file without anyone
-// deciding it should be published.
+// Methods are deliberately not collected. This manifest decides which schema
+// types enter the package; hand-written behaviour on those types is reviewed as
+// ordinary public API and guarded by the release compatibility check. Mixing the
+// two would make a schema-root file a second list of every method in the package.
 //
 // The files are parsed rather than type-checked, and build constraints are
 // ignored. Nothing in this package is platform-guarded, and a surface that

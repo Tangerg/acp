@@ -11,6 +11,8 @@ package jsonrpc2
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 )
 
 // This file contains the go forms of the wire specification.
@@ -25,12 +27,12 @@ var (
 
 const wireVersion = "2.0"
 
-// wireCombined has all the fields of both Request and Response.
-// We can decode this and then work out which it is.
+// wireCombined is the shared encoding shape for Request and Response. Decoding
+// uses an exact-key raw-member map because member presence determines the shape.
 type wireCombined struct {
 	VersionTag string          `json:"jsonrpc"`
-	ID         any             `json:"id,omitempty"`
-	Method     string          `json:"method,omitempty"`
+	ID         ID              `json:"id,omitzero"`
+	Method     *string         `json:"method,omitempty"`
 	Params     json.RawMessage `json:"params,omitempty"`
 	Result     json.RawMessage `json:"result,omitempty"`
 	Error      *WireError      `json:"error,omitempty"`
@@ -46,11 +48,43 @@ type WireError struct {
 	Data json.RawMessage `json:"data,omitempty"`
 }
 
+func (err *WireError) UnmarshalJSON(data []byte) error {
+	if err == nil {
+		return errors.New("decoding JSON-RPC error into nil target")
+	}
+	var members map[string]json.RawMessage
+	if decodeErr := json.Unmarshal(data, &members); decodeErr != nil {
+		return fmt.Errorf("decoding JSON-RPC error: %w", decodeErr)
+	}
+	if members == nil {
+		return errors.New("decoding JSON-RPC error: expected an object")
+	}
+
+	var decoded WireError
+	rawCode, hasCode := members["code"]
+	if !hasCode {
+		return errors.New("decoding JSON-RPC error: missing code")
+	}
+	if decodeErr := json.Unmarshal(rawCode, &decoded.Code); decodeErr != nil {
+		return fmt.Errorf("decoding JSON-RPC error code: %w", decodeErr)
+	}
+	rawMessage, hasMessage := members["message"]
+	if !hasMessage {
+		return errors.New("decoding JSON-RPC error: missing message")
+	}
+	if decodeErr := json.Unmarshal(rawMessage, &decoded.Message); decodeErr != nil {
+		return fmt.Errorf("decoding JSON-RPC error message: %w", decodeErr)
+	}
+	decoded.Data = members["data"]
+	*err = decoded
+	return nil
+}
+
 // NewError returns an error that will encode on the wire correctly.
 // The standard codes are made available from this package, this function should
 // only be used to build errors for application specific codes as allowed by the
 // specification.
-func NewError(code int64, message string) error {
+func NewError(code int64, message string) *WireError {
 	return &WireError{
 		Code:    code,
 		Message: message,

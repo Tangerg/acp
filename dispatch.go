@@ -67,6 +67,15 @@ func dispatchExtension(
 	call func(context.Context, *ExtRequest) (json.RawMessage, error),
 	notify func(context.Context, *ExtNotification),
 ) (any, error) {
+	if err := validateExtensionMethod(request.Method); err != nil {
+		if !request.IsCall() {
+			// Unknown notifications have no response channel. Ignoring a reserved
+			// future method also prevents today's fallback from claiming tomorrow's
+			// standard notification.
+			return nil, nil //nolint:nilnil // an ignored notification has no result or error.
+		}
+		return nil, newError(ErrorCodeMethodNotFound, "%s is not an extension method", request.Method)
+	}
 	if !request.IsCall() {
 		if notify == nil {
 			return nil, newError(ErrorCodeMethodNotFound, "%s is not implemented here", request.Method)
@@ -111,7 +120,7 @@ func decodeParams[Params any](request *jsonrpc.Request) (*Params, error) {
 	return params, nil
 }
 
-// This runs on the read loop, so it deliberately does not go through the
+// This runs on the ordered delivery loop, so it deliberately does not go through the
 // generated codec: validating a whole payload there would hold up every message
 // behind it, and a payload that does not decode fails again in the handler, where
 // the failure can be reported.

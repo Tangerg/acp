@@ -80,8 +80,8 @@ one no case table finds. The guard stays: having no targets is a fact about how
 far the package has grown, and it should not read as a broken build.
 
 Related: `actions/setup-go` fails outright on a `cache-dependency-path` that
-matches no file, and a module with no dependencies has no `go.sum`. The cache key
-is `go.mod`.
+matches no file. The schema generator now gives this module a `go.sum`, so that
+file is the cache key and dependency changes invalidate the cache directly.
 
 ## What each gate is for
 

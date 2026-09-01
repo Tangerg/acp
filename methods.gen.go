@@ -12,32 +12,15 @@ package acp
 const (
 	methodCancelRequest            = "$/cancel_request"
 	methodAuthenticate             = "authenticate"
-	methodDocumentDidChange        = "document/didChange"
-	methodDocumentDidClose         = "document/didClose"
-	methodDocumentDidFocus         = "document/didFocus"
-	methodDocumentDidOpen          = "document/didOpen"
-	methodDocumentDidSave          = "document/didSave"
 	methodElicitationComplete      = "elicitation/complete"
 	methodElicitationCreate        = "elicitation/create"
 	methodFsReadTextFile           = "fs/read_text_file"
 	methodFsWriteTextFile          = "fs/write_text_file"
 	methodInitialize               = "initialize"
 	methodLogout                   = "logout"
-	methodMcpConnect               = "mcp/connect"
-	methodMcpDisconnect            = "mcp/disconnect"
-	methodMcpMessage               = "mcp/message"
-	methodNesAccept                = "nes/accept"
-	methodNesClose                 = "nes/close"
-	methodNesReject                = "nes/reject"
-	methodNesStart                 = "nes/start"
-	methodNesSuggest               = "nes/suggest"
-	methodProvidersDisable         = "providers/disable"
-	methodProvidersList            = "providers/list"
-	methodProvidersSet             = "providers/set"
 	methodSessionCancel            = "session/cancel"
 	methodSessionClose             = "session/close"
 	methodSessionDelete            = "session/delete"
-	methodSessionFork              = "session/fork"
 	methodSessionList              = "session/list"
 	methodSessionLoad              = "session/load"
 	methodSessionNew               = "session/new"
@@ -99,32 +82,15 @@ type methodDescriptor struct {
 var standardMethods = map[string]methodDescriptor{
 	methodCancelRequest:            {sideProtocol, shapeNotification},
 	methodAuthenticate:             {sideAgent, shapeRequest},
-	methodDocumentDidChange:        {sideAgent, shapeNotification},
-	methodDocumentDidClose:         {sideAgent, shapeNotification},
-	methodDocumentDidFocus:         {sideAgent, shapeNotification},
-	methodDocumentDidOpen:          {sideAgent, shapeNotification},
-	methodDocumentDidSave:          {sideAgent, shapeNotification},
 	methodElicitationComplete:      {sideClient, shapeNotification},
 	methodElicitationCreate:        {sideClient, shapeRequest},
 	methodFsReadTextFile:           {sideClient, shapeRequest},
 	methodFsWriteTextFile:          {sideClient, shapeRequest},
 	methodInitialize:               {sideAgent, shapeRequest},
 	methodLogout:                   {sideAgent, shapeRequest},
-	methodMcpConnect:               {sideClient, shapeRequest},
-	methodMcpDisconnect:            {sideClient, shapeRequest},
-	methodMcpMessage:               {sideBoth, shapeEither},
-	methodNesAccept:                {sideAgent, shapeNotification},
-	methodNesClose:                 {sideAgent, shapeRequest},
-	methodNesReject:                {sideAgent, shapeNotification},
-	methodNesStart:                 {sideAgent, shapeRequest},
-	methodNesSuggest:               {sideAgent, shapeRequest},
-	methodProvidersDisable:         {sideAgent, shapeRequest},
-	methodProvidersList:            {sideAgent, shapeRequest},
-	methodProvidersSet:             {sideAgent, shapeRequest},
 	methodSessionCancel:            {sideAgent, shapeNotification},
 	methodSessionClose:             {sideAgent, shapeRequest},
 	methodSessionDelete:            {sideAgent, shapeRequest},
-	methodSessionFork:              {sideAgent, shapeRequest},
 	methodSessionList:              {sideAgent, shapeRequest},
 	methodSessionLoad:              {sideAgent, shapeRequest},
 	methodSessionNew:               {sideAgent, shapeRequest},

@@ -8,11 +8,11 @@ product that already works."
 This ordering was revised after
 [design-review.md](./design-review.md#recommended-roadmap-changes). The change
 that matters: what used to be one "wire" layer is now a spike followed by the
-full generator. The schema turned out to have five union classes, 378
-occurrences of `x-deserialize-default-on-error` and 35 of
-`x-deserialize-skip-invalid-items`, so "generate all 265 definitions" was hiding
+full generator. The published schema has several union classes, 249 occurrences
+of `x-deserialize-default-on-error` and 27 of
+`x-deserialize-skip-invalid-items`, so "generate all 170 definitions" was hiding
 the possibility that the chosen Go representation cannot express the schema at
-all. Finding that out on eight types is cheap; finding it out on 265 is a
+all. Finding that out on eight types is cheap; finding it out on 170 is a
 rewrite.
 
 ## 1. Wire-semantics spike — done
@@ -51,7 +51,7 @@ model:
 - an array carrying `x-deserialize-skip-invalid-items`;
 - a type with real numeric or string constraints;
 - an optional-and-nullable field, proving all three of omitted, `null` and
-  present — there are 357 such property occurrences, and a pointer with
+  present — there are 222 such property occurrences, and a pointer with
   `omitempty` collapses two of the three states;
 - a *required* field carrying `x-deserialize-default-on-error`, which recovers
   from malformed input but must still fail when the property is absent, if that
@@ -90,20 +90,21 @@ schema-deserialisation helpers — the actual oracle — are not reachable from 
 published package.
 
 So layer 1 commits a **fixture corpus plus a pinned updater**: the updater builds
-the SDK from a recorded commit and writes the expected values, CI replays the
-committed fixtures with no network and no Node build, and a periodic job runs the
-updater to catch upstream drift. This keeps the normal build hermetic while
-keeping the oracle honest.
+the SDK's independently implemented deserialisation machinery from a recorded
+commit, regenerates its validators from this module's pinned published schema,
+and writes the expected values. It cannot use the SDK's checked-in v1 validators:
+those consume `schema.unstable.json` and admit experimental wire shapes. CI
+replays the committed fixtures with no network and no Node build, and a periodic
+job runs the updater to catch upstream drift.
 
 Committed alongside: the SDK commit, the npm package version, the schema release
-tag, the Node version policy, and the single command that regenerates
-everything. Without those five, "the two SDKs agree" is an anecdote rather than
-release evidence.
+tag and asset hashes, the Node version policy, and the single command that
+regenerates everything. Without those pins, "the two SDKs agree" is an anecdote
+rather than release evidence.
 
-All five are in `scripts/update-fixtures.sh`, which refuses to run against a
-checkout that is not the pinned commit or a package that is not the pinned
-version, and cross-checks the schema tag against `schema/README.md` so the pins
-cannot disagree quietly. `scripts/oracle.ts` runs inside that checkout and writes
+They are all in `scripts/update-fixtures.sh`, which refuses the wrong SDK commit,
+package version, or schema asset and generates in a clean temporary archive so a
+reference checkout is never modified. `scripts/oracle.ts` runs there and writes
 each fixture's outcome; `go test` replays the answers.
 
 ### What the spike found
@@ -126,7 +127,7 @@ written up in [design.md](./design.md); this is the index.
   rather than aspirational, and gets a caller who never touches the connection
   layer checked too. See
   [Validation is part of the codec](./design.md#validation-is-part-of-the-codec-not-an-afterthought).
-- **`Opt` is needed less often than 357 occurrences suggests.** A property with a
+- **`Opt` is needed less often than 222 occurrences suggests.** A property with a
   declared default has one state, not three, and an optional array has two that a
   slice already spells. See
   [Omitted, null and present](./design.md#omitted-null-and-present-are-three-states-not-two).
@@ -159,9 +160,10 @@ the manifest is a loop rather than an audit.
 
 ## 2. Wire — done
 
-**Delivered.** The generator plans 259 of the schema's 265 definitions; the six it
-does not are the JSON-RPC envelopes, excluded by decision and named in a test.
-What the layer turned up is under "What layer 2 found".
+**Delivered.** The current manifest reaches 129 of the published schema's 170
+definitions. JSON-RPC envelopes are excluded by decision, and the remaining
+definitions enter the closure only with an implemented public operation. What
+the layer turned up is under "What layer 2 found".
 
 The generator, for real. Three of the bullets below are what layer 1 built on a
 deliberately tiny surface, and are struck through rather than deleted: what layer 2
@@ -181,11 +183,7 @@ adds is coverage, and reading the list is how the difference stays visible.
   test that holds the package's exports against `schema/exported.txt`. What
   remains is growing the roots, and emptying the `probes` list as the payload
   roots come to reach the same shapes.
-- ~~Copy upstream's UNSTABLE marker into the doc comment of every symbol that
-  carries one~~ — done, and the generator also marks them in
-  `schema/exported.txt` so the compatibility review can find them without reading
-  265 doc comments.
-- Commit the **complete** capability table now, classifying every one of the 43
+- Commit the **complete** capability table now, classifying every one of the 25
   methods as baseline, gated by a named predicate, or not yet implemented. It
   belonged in layer 5 in the previous draft, which was too late: layer 3 already
   exchanges capabilities and reserves every standard method name, and layer 4
@@ -204,10 +202,9 @@ operation layers 3 to 5 implement, rather than for the spike's representative se
 
 ### What layer 2 found
 
-- **The schema has 42 methods, not 43.** `mcp/message` is listed under both
-  directions, so the directory has 43 entries and 42 distinct names — and it is
-  consequently the only method that is both a request and a notification.
-  [protocol.md](./protocol.md#methods) said 43 and now says both numbers.
+- **The published stable schema has 25 methods.** The local TypeScript checkout
+  contains experimental additions under the same v1 tag; release assets, not
+  checkout-local additions, define the wire contract.
 - **This SDK and the reference implementation disagree about integers.** The
   reference implementation validates an `int64` or `int32` property as a plain
   number, so most of its integer properties accept `1.5`; the schema types them
@@ -333,9 +330,8 @@ developer read a wire trace to find out what they forgot.
 
 ## 6. The rest
 
-`session/load` and `session/resume`, modes and config options, `elicitation/*`,
-the `mcp/*` passthrough, `providers/*`, `document/*`, `nes/*` — each only once
-its capability-to-handler grouping is defined.
+`session/resume`, session lifecycle operations, config options, logout and
+`elicitation/*` — each only once its capability-to-handler grouping is defined.
 
 The extension boundary (`Call`, `Notify`, fallback handlers for `ExtRequest` /
 `ExtNotification`) lands with layer 3, not here: it is how anyone implements an
@@ -365,18 +361,11 @@ Things that are not decided, listed so they are not mistaken for decided.
   `SessionID`. A handle that silently re-pointed at another transport would be a
   lifetime nobody can reason about.
 
-- **v1's unstable subset.** Deferring it is not available, and the count is why.
-  Of the 52 UNSTABLE definitions, 38 are unstable as types and 14 are stable
-  types with unstable fields — including `SessionUpdate`, `PromptResponse`,
-  `ToolCall` and both capability structs. Following every `$ref` from the
-  operations layers 3–5 implement leaves 18 of the 38 type-level-unstable types
-  inside the closure. So generation scope follows **reachability from implemented
-  operations**, generated types are generated whole, and the module's
-  compatibility promise carves out upstream-unstable symbols in writing before
-  v1.0. See
-  [design.md](./design.md#the-v1-schema-lane-only-which-is-not-the-same-as-stable).
-
-  This reverses the recommendation offered before the numbers were computed.
+- **Which v1 source is authoritative.** The `schema.json` and `meta.json` assets
+  attached to the upstream release define the stable contract. Experimental
+  additions in an SDK checkout stay outside the generated surface until a
+  published release includes them. See
+  [design.md](./design.md#the-published-stable-schema-is-the-authority).
 
 - **Union decode helper.** No generic `As[T]` initially. Type switches and type
   assertions are standard Go and sufficient; a helper earns its place only if

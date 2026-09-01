@@ -35,9 +35,9 @@ func emit(plan *Plan) ([]byte, error) {
 			"Scope: the transitive $ref closure of schema/manifest.json, which is %d of the schema's definitions.",
 			len(plan.Closure)),
 		"",
-		"The doc comments are the specification's own prose, including its **UNSTABLE**",
-		"markers. Symbols carrying one are exempt from this module's compatibility",
-		"guarantee; see docs/design.md.",
+		"The doc comments are the published specification's own prose. A change to",
+		"that prose therefore arrives through a reviewed schema update rather than",
+		"through hand edits to this file.",
 	}))
 	out.WriteString("\npackage acp\n\n")
 	out.WriteString("import (\n")
@@ -192,8 +192,8 @@ func (e *emitter) valueUnion(def *Def) {
 		e.printf("\tcase *%s:\n", arm.GoType)
 		e.printf("\t\treturn json.Marshal(value)\n")
 	}
-	e.printf("\tcase nil:\n\t\treturn nil, errors.New(\"acp: a %s is required and none was set\")\n", def.GoName)
-	e.printf("\tdefault:\n\t\treturn nil, fmt.Errorf(\"acp: %%T is not a %s arm\", value)\n", def.GoName)
+	e.printf("\tcase nil:\n\t\treturn nil, errors.New(\"acp: %s is required and none was set\")\n", def.GoName)
+	e.printf("\tdefault:\n\t\treturn nil, fmt.Errorf(\"acp: %%T is not an arm of %s\", value)\n", def.GoName)
 	e.printf("\t}\n}\n\n")
 
 	e.printf("// unmarshal%s selects the arm the value belongs to.\n", def.Ident)
@@ -322,8 +322,8 @@ func (e *emitter) unionMarshal(def *Def) {
 			e.printf("\t\treturn json.Marshal(value)\n")
 		}
 	}
-	e.printf("\tcase nil:\n\t\treturn nil, errors.New(\"acp: a %s is required and none was set\")\n", def.GoName)
-	e.printf("\tdefault:\n\t\treturn nil, fmt.Errorf(\"acp: %%T is not a %s arm\", value)\n", def.GoName)
+	e.printf("\tcase nil:\n\t\treturn nil, errors.New(\"acp: %s is required and none was set\")\n", def.GoName)
+	e.printf("\tdefault:\n\t\treturn nil, fmt.Errorf(\"acp: %%T is not an arm of %s\", value)\n", def.GoName)
 	e.printf("\t}\n}\n\n")
 }
 

@@ -27,15 +27,15 @@ func TestAnAgentDoesNotShareItsConfigurationWithItsCaller(t *testing.T) {
 		Name: "Sign in with a terminal",
 		Args: []string{"--auth"},
 		Env:  acp.OptValue(map[string]string{"MODE": "auth"}),
-		Meta: acp.OptValue(acp.Meta{"nested": map[string]any{"depth": 2}}),
+		Meta: acp.OptValue(mustMeta(t, map[string]any{"nested": map[string]any{"depth": 2}})),
 	}
 	config := &acp.AgentConfig{
 		Info: &acp.Implementation{
 			Name:    "agent",
 			Version: "1",
-			Meta:    acp.OptValue(acp.Meta{"nested": map[string]any{"depth": 2}}),
+			Meta:    acp.OptValue(mustMeta(t, map[string]any{"nested": map[string]any{"depth": 2}})),
 		},
-		Meta:        acp.Meta{"nested": map[string]any{"depth": 2}},
+		Meta:        mustMeta(t, map[string]any{"nested": map[string]any{"depth": 2}}),
 		AuthMethods: []acp.AuthMethod{terminal},
 		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
@@ -46,9 +46,9 @@ func TestAnAgentDoesNotShareItsConfigurationWithItsCaller(t *testing.T) {
 		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 		Capabilities: &acp.AgentCapabilities{
 			SessionCapabilities: acp.SessionCapabilities{
-				Meta: acp.OptValue(acp.Meta{"nested": map[string]any{"depth": 2}}),
+				Meta: acp.OptValue(mustMeta(t, map[string]any{"nested": map[string]any{"depth": 2}})),
 			},
-			Meta: acp.OptValue(acp.Meta{"nested": map[string]any{"depth": 2}}),
+			Meta: acp.OptValue(mustMeta(t, map[string]any{"nested": map[string]any{"depth": 2}})),
 		},
 	}
 
@@ -59,7 +59,7 @@ func TestAnAgentDoesNotShareItsConfigurationWithItsCaller(t *testing.T) {
 
 	// Every mutation is of something nested, because replacing the outer value is
 	// the case a shallow copy already survives.
-	mutateEverything(config)
+	mutateEverything(t, config)
 	terminal.Args[0] = "--tampered"
 	terminal.ID = "tampered"
 
@@ -94,9 +94,9 @@ func TestPeerHandsOutASnapshotNobodyElseHolds(t *testing.T) {
 		Info: &acp.Implementation{
 			Name:    "agent",
 			Version: "1",
-			Meta:    acp.OptValue(acp.Meta{"nested": map[string]any{"depth": 2}}),
+			Meta:    acp.OptValue(mustMeta(t, map[string]any{"nested": map[string]any{"depth": 2}})),
 		},
-		Meta: acp.Meta{"nested": map[string]any{"depth": 2}},
+		Meta: mustMeta(t, map[string]any{"nested": map[string]any{"depth": 2}}),
 		AuthMethods: []acp.AuthMethod{
 			&acp.AuthMethodAgent{ID: "oauth", Name: "Sign in"},
 		},
@@ -120,10 +120,12 @@ func TestPeerHandsOutASnapshotNobodyElseHolds(t *testing.T) {
 	// Reach as deep as the value goes and change it.
 	held := conn.Peer()
 	if meta, ok := held.AgentMeta.Get(); ok {
-		if nested, ok := meta["nested"].(map[string]any); ok {
-			nested["depth"] = "tampered"
+		if err := meta.Set("nested", map[string]any{"depth": "tampered"}); err != nil {
+			t.Fatalf("tamper nested metadata: %v", err)
 		}
-		meta["added"] = "tampered"
+		if err := meta.Set("added", "tampered"); err != nil {
+			t.Fatalf("tamper metadata: %v", err)
+		}
 	}
 	if method, ok := held.AuthMethods[0].(*acp.AuthMethodAgent); ok {
 		method.ID = "tampered"
@@ -139,14 +141,13 @@ func TestPeerHandsOutASnapshotNobodyElseHolds(t *testing.T) {
 	}
 }
 
-// A _meta value keeps the types the caller put in it. A copy that round-tripped
-// through JSON would hand back every number as a float64, which is a different
-// value from the one that went in.
-func TestCopyingMetaKeepsTheTypesItWasGiven(t *testing.T) {
+// Decoding into a caller-selected type keeps the JSON boundary explicit without
+// forcing every number through interface{} as float64.
+func TestMetaDecodesIntoTheRequestedType(t *testing.T) {
 	client, err := acp.NewClient(&acp.ClientConfig{
 		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
-		Meta:              acp.Meta{"count": 3, "nested": map[string]any{"count": 4}},
+		Meta:              mustMeta(t, map[string]any{"count": 3, "nested": map[string]any{"count": 4}}),
 	})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -157,31 +158,29 @@ func TestCopyingMetaKeepsTheTypesItWasGiven(t *testing.T) {
 	if !ok {
 		t.Fatal("the snapshot carries no client _meta")
 	}
-	count, counted := meta["count"].(int)
-	if !counted || count != 3 {
-		t.Fatalf("count came back as %#v, want the int that went in", meta["count"])
+	var count int
+	if ok, err := meta.Decode("count", &count); err != nil || !ok || count != 3 {
+		t.Fatalf("Decode(count) = (%d, %t, %v), want (3, true, nil)", count, ok, err)
 	}
-	nested, nestedOK := meta["nested"].(map[string]any)
-	if !nestedOK {
-		t.Fatalf("nested came back as %#v", meta["nested"])
+	var nested struct {
+		Count int `json:"count"`
 	}
-	inner, innerOK := nested["count"].(int)
-	if !innerOK || inner != 4 {
-		t.Fatalf("nested count came back as %#v", nested["count"])
+	if ok, err := meta.Decode("nested", &nested); err != nil || !ok || nested.Count != 4 {
+		t.Fatalf("Decode(nested) = (%+v, %t, %v), want count 4", nested, ok, err)
 	}
 }
 
 // mutateEverything reaches into every nested value a configuration holds and
 // changes it, which is what a shallow copy fails to survive.
-func mutateEverything(config *acp.AgentConfig) {
+func mutateEverything(t *testing.T, config *acp.AgentConfig) {
+	t.Helper()
 	tamper := func(meta acp.Meta) {
-		if meta == nil {
-			return
+		if err := meta.Set("nested", map[string]any{"depth": "tampered"}); err != nil {
+			t.Fatalf("tamper nested metadata: %v", err)
 		}
-		if nested, ok := meta["nested"].(map[string]any); ok {
-			nested["depth"] = "tampered"
+		if err := meta.Set("added", "tampered"); err != nil {
+			t.Fatalf("tamper metadata: %v", err)
 		}
-		meta["added"] = "tampered"
 	}
 	tamperOpt := func(meta acp.Opt[acp.Meta]) {
 		if value, ok := meta.Get(); ok {
@@ -214,18 +213,15 @@ func text(t *testing.T, value any) string {
 	return string(encoded)
 }
 
-// A value the copy cannot rebuild is shared rather than replaced by its zero.
-//
-// copyValue used to walk into any struct and set the fields it could reach, which
-// silently dropped everything unexported. A time.Time is nothing but unexported
-// state, so a _meta carrying one sent the zero time on the wire — a wrong value,
-// which is worse than a shared one.
-func TestCopyingAValueItCannotRebuildKeepsIt(t *testing.T) {
+// Encoding at insertion time prevents a later mutation of a Go object from
+// changing metadata that has already crossed the configuration boundary.
+func TestMetaDoesNotRetainArbitraryGoObjects(t *testing.T) {
 	stamp := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	value := map[string]any{"stamp": stamp}
 	client, err := acp.NewClient(&acp.ClientConfig{
 		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
-		Meta:              acp.Meta{"stamp": stamp, "nested": map[string]any{"stamp": stamp}},
+		Meta:              mustMeta(t, map[string]any{"stamp": stamp, "nested": value}),
 	})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -236,18 +232,35 @@ func TestCopyingAValueItCannotRebuildKeepsIt(t *testing.T) {
 	if !ok {
 		t.Fatal("the snapshot carries no client _meta")
 	}
-	kept, isTime := meta["stamp"].(time.Time)
-	if !isTime {
-		t.Fatalf("the timestamp came back as %#v", meta["stamp"])
+	value["stamp"] = "tampered"
+	var kept time.Time
+	if ok, err := meta.Decode("stamp", &kept); err != nil || !ok || !kept.Equal(stamp) {
+		t.Fatalf("Decode(stamp) = (%v, %t, %v), want %v", kept, ok, err, stamp)
 	}
-	if !kept.Equal(stamp) {
-		t.Fatalf("the timestamp came back as %v, want %v", kept, stamp)
+	var nested struct {
+		Stamp time.Time `json:"stamp"`
 	}
-	nested, ok := meta["nested"].(map[string]any)
-	if !ok {
-		t.Fatalf("nested came back as %#v", meta["nested"])
+	if ok, err := meta.Decode("nested", &nested); err != nil || !ok || !nested.Stamp.Equal(stamp) {
+		t.Fatalf("Decode(nested) = (%v, %t, %v), want %v", nested.Stamp, ok, err, stamp)
 	}
-	if inner, isTime := nested["stamp"].(time.Time); !isTime || !inner.Equal(stamp) {
-		t.Fatalf("the nested timestamp came back as %#v", nested["stamp"])
+}
+
+func mustMeta(t *testing.T, values map[string]any) acp.Meta {
+	t.Helper()
+	meta, err := acp.NewMeta(values)
+	if err != nil {
+		t.Fatalf("NewMeta: %v", err)
+	}
+	return meta
+}
+
+func TestMetaRejectsValuesThatCannotCrossJSON(t *testing.T) {
+	if _, err := acp.NewMeta(map[string]any{"work": make(chan struct{})}); err == nil {
+		t.Fatal("NewMeta accepted a channel that could only fail later while writing protocol data")
+	}
+
+	var meta acp.Meta
+	if err := json.Unmarshal([]byte("null"), &meta); err == nil {
+		t.Fatal("null decoded as a Meta object, collapsing null and an empty object")
 	}
 }

@@ -8,7 +8,7 @@ import (
 // The capability table: which methods a peer may be asked to serve, and on what
 // condition.
 //
-// It is hand-maintained, and it has to be. The schema annotates 74 payloads with
+// It is hand-maintained, and it has to be. The schema annotates 46 payloads with
 // x-method and x-side, and has no annotation at all linking a method to the
 // capability that gates it — those links exist only in prose descriptions, and
 // some capabilities describe accepted data rather than an optional method.
@@ -55,10 +55,7 @@ type methodGate struct {
 	// capability is the schema path the predicate reads, for the message a
 	// refusal carries.
 	capability string
-	// owner is the peer whose capabilities the predicate reads, which is not
-	// always the peer that serves the method. The mcp methods are the case that
-	// makes this a field rather than an assumption: the client serves them, and
-	// the agent's mcpCapabilities.acp is what says they may be used at all.
+	// owner is the peer whose capabilities the predicate reads.
 	owner methodSide
 	// advertised reports whether the peer that serves this method said it would.
 	// nil unless gating is gatingCapability.
@@ -165,28 +162,23 @@ var gates = gateTable{
 		gating:     gatingUnimplemented,
 		capability: "agentCapabilities.auth.logout",
 		owner:      sideAgent,
-		advertised: func(peer PeerInfo) bool { return !peer.AgentCapabilities.Auth.Logout.IsZero() },
+		advertised: func(peer PeerInfo) bool { return hasCapability(peer.AgentCapabilities.Auth.Logout) },
 		why:        `"Whether the agent supports the logout method"`,
 	},
-	methodSessionList:   sessionCapability("list", func(s SessionCapabilities) bool { return !s.List.IsZero() }),
-	methodSessionDelete: sessionCapability("delete", func(s SessionCapabilities) bool { return !s.Delete.IsZero() }),
-	methodSessionFork:   sessionCapability("fork", func(s SessionCapabilities) bool { return !s.Fork.IsZero() }),
-	methodSessionResume: sessionCapability("resume", func(s SessionCapabilities) bool { return !s.Resume.IsZero() }),
-	methodSessionClose:  sessionCapability("close", func(s SessionCapabilities) bool { return !s.Close.IsZero() }),
+	methodSessionList:   sessionCapability("list", func(s SessionCapabilities) bool { return hasCapability(s.List) }),
+	methodSessionDelete: sessionCapability("delete", func(s SessionCapabilities) bool { return hasCapability(s.Delete) }),
+	methodSessionResume: sessionCapability("resume", func(s SessionCapabilities) bool { return hasCapability(s.Resume) }),
+	methodSessionClose:  sessionCapability("close", func(s SessionCapabilities) bool { return hasCapability(s.Close) }),
 	methodSessionSetConfigOption: {
 		gating: gatingUnimplemented,
 		why:    "gated by data, like session/set_mode: an agent offers config options by returning them",
 	},
 
-	methodProvidersList:    providersCapability,
-	methodProvidersSet:     providersCapability,
-	methodProvidersDisable: providersCapability,
-
 	methodElicitationCreate: {
 		gating:     gatingUnimplemented,
 		capability: "clientCapabilities.elicitation",
 		owner:      sideClient,
-		advertised: func(peer PeerInfo) bool { return !peer.ClientCapabilities.Elicitation.IsZero() },
+		advertised: func(peer PeerInfo) bool { return hasCapability(peer.ClientCapabilities.Elicitation) },
 		why:        `"Determines which elicitation modes the agent may use"`,
 	},
 	methodElicitationComplete: {
@@ -196,22 +188,6 @@ var gates = gateTable{
 		advertised: elicitationURL,
 		why:        "the completion notification for a URL elicitation, so the url mode gates it",
 	},
-
-	methodMcpConnect:    mcpCapability,
-	methodMcpMessage:    mcpCapability,
-	methodMcpDisconnect: mcpCapability,
-
-	methodNesStart:   agentNesCapability,
-	methodNesSuggest: agentNesCapability,
-	methodNesAccept:  agentNesCapability,
-	methodNesReject:  agentNesCapability,
-	methodNesClose:   agentNesCapability,
-
-	methodDocumentDidOpen:   agentNesEvents,
-	methodDocumentDidChange: agentNesEvents,
-	methodDocumentDidClose:  agentNesEvents,
-	methodDocumentDidSave:   agentNesEvents,
-	methodDocumentDidFocus:  agentNesEvents,
 }
 
 // One row per session-lifecycle method, each gated by its own property of one
@@ -226,41 +202,17 @@ func sessionCapability(name string, set func(SessionCapabilities) bool) methodGa
 	}
 }
 
-// The rows several methods share, because the capability does.
-var (
-	providersCapability = methodGate{
-		gating:     gatingUnimplemented,
-		capability: "agentCapabilities.providers",
-		owner:      sideAgent,
-		advertised: func(peer PeerInfo) bool { return !peer.AgentCapabilities.Providers.IsZero() },
-		why:        "one capability object gating all three provider methods",
-	}
-	mcpCapability = methodGate{
-		gating:     gatingUnimplemented,
-		capability: "agentCapabilities.mcpCapabilities.acp",
-		owner:      sideAgent,
-		advertised: func(peer PeerInfo) bool { return peer.AgentCapabilities.McpCapabilities.Acp },
-		why:        "the client holds the MCP connection on the agent's behalf, over the ACP channel",
-	}
-	agentNesCapability = methodGate{
-		gating:     gatingUnimplemented,
-		capability: "agentCapabilities.nes",
-		owner:      sideAgent,
-		advertised: func(peer PeerInfo) bool { return !peer.AgentCapabilities.Nes.IsZero() },
-		why:        "one capability object gating all five next-edit methods",
-	}
-	agentNesEvents = methodGate{
-		gating:     gatingUnimplemented,
-		capability: "agentCapabilities.nes.events",
-		owner:      sideAgent,
-		advertised: func(peer PeerInfo) bool { return !peer.AgentCapabilities.Nes.IsZero() },
-		why:        "the document-sync notifications exist to feed the agent's next-edit events",
-	}
-)
-
 func elicitationURL(peer PeerInfo) bool {
 	elicitation, advertised := peer.ClientCapabilities.Elicitation.Get()
-	return advertised && !elicitation.URL.IsZero()
+	return advertised && hasCapability(elicitation.URL)
+}
+
+// Capability objects use present `{}` as true and both absent and null as
+// false. IsZero cannot answer that question because null is intentionally a
+// non-zero Opt state.
+func hasCapability[T any](capability Opt[T]) bool {
+	_, present := capability.Get()
+	return present
 }
 
 // terminalGate is one row shared by five methods, because the capability is one
@@ -282,7 +234,7 @@ var terminalGate = methodGate{
 // all cannot be advertised however its capability is spelled.
 //
 // The rule is about methods. A capability describing data an existing handler
-// accepts — prompt content types, position encodings — is an explicit refinement
+// accepts — such as prompt content types — is an explicit refinement
 // and not a promise of a separate method, so it has no row here and is left to the
 // caller.
 //
@@ -319,13 +271,12 @@ func (t gateTable) exceeded(peer PeerInfo, owner methodSide, implemented func(st
 // log can see which advertisement was missing.
 func (p PeerInfo) permits(method string) error {
 	gate, known := gates[method]
-	switch {
-	case !known, gate.gating == gatingUnimplemented:
+	if !known || gate.gating == gatingUnimplemented {
 		return newError(ErrorCodeMethodNotFound, "%s is not implemented here", method)
-	case gate.gating == gatingBaseline, gate.advertised(p):
-		return nil
-	default:
-		return newError(ErrorCodeMethodNotFound,
-			"%s was not advertised: %s is not set", method, gate.capability)
 	}
+	if gate.gating == gatingBaseline || gate.advertised(p) {
+		return nil
+	}
+	return newError(ErrorCodeMethodNotFound,
+		"%s was not advertised: %s is not set", method, gate.capability)
 }

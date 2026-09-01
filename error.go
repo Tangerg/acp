@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"strconv"
 
 	"github.com/Tangerg/acp/internal/jsonrpc2"
@@ -142,8 +141,11 @@ func (x *Error) toWire() *jsonrpc2.WireError {
 	return wire
 }
 
-func errorFromWire(wire *jsonrpc2.WireError) *Error {
-	failure := &Error{Code: errorCodeOf(wire.Code), Message: wire.Message}
+func errorFromWire(wire *jsonrpc2.WireError) error {
+	if wire.Code < -1<<31 || wire.Code > 1<<31-1 {
+		return fmt.Errorf("acp: the peer returned JSON-RPC error code %d outside ACP's int32 range", wire.Code)
+	}
+	failure := &Error{Code: ErrorCode(wire.Code), Message: wire.Message}
 	switch {
 	case len(wire.Data) == 0:
 		// Absent, which is the zero value and needs saying no other way.
@@ -153,17 +155,4 @@ func errorFromWire(wire *jsonrpc2.WireError) *Error {
 		failure.Data = OptValue(wire.Data)
 	}
 	return failure
-}
-
-// errorCodeOf narrows a JSON-RPC code to the schema's int32.
-//
-// The schema types every arm of the code union as an int32, so a wider value is a
-// peer that is not following it. Truncating would report a code the peer did not
-// send, which is worse than saying the failure was internal to it: an unknown
-// in-range code is valid and survives, and an out-of-range one is not a code.
-func errorCodeOf(code int64) ErrorCode {
-	if code < math.MinInt32 || code > math.MaxInt32 {
-		return ErrorCodeInternalError
-	}
-	return ErrorCode(code)
 }
