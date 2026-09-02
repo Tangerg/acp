@@ -142,9 +142,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
+      # Deliberately not the module's floor. This job builds its tools from
+      # source, and the pinned golangci-lint needs Go 1.26 to compile; setup-go
+      # pins GOTOOLCHAIN=local, so the install cannot fetch a toolchain for
+      # itself and the whole job dies before the first check runs. What the
+      # module must compile under is the floor job's business, and what the
+      # analysis is allowed to suggest is decided by the go directive in go.mod
+      # either way.
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25.x"
+          go-version: "1.26.x"
           check-latest: true
           cache-dependency-path: go.sum
 
