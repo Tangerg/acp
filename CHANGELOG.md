@@ -60,6 +60,10 @@ This is the first release. It implements both peers of Agent Client Protocol
   methods, and the client checks them before sending: prompt content against
   `promptCapabilities`, `http` and `sse` MCP servers against `mcpCapabilities`,
   and `additionalDirectories` against `sessionCapabilities`.
+- **Absolute paths**: the protocol requires every path it carries to be absolute,
+  and the SDK refuses to send a relative one from a workspace call or a session
+  setup. It accepts POSIX and Windows forms, because the path describes the
+  peer's filesystem rather than the sending process's.
 - **Handshake ordering**: `Client.Connect` returns only after a validated
   handshake. `Agent.Connect` starts reading before `initialize`, but its outbound
   calls wait until the response is written. Invalid initialize parameters do not

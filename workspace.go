@@ -3,6 +3,8 @@ package acp
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync/atomic"
 
 	"github.com/Tangerg/acp/jsonrpc"
@@ -13,6 +15,49 @@ import (
 // checked on both sides — outbound because the peer never offered it, inbound
 // because the caller was told it was not there.
 
+// The specification says every path the protocol carries must be absolute, so
+// this package never sends one that is not. It is checked where the obligation
+// is, on the way out: a receiver refusing a relative path is a policy an
+// application may reasonably want to set for itself, and SECURITY.md already
+// names a path from a peer as a boundary an application owns.
+//
+// filepath.IsAbs answers for the operating system this process is running on, and
+// these paths describe the peer's filesystem. The ordinary deployment puts both
+// peers on one machine, but a transport of a caller's own need not, so the check
+// accepts what either convention calls absolute. That still refuses exactly what
+// the rule exists to refuse: a path whose meaning depends on a working directory
+// the two peers do not share.
+func absolutePath(field, path string) error {
+	if isAbsolutePath(path) {
+		return nil
+	}
+	return newError(ErrorCodeInvalidParams,
+		"%s must be an absolute path, and %q is not", field, path)
+}
+
+func isAbsolutePath(path string) bool {
+	switch {
+	case strings.HasPrefix(path, "/"), strings.HasPrefix(path, `\\`):
+		// A POSIX path, or a UNC share written either way.
+		return true
+	case len(path) >= 3 && path[1] == ':' && (path[2] == '/' || path[2] == '\\'):
+		// A Windows drive letter.
+		letter := path[0] | ' '
+		return letter >= 'a' && letter <= 'z'
+	default:
+		return false
+	}
+}
+
+func absoluteDirectories(directories []string) error {
+	for i, directory := range directories {
+		if err := absolutePath(fmt.Sprintf("additionalDirectories[%d]", i), directory); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ReadTextFile reads a text file from the client's workspace.
 //
 // Gated on clientCapabilities.fs.readTextFile.
@@ -22,6 +67,9 @@ func (s *AgentSession) ReadTextFile(
 ) (*ReadTextFileResponse, error) {
 	if params == nil {
 		return nil, paramsRequired("ReadTextFile", "Path")
+	}
+	if err := absolutePath("path", params.Path); err != nil {
+		return nil, err
 	}
 	request := &ReadTextFileRequest{
 		SessionID: s.id,
@@ -43,6 +91,9 @@ func (s *AgentSession) WriteTextFile(
 ) (*WriteTextFileResponse, error) {
 	if params == nil {
 		return nil, paramsRequired("WriteTextFile", "Path and Content")
+	}
+	if err := absolutePath("path", params.Path); err != nil {
+		return nil, err
 	}
 	request := &WriteTextFileRequest{
 		SessionID: s.id,
@@ -68,6 +119,11 @@ func (s *AgentSession) CreateTerminal(
 ) (*TerminalHandle, *CreateTerminalResponse, error) {
 	if params == nil {
 		return nil, nil, paramsRequired("CreateTerminal", "Command")
+	}
+	if cwd, set := params.Cwd.Get(); set {
+		if err := absolutePath("cwd", cwd); err != nil {
+			return nil, nil, err
+		}
 	}
 	request := &CreateTerminalRequest{
 		SessionID:       s.id,

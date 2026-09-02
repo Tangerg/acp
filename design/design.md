@@ -434,6 +434,21 @@ func (s *AgentSession) WriteTextFile(ctx context.Context, params *WriteTextFileP
 func (s *AgentSession) CreateTerminal(ctx context.Context, params *CreateTerminalParams) (*TerminalHandle, *CreateTerminalResponse, error)
 ```
 
+Every path the protocol carries must be absolute, so this package never sends one
+that is not — here, and on the `cwd` and `additionalDirectories` a client sends
+with a session. The check is deliberately not `filepath.IsAbs`: that answers for
+the operating system this process is running on, and the path describes the
+peer's filesystem. Nothing requires two peers to share one, so a path absolute
+under either convention is accepted, which still refuses what the rule exists to
+refuse — a path whose meaning depends on a working directory the two peers do not
+share.
+
+The refusal is on the way out only. The specification puts the obligation on
+whoever writes the path, and a receiver refusing a relative path is a policy an
+application may reasonably want to set for itself; `SECURITY.md` already names a
+path arriving from a peer as a boundary the application owns, and the client in
+`examples/` shows one enforcing it.
+
 A `TerminalHandle` binds the session and terminal identifiers required by all
 five terminal methods. It is named `TerminalHandle` rather than `Terminal`
 because the schema already defines `Terminal` as the payload of a tool call's

@@ -251,7 +251,7 @@ func (c *ClientConn) NewSession(
 	if params == nil {
 		params = &NewSessionRequest{}
 	}
-	if err := c.Peer().permitsSessionSetup(params.McpServers, params.AdditionalDirectories); err != nil {
+	if err := c.checkSessionSetup(params.Cwd, params.McpServers, params.AdditionalDirectories); err != nil {
 		return nil, nil, err
 	}
 	response := new(NewSessionResponse)
@@ -283,7 +283,7 @@ func (c *ClientConn) LoadSession(
 	if err := c.Peer().permits(methodSessionLoad); err != nil {
 		return nil, nil, err
 	}
-	if err := c.Peer().permitsSessionSetup(params.McpServers, params.AdditionalDirectories); err != nil {
+	if err := c.checkSessionSetup(params.Cwd, params.McpServers, params.AdditionalDirectories); err != nil {
 		return nil, nil, err
 	}
 	response := new(LoadSessionResponse)
@@ -310,7 +310,7 @@ func (c *ClientConn) ResumeSession(
 	if err := c.Peer().permits(methodSessionResume); err != nil {
 		return nil, nil, err
 	}
-	if err := c.Peer().permitsSessionSetup(params.McpServers, params.AdditionalDirectories); err != nil {
+	if err := c.checkSessionSetup(params.Cwd, params.McpServers, params.AdditionalDirectories); err != nil {
 		return nil, nil, err
 	}
 	response := new(ResumeSessionResponse)
@@ -394,6 +394,20 @@ func (c *ClientConn) Authenticate(
 		return nil, err
 	}
 	return response, nil
+}
+
+// The three requests that open or reopen a session carry the same workspace
+// parameters, and the specification constrains all of them: an http or sse MCP
+// server and additionalDirectories are gated on what the agent advertised, and
+// every path must be absolute.
+func (c *ClientConn) checkSessionSetup(cwd string, servers []McpServer, directories []string) error {
+	if err := c.Peer().permitsSessionSetup(servers, directories); err != nil {
+		return err
+	}
+	if err := absolutePath("cwd", cwd); err != nil {
+		return err
+	}
+	return absoluteDirectories(directories)
 }
 
 func (c *ClientConn) session(id SessionID) *ClientSession {

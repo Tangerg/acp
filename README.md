@@ -139,6 +139,10 @@ Four protocol rules affect every integration:
   transports, or `additionalDirectories` the agent never advertised.
   Construction also rejects capabilities that lack matching handlers
 
+Every path the protocol carries must be absolute. This package refuses to send a
+relative one, and accepts either POSIX or Windows form because the path describes
+the peer's filesystem rather than this process's.
+
 Session and terminal handles are bound to their connection. Persist protocol
 identifiers when you need to reopen a resource on another connection; do not
 retain a handle past connection shutdown.

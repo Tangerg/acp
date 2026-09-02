@@ -483,3 +483,63 @@ func TestAnEmptyIdentifierIsAcceptedBecauseTheSchemaDeclaresNoMinimum(t *testing
 		t.Fatalf("creating a terminal with an empty identifier failed: %v", err)
 	}
 }
+
+// "All file paths in the protocol MUST be absolute." A relative one is refused
+// before it is sent, in both directions: an agent's workspace call and a client's
+// session setup.
+//
+// The check accepts either convention rather than the running process's, because
+// the path describes the peer's filesystem and nothing requires the two peers to
+// share an operating system.
+func TestARelativePathIsRefusedBeforeItIsSent(t *testing.T) {
+	var reached int
+	client, err := acp.NewClient(&acp.ClientConfig{
+		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		RequestPermission: denyingPermission,
+		ReadTextFile: func(context.Context, *acp.ReadTextFileRequest) (*acp.ReadTextFileResponse, error) {
+			reached++
+			return &acp.ReadTextFileResponse{}, nil
+		},
+		WriteTextFile: func(context.Context, *acp.WriteTextFileRequest) (*acp.WriteTextFileResponse, error) {
+			reached++
+			return &acp.WriteTextFileResponse{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	var relative, posix, windows error
+	agent := testAgent(t, func(ctx context.Context, session *acp.AgentSession, _ *acp.PromptRequest) (*acp.PromptResponse, error) {
+		_, relative = session.ReadTextFile(ctx, &acp.ReadTextFileParams{Path: "notes/a.go"})
+		_, posix = session.ReadTextFile(ctx, &acp.ReadTextFileParams{Path: "/w/a.go"})
+		_, windows = session.WriteTextFile(ctx, &acp.WriteTextFileParams{
+			Path: `C:\w\a.go`, Content: "x",
+		})
+		return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+	})
+
+	session := connectAndOpen(t, client, agent)
+	if _, err := session.Prompt(context.Background(), &acp.PromptParams{}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if relative == nil {
+		t.Fatal("a relative path reached the client")
+	}
+	if !strings.Contains(relative.Error(), "absolute") {
+		t.Errorf("the refusal does not say what is wrong: %v", relative)
+	}
+	if posix != nil || windows != nil {
+		t.Errorf("an absolute path was refused: posix=%v windows=%v", posix, windows)
+	}
+	if reached != 2 {
+		t.Errorf("the client served %d calls, want the 2 absolute ones", reached)
+	}
+
+	// And the same rule on the session the client opens.
+	conn := session.Conn()
+	if _, _, err := conn.NewSession(context.Background(), &acp.NewSessionRequest{Cwd: "w"}); err == nil ||
+		!strings.Contains(err.Error(), "cwd must be an absolute path") {
+		t.Errorf("a relative cwd was not refused: %v", err)
+	}
+}
