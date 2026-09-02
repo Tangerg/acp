@@ -23,7 +23,7 @@ var ErrPromptInProgress = errors.New("acp: this session already has a prompt in 
 
 // A ClientSession is one conversation, as the client sees it.
 //
-// It binds the session identifier and nothing else. Thirty-two definitions in the
+// It binds the session identifier and nothing else. Twenty definitions in the
 // schema carry a sessionId property, and threading that string by hand across the
 // operations that need it is the same mistake as threading a terminal identifier
 // through five functions.
