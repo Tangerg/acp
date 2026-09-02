@@ -6,8 +6,12 @@ config:
   # The changelog repeats version headings by design.
   MD024:
     siblings_only: true
-  # Inline HTML is not used; badges are Markdown links.
+  # Inline HTML is used for one thing: the banner a README opens with, which
+  # needs a link around an image and has no Markdown spelling.
   MD033: false
+  # And that banner is the first line, above the heading, which is where every
+  # other implementation of this protocol puts it. The heading follows it.
+  MD041: false
   # Go is tab-indented — that is what gofmt emits — so a Go sample in the
   # documentation is indented the way the file it describes would be. Prose is
   # still held to spaces.
