@@ -169,6 +169,51 @@ imported.
 A guard nobody has seen fail is a guard nobody knows is wired up. Where a test
 exists to catch a specific mistake, make the mistake once and check that it fails.
 
+## Interoperability evidence
+
+Two Go endpoints talking to each other share any wire bug they have, so nothing
+inside this repository can establish that another implementation would understand
+it. Two recorded corpora do, and they are produced differently.
+
+`testdata/interop` is this module's client against an agent built on the reference
+TypeScript SDK. `scripts/interop.sh` records it against a pinned checkout, and
+`go test` replays it with no network and no Node. Re-record it when the pin moves.
+
+`testdata/zed` is the same evidence from the other side, and it cannot be
+automated: the client half of ACP is an editor, and driving one means a person
+clicking. It was recorded by hand, with Zed, and here is how to record another.
+
+Build an agent and put a wrapper in front of it that tees both directions of the
+stream to a file:
+
+```sh
+go build -o /tmp/acp-agent ./examples/agent
+cat > /tmp/acp-agent.sh <<'SH'
+#!/bin/sh
+exec tee -a /tmp/from-client.jsonl | /tmp/acp-agent | tee -a /tmp/to-client.jsonl
+SH
+chmod +x /tmp/acp-agent.sh
+```
+
+Register the wrapper in Zed's `settings.json`, open a scratch directory, and start
+a thread with it:
+
+```json
+{
+  "agent_servers": {
+    "acp-go": { "type": "custom", "command": "/tmp/acp-agent.sh", "args": [], "env": {} }
+  }
+}
+```
+
+Then drive one conversation — a prompt, the permission dialog, the stop button —
+and save the two logs as a transcript beside the existing ones, with the editor
+version from the `clientInfo` it sent and the date.
+
+The replay is a corpus rather than a gate: nothing in it can catch the editor
+changing. What it catches is this package changing under bytes another
+implementation actually sent.
+
 ## Pull requests
 
 Keep commits reviewable and do not mix unrelated cleanup with behavioural change.

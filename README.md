@@ -209,6 +209,12 @@ generator.
   and every capability-gated workspace method. `scripts/interop.sh` records them
   against the pinned reference SDK; `go test` replays them with no network and no
   Node.
+- **A real editor, driving.** Zed 1.17.2 spawned an agent built on this module and
+  a person drove it: a prompt, the permission dialog, a command through the
+  editor's terminal, and the stop button. Those bytes are replayed by `go test`:
+  every property the editor sent survives this package's types unchanged, and the
+  turn the user stopped ends with the cancelled stop reason rather than a failed
+  call.
 - **125 cross-SDK fixtures**, whose expected outcomes come from the TypeScript
   SDK's own deserialisation machinery, regenerated from the pinned schema.
 - **Two fuzz targets** asserting that normalisation is a fixed point, which is the
