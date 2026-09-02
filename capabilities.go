@@ -277,3 +277,72 @@ func (p PeerInfo) permits(method string) error {
 	return newError(ErrorCodeMethodNotFound,
 		"method %q was not advertised because %s is not set", method, gate.capability)
 }
+
+// The protocol gates three request parameters as well as the methods that carry
+// them, and the specification puts all three MUSTs on the client: it must
+// restrict prompt content to the advertised prompt capabilities, must verify the
+// agent's MCP capabilities before naming an http or sse server, and must only
+// send additionalDirectories to an agent that advertised them.
+//
+// These are a different kind of capability from the ones [PeerInfo.permits]
+// enforces, and the difference decides who checks. A method capability is
+// authority — whether an agent may read a file or run a command — so it is
+// enforced in both directions and a peer that ignores it is refused at the door.
+// A parameter capability is comprehension: an agent that did not advertise images
+// is saying it cannot read one, not that it forbids being sent one. So it is
+// checked where the specification puts the obligation, on the way out, and an
+// agent built on this package does not refuse work it can actually do.
+//
+// The refusal is invalid-params rather than method-not-found: the method is
+// available, and it is what a caller put inside it that the agent never said it
+// could take.
+func (p PeerInfo) permitsPromptContent(blocks []ContentBlock) error {
+	prompt := p.AgentCapabilities.PromptCapabilities
+	for _, block := range blocks {
+		kind, advertised, capability := "", true, ""
+		switch block.(type) {
+		case *ImageContent:
+			kind, advertised, capability =
+				"image", prompt.Image, "agentCapabilities.promptCapabilities.image"
+		case *AudioContent:
+			kind, advertised, capability =
+				"audio", prompt.Audio, "agentCapabilities.promptCapabilities.audio"
+		case *EmbeddedResource:
+			kind, advertised, capability =
+				"resource", prompt.EmbeddedContext, "agentCapabilities.promptCapabilities.embeddedContext"
+		}
+		if !advertised {
+			return newError(ErrorCodeInvalidParams,
+				"a %q content block was not advertised because %s is not set", kind, capability)
+		}
+	}
+	return nil
+}
+
+// permitsSessionSetup checks the two gated parameters that session/new,
+// session/load and session/resume all carry.
+func (p PeerInfo) permitsSessionSetup(servers []McpServer, directories []string) error {
+	mcp := p.AgentCapabilities.McpCapabilities
+	for _, server := range servers {
+		transport, advertised, capability := "", true, ""
+		switch server.(type) {
+		case *McpServerHTTP:
+			transport, advertised, capability =
+				"http", mcp.HTTP, "agentCapabilities.mcpCapabilities.http"
+		case *McpServerSse:
+			transport, advertised, capability =
+				"sse", mcp.Sse, "agentCapabilities.mcpCapabilities.sse"
+		}
+		if !advertised {
+			return newError(ErrorCodeInvalidParams,
+				"a %q MCP server was not advertised because %s is not set", transport, capability)
+		}
+	}
+	if len(directories) > 0 &&
+		!hasCapability(p.AgentCapabilities.SessionCapabilities.AdditionalDirectories) {
+		return newError(ErrorCodeInvalidParams,
+			"additionalDirectories was not advertised because "+
+				"agentCapabilities.sessionCapabilities.additionalDirectories is not set")
+	}
+	return nil
+}

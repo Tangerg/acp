@@ -135,8 +135,9 @@ Four protocol rules affect every integration:
   notifications retain arrival order, and later responses wait behind them.
   Start independent work instead of waiting inside the handler
 - **Capabilities grant authority**: the connection rejects outbound and inbound
-  calls that were not advertised. Construction also rejects capabilities that
-  lack matching handlers
+  calls that were not advertised, and refuses to send prompt content, MCP
+  transports, or `additionalDirectories` the agent never advertised.
+  Construction also rejects capabilities that lack matching handlers
 
 Session and terminal handles are bound to their connection. Persist protocol
 identifiers when you need to reopen a resource on another connection; do not

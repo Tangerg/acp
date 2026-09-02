@@ -56,7 +56,10 @@ This is the first release. It implements both peers of Agent Client Protocol
 - **Capability enforcement**: optional handlers derive advertisements. Explicit
   capability structs replace the derived advertisement and fail construction
   when they claim an unsupported method. Both inbound and outbound calls enforce
-  the negotiated capability.
+  the negotiated capability. Three capabilities gate parameters rather than
+  methods, and the client checks them before sending: prompt content against
+  `promptCapabilities`, `http` and `sse` MCP servers against `mcpCapabilities`,
+  and `additionalDirectories` against `sessionCapabilities`.
 - **Handshake ordering**: `Client.Connect` returns only after a validated
   handshake. `Agent.Connect` starts reading before `initialize`, but its outbound
   calls wait until the response is written. Invalid initialize parameters do not

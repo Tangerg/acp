@@ -270,6 +270,23 @@ schema's own words beside each row, and is checked against the generated method
 list in both directions, so a method added by a schema update cannot quietly
 arrive ungated.
 
+Three capabilities gate a request's parameters rather than the request itself,
+and the specification puts all three obligations on the client: prompt content is
+restricted to the advertised `promptCapabilities`, an `http` or `sse` MCP server
+requires the matching `mcpCapabilities`, and `additionalDirectories` may be sent
+only to an agent that advertised it. These are checked on the way out too, and
+the refusal is invalid-params rather than method-not-found: the method is
+available, and it is what the caller put inside it that the agent never said it
+could take.
+
+They are deliberately not enforced inbound, and the difference is what a
+capability means in each case. A method capability is authority — whether an
+agent may read a file or run a command — so it is enforced at both ends and a
+peer that ignores it is refused at the door. A parameter capability is
+comprehension: an agent that did not advertise images is saying it cannot read
+one, not that it forbids being sent one. Refusing it inbound would make an agent
+built on this package reject work it could actually do.
+
 ### Handshake ownership and ordering
 
 `Client.Connect` returns a connection that is already initialized: the transport

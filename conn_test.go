@@ -193,6 +193,90 @@ func TestAnUnadvertisedMethodIsRefused(t *testing.T) {
 	}
 }
 
+// The protocol gates three request parameters as well as the methods carrying
+// them, and puts all three obligations on the client: it must restrict prompt
+// content to what the agent advertised, verify the agent's MCP capabilities
+// before naming an http or sse server, and only send additionalDirectories to an
+// agent that advertised them. So the refusal happens before anything is sent.
+func TestParametersTheAgentNeverAdvertisedAreRefused(t *testing.T) {
+	reached := false
+	agent := testAgent(t, func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
+		reached = true
+		return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+	})
+	session := connectAndOpen(t, testClient(t), agent)
+	ctx := context.Background()
+
+	_, err := session.Prompt(ctx, &acp.PromptParams{
+		Prompt: []acp.ContentBlock{
+			&acp.TextContent{Text: "look at this"},
+			&acp.ImageContent{Data: "iVBORw0KGgo=", MimeType: "image/png"},
+		},
+	})
+	if err == nil {
+		t.Fatal("an image reached an agent that never advertised promptCapabilities.image")
+	}
+	if !strings.Contains(err.Error(), "agentCapabilities.promptCapabilities.image") {
+		t.Errorf("the refusal does not name the missing capability: %v", err)
+	}
+	if reached {
+		t.Error("the prompt was sent before it was refused")
+	}
+
+	conn := session.Conn()
+	_, _, err = conn.NewSession(ctx, &acp.NewSessionRequest{
+		Cwd:        "/w",
+		McpServers: []acp.McpServer{&acp.McpServerHTTP{Name: "docs", URL: "https://example.com"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "agentCapabilities.mcpCapabilities.http") {
+		t.Errorf("an http MCP server was not refused by name: %v", err)
+	}
+
+	_, _, err = conn.NewSession(ctx, &acp.NewSessionRequest{
+		Cwd:                   "/w",
+		AdditionalDirectories: []string{"/other"},
+	})
+	if err == nil ||
+		!strings.Contains(err.Error(), "agentCapabilities.sessionCapabilities.additionalDirectories") {
+		t.Errorf("additionalDirectories was not refused by name: %v", err)
+	}
+}
+
+// The same content, to an agent that said it could read it. A gate that refused
+// both ways would be a gate on the content rather than on the advertisement.
+func TestPromptContentTheAgentAdvertisedIsSent(t *testing.T) {
+	var blocks int
+	agent, err := acp.NewAgent(&acp.AgentConfig{
+		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
+		},
+		Prompt: func(_ context.Context, _ *acp.AgentSession, request *acp.PromptRequest) (*acp.PromptResponse, error) {
+			blocks = len(request.Prompt)
+			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+		},
+		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
+		Capabilities: &acp.AgentCapabilities{
+			PromptCapabilities: acp.PromptCapabilities{Image: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+
+	session := connectAndOpen(t, testClient(t), agent)
+	if _, err := session.Prompt(context.Background(), &acp.PromptParams{
+		Prompt: []acp.ContentBlock{
+			&acp.TextContent{Text: "look at this"},
+			&acp.ImageContent{Data: "iVBORw0KGgo=", MimeType: "image/png"},
+		},
+	}); err != nil {
+		t.Fatalf("Prompt with advertised image content: %v", err)
+	}
+	if blocks != 2 {
+		t.Errorf("the agent received %d content blocks, want 2", blocks)
+	}
+}
+
 // The extension boundary: an underscore-prefixed name outside the specification
 // reaches the fallback; standard and protocol-reserved names never do.
 func TestExtensionMethodsAndTheReservedSet(t *testing.T) {

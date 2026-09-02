@@ -60,6 +60,11 @@ func (s *ClientSession) Conn() *ClientConn { return s.conn }
 // which is the operation that ends a turn.
 func (s *ClientSession) Prompt(ctx context.Context, params *PromptParams) (*PromptResponse, error) {
 	conn := s.conn
+	if params != nil {
+		if err := conn.Peer().permitsPromptContent(params.Prompt); err != nil {
+			return nil, err
+		}
+	}
 	generation, claimed := conn.turns.begin(s.id)
 	if !claimed {
 		return nil, ErrPromptInProgress
@@ -246,6 +251,9 @@ func (c *ClientConn) NewSession(
 	if params == nil {
 		params = &NewSessionRequest{}
 	}
+	if err := c.Peer().permitsSessionSetup(params.McpServers, params.AdditionalDirectories); err != nil {
+		return nil, nil, err
+	}
 	response := new(NewSessionResponse)
 	if err := c.call(ctx, methodSessionNew, params, response); err != nil {
 		return nil, nil, err
@@ -275,6 +283,9 @@ func (c *ClientConn) LoadSession(
 	if err := c.Peer().permits(methodSessionLoad); err != nil {
 		return nil, nil, err
 	}
+	if err := c.Peer().permitsSessionSetup(params.McpServers, params.AdditionalDirectories); err != nil {
+		return nil, nil, err
+	}
 	response := new(LoadSessionResponse)
 	if err := c.call(ctx, methodSessionLoad, params, response); err != nil {
 		return nil, nil, err
@@ -297,6 +308,9 @@ func (c *ClientConn) ResumeSession(
 		return nil, nil, paramsRequired("ResumeSession", "SessionID")
 	}
 	if err := c.Peer().permits(methodSessionResume); err != nil {
+		return nil, nil, err
+	}
+	if err := c.Peer().permitsSessionSetup(params.McpServers, params.AdditionalDirectories); err != nil {
 		return nil, nil, err
 	}
 	response := new(ResumeSessionResponse)
