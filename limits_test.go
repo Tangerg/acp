@@ -82,10 +82,10 @@ func TestTooManyInflightRequestsIsRefused(t *testing.T) {
 	}
 }
 
-// A peer that names a fresh session every time ends the connection, because a
-// session handle cannot be reclaimed: an application may still hold one, and a
-// second handle for one identifier would break the one-prompt-at-a-time rule for
-// both.
+// A peer that keeps naming fresh sessions without closing them ends the
+// connection. Serving session/close is what reclaims an agent's cached entry;
+// merely holding a handle on the application's side is not what makes the
+// population grow.
 func TestTooManySessionsEndsTheConnection(t *testing.T) {
 	// A real transport, because this bound ends the connection and ending one
 	// closes what it was reading.

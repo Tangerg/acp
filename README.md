@@ -9,238 +9,228 @@
 [![Go 1.25+](https://img.shields.io/badge/go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
 [![Apache 2.0](https://img.shields.io/badge/licence-Apache--2.0-blue)](./LICENSE)
 
-A Go implementation of the [Agent Client Protocol](https://agentclientprotocol.com).
+`acp` is a Go implementation of the [Agent Client
+Protocol](https://agentclientprotocol.com). It includes both peers:
 
-The protocol standardises the conversation between a **client** — a code editor, or
-any other program that holds a workspace and a user — and an **agent**, a program
-that uses a model to read and modify that workspace. An editor that speaks it can
-drive any agent; an agent that speaks it can be driven by any editor. Neither has to
-know the other exists.
+- A **client**, such as a code editor, owns the workspace and represents the user
+- An **agent** uses a model and calls the client to read files, run commands, or
+  request permission
 
-Both halves live in this module. They are one message grammar read from opposite
-ends: an agent answering a prompt is simultaneously a caller, asking the client to
-read files, run commands, and put a permission dialog in front of its user.
+Both peers share one message grammar. An agent serves prompts while making calls
+back to the client, so each connection sends and receives requests.
+
+Install the module with:
 
 ```sh
 go get github.com/Tangerg/acp
 ```
 
-Requires Go 1.25.
+The module requires Go 1.25 or newer.
 
-## A turn, from the client
+## Start a client
+
+Build a client from the handlers that an agent may call. Setting an optional
+handler advertises its capability:
 
 ```go
 client, err := acp.NewClient(&acp.ClientConfig{
-	Info: &acp.Implementation{Name: "an editor", Version: "1.0.0"},
-	SessionUpdate: func(ctx context.Context, notification *acp.SessionNotification) {
-		// The agent's running commentary: message chunks, tool calls, plans.
-	},
-	RequestPermission: func(ctx context.Context, request *acp.RequestPermissionRequest) (*acp.RequestPermissionResponse, error) {
-		// Ask the user. There is no outcome this package may assume for you.
-		return &acp.RequestPermissionResponse{
-			Outcome: &acp.SelectedPermissionOutcome{OptionID: request.Options[0].OptionID},
-		}, nil
-	},
-	// Setting a handler is what advertises its capability, and an agent may not
-	// call what this client did not advertise.
-	ReadTextFile: readFile,
+	Info:              &acp.Implementation{Name: "an editor", Version: "1.0.0"},
+	SessionUpdate:     renderUpdate,
+	RequestPermission: askPermission,
+	ReadTextFile:      readTextFile,
 })
 if err != nil {
 	return err
 }
+```
 
-conn, err := client.Connect(ctx, acp.NewCommandTransport(&acp.CommandConfig{
-	Command: exec.CommandContext(ctx, "some-agent"),
-}))
+Connect to an agent subprocess. `CommandTransport` owns the process and its pipes,
+so use `exec.Command` rather than attaching the process to the handshake context:
+
+```go
+transport := acp.NewCommandTransport(&acp.CommandConfig{
+	Command: exec.Command("some-agent"),
+})
+conn, err := client.Connect(ctx, transport)
 if err != nil {
 	return err
 }
 defer conn.Close()
-
-session, _, err := conn.NewSession(ctx, &acp.NewSessionRequest{Cwd: "/work"})
-if errors.Is(err, acp.ErrAuthRequired) {
-	// Expected. Authenticate, then retry.
-}
-
-answer, err := session.Prompt(ctx, &acp.PromptParams{
-	Prompt: []acp.ContentBlock{&acp.TextContent{Text: "add a test for the parser"}},
-})
 ```
 
-## A turn, from the agent
-
-The same shape read from the other end. The handlers are the operations a client
-calls, and the session handle is how an agent calls back while it answers:
+Create a session and run one turn:
 
 ```go
-agent, err := acp.NewAgent(&acp.AgentConfig{
-	Info: &acp.Implementation{Name: "an agent", Version: "1.0.0"},
-	NewSession: func(ctx context.Context, request *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
-		return &acp.NewSessionResponse{SessionID: mint(request.Cwd)}, nil
-	},
-	Prompt: func(ctx context.Context, session *acp.AgentSession, request *acp.PromptRequest) (*acp.PromptResponse, error) {
-		session.Update(ctx, ...)            // stream what you are doing
-		session.RequestPermission(ctx, ...) // before you touch the workspace
-		session.WriteTextFile(ctx, ...)     // the client owns the files
-		return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
-	},
-	Cancel: func(ctx context.Context, session *acp.AgentSession, notification *acp.CancelNotification) {
-		// Stop your own work. The turn's context is already cancelled.
-	},
+session, _, err := conn.NewSession(ctx, &acp.NewSessionRequest{
+	Cwd:        "/work",
+	McpServers: []acp.McpServer{},
 })
 if err != nil {
 	return err
 }
 
-// A client spawns the agent and owns both of its pipes, so stdout is the
-// protocol stream and diagnostics belong on stderr.
+answer, err := session.Prompt(ctx, &acp.PromptParams{
+	Prompt: []acp.ContentBlock{
+		&acp.TextContent{Text: "add a test for the parser"},
+	},
+})
+```
+
+If `NewSession` returns `acp.ErrAuthRequired`, choose one of the authentication
+methods from `conn.Peer().AuthMethods`, authenticate, and retry.
+
+## Start an agent
+
+Build an agent from the operations a client may call:
+
+```go
+agent, err := acp.NewAgent(&acp.AgentConfig{
+	Info:       &acp.Implementation{Name: "an agent", Version: "1.0.0"},
+	NewSession: newSession,
+	Prompt:     prompt,
+	Cancel:     cancelTurn,
+})
+if err != nil {
+	return err
+}
+
 return agent.Run(ctx, acp.NewStdioTransport())
 ```
 
-## Run one
+The `Prompt` handler receives an `*acp.AgentSession`. Use that handle to stream
+`session/update`, request permission, access files, and run terminal commands.
+Keep diagnostics on stderr because stdout carries the protocol stream.
 
-[examples/](./examples) has both of those as programs that spawn one another:
+## Run the examples
+
+The programs in [`examples/`](./examples) communicate through a real subprocess
+pipe:
 
 ```sh
-mkdir /tmp/workspace
-go run ./examples/client -prompt "remember the release is on Friday" -cwd /tmp/workspace
+mkdir -p /tmp/workspace
+go run ./examples/client \
+  -prompt "remember the release is on Friday" \
+  -cwd /tmp/workspace
 ```
 
-The agent asks before it writes; answer `1`, and the note is in
-`/tmp/workspace/NOTES.md`. Interrupt it mid-turn and the client sends
-`session/cancel` rather than exiting, which is the distinction the protocol
-insists on.
+The agent requests permission before writing `/tmp/workspace/NOTES.md`. Enter `1`
+to approve it. Interrupt the client during the turn to send `session/cancel`
+without terminating the process.
 
-Smaller runnable examples — a turn, a cancellation, authentication, terminals,
-extension methods, `Opt`, `Meta` — are in the [package
-documentation](https://pkg.go.dev/github.com/Tangerg/acp#pkg-examples).
+Focused examples for cancellation, authentication, terminals, extensions, `Opt`,
+and `Meta` are part of the [package
+documentation](https://pkg.go.dev/github.com/Tangerg/acp#pkg-examples). Every
+package example runs under `go test`.
 
-## What a caller has to know
+## Behavioural contracts
 
-Three rules come from the protocol rather than from this implementation, and no
-API can hide them:
+Four protocol rules affect every integration:
 
-- **One prompt at a time per session.** `session/cancel` names a session and not a
-  turn, so a session with two turns could not say which one a cancellation meant.
-  A second overlapping prompt returns `acp.ErrPromptInProgress`.
-- **Cancelling a prompt's context is not cancelling the turn.** The first stops
-  this caller waiting; `ClientSession.Cancel` ends the turn and obliges the agent
-  to answer the outstanding prompt with the cancelled stop reason. The connection
-  guarantees that answer even when the agent's handler returns an abort error.
-- **A notification handler must not make a call on the same connection and wait
-  for it.** Notifications are delivered in arrival order, and a response is
-  delivered only after every notification that preceded it, so a handler that
-  waited for its own response would wait for itself. Spawn the work instead; a
-  session handle stays valid beyond the handler call for exactly that.
+- **One prompt per session**: `session/cancel` identifies a session, not a turn. A
+  second overlapping prompt returns `acp.ErrPromptInProgress`
+- **Prompt context cancellation is not turn cancellation**: cancelling the
+  context stops the local caller waiting. Call `ClientSession.Cancel` to end the
+  turn and require a cancelled stop reason
+- **Notification handlers cannot synchronously call the same connection**:
+  notifications retain arrival order, and later responses wait behind them.
+  Start independent work instead of waiting inside the handler
+- **Capabilities grant authority**: the connection rejects outbound and inbound
+  calls that were not advertised. Construction also rejects capabilities that
+  lack matching handlers
 
-Capabilities are the fourth thing worth knowing, and they are an authority
-boundary rather than a feature list: they decide whether an agent may read a file
-or run a command. Both directions are enforced here — a call the peer never
-advertised is refused before it is sent, and one that arrives for a method this
-side never advertised is refused before it reaches a handler. A configuration that
-advertises what its handlers cannot serve fails at construction.
+Session and terminal handles are bound to their connection. Persist protocol
+identifiers when you need to reopen a resource on another connection; do not
+retain a handle past connection shutdown.
 
-## Transports
+## Choose a transport
 
-Messages are JSON-RPC 2.0 over a byte stream. Ordinarily that stream is an agent
-subprocess's stdin and stdout, but nothing here requires it:
+Byte-stream transports frame newline-delimited JSON-RPC 2.0. The in-memory
+transport carries messages directly so connection tests do not test the codec
+twice.
 
-| | |
+| Transport | Use |
 | --- | --- |
-| `acp.NewCommandTransport` | spawn an agent and own its pipes, with a bounded shutdown |
-| `acp.NewStdioTransport` | an agent's own stdin and stdout |
-| `acp.NewInMemoryTransports` | two peers in one process, which is what this package's tests run over |
-| `acp.NewIOTransport` | any closeable pair of streams |
-| `acp.Transport` | anything else; the concurrency and shutdown contract it is promising is on the interface |
+| `acp.NewCommandTransport` | Start an agent subprocess and own its pipes with bounded shutdown |
+| `acp.NewStdioTransport` | Serve ACP from an agent's stdin and stdout |
+| `acp.NewIOTransport` | Use any closeable reader and writer |
+| `acp.NewInMemoryTransports` | Connect two peers in one process |
+| `acp.Transport` | Implement another message transport under the documented concurrency contract |
 
-## What is served, and what is not
+## Protocol coverage
 
-Every method the schema defines is classified, and the two that are not served yet
-are refused rather than silently absent: a peer calling one is answered
-`method not found`, and an agent that tried to advertise one is refused at
-construction.
+The SDK serves 23 of the 25 methods in the pinned schema:
 
-Served: `initialize`, `authenticate`, `logout`, `session/new`, `session/load`,
-`session/resume`, `session/list`, `session/delete`, `session/close`,
-`session/prompt`, `session/cancel`, `session/set_mode`,
-`session/set_config_option`, `session/update`, `session/request_permission`,
-`fs/read_text_file`, `fs/write_text_file`, the five `terminal/*` methods, and
-`$/cancel_request`.
+- **Connection and authentication**: `initialize`, `authenticate`, `logout`, and
+  `$/cancel_request`
+- **Sessions and turns**: `session/new`, `session/load`, `session/resume`,
+  `session/list`, `session/delete`, `session/close`, `session/prompt`,
+  `session/cancel`, `session/set_mode`, `session/set_config_option`,
+  `session/update`, and `session/request_permission`
+- **Workspace**: `fs/read_text_file`, `fs/write_text_file`, and all five
+  `terminal/*` methods
 
-Not served: `elicitation/create` and `elicitation/complete`. They are one feature
-rather than two methods — a request carries a mode and a scope as two flattened
-unions, URL mode answers asynchronously under an identifier of its own, and form
-mode hands the client a JSON Schema to render — so they are a layer of their own
-rather than an addition to this one.
+`elicitation/create` and `elicitation/complete` are not implemented. The SDK
+answers either call with method-not-found and rejects an advertisement that
+claims elicitation support. Elicitation needs its own state machine because URL
+mode completes asynchronously and form mode carries a JSON Schema for the client
+to render.
 
-## Status
+## Project status
 
-Early. The module is pre-1.0 and the API is expected to change; the protocol
-version it targets is not.
+The module is pre-1.0, so its Go API may change. Its protocol target is fixed:
 
-| | |
+| Property | Value |
 | --- | --- |
 | Protocol version | 1 |
 | Schema release | `schema-v1.21.0` |
-| Module version | unreleased |
-| Go floor | 1.25 |
+| Module version | Unreleased |
+| Minimum Go version | 1.25 |
 
-The wire grammar is not this repository's to design. Where this implementation and
-the [published schema](https://github.com/agentclientprotocol/agent-client-protocol)
-disagree, the schema is right and this is a bug — and the fix belongs upstream
-rather than in a local dialect.
+The [published
+schema](https://github.com/agentclientprotocol/agent-client-protocol) defines the
+wire grammar. If this implementation disagrees with that schema, the
+implementation is wrong. Proposed grammar changes belong upstream rather than in
+a local dialect.
 
-The protocol's type definitions are read from `schema/schema.json`, vendored from
-a published release, and the public closure is generated and committed as
-`schema.gen.go`: 142 of the schema's 170 definitions. A schema change is therefore
-a reviewable source diff rather than a build-time download, and `go get` needs no
-generator.
+The repository vendors `schema/schema.json` from the published release. The
+generator commits 142 of its 170 definitions to `schema.gen.go`, so schema updates
+produce reviewable source diffs and `go get` needs no generator.
 
-## How this is known to work
+## Verification
 
-- **A turn works end to end, in both directions** — over an in-memory pipe, over
-  newline-delimited JSON, and against an agent built on the reference SDK running
-  as a subprocess: a session, a prompt whose agent streams updates and asks
-  permission in the middle, the filesystem and terminal operations, and both
-  cancellations.
-- **Four recorded interoperability transcripts.** Two Go endpoints talking to each
-  other share any wire bug they have, so these are the other implementation's
-  bytes: a turn, a cancelled turn whose final updates still arrive, authentication,
-  and every capability-gated workspace method. `scripts/interop.sh` records them
-  against the pinned reference SDK; `go test` replays them with no network and no
-  Node.
-- **A real editor, driving.** Zed 1.17.2 spawned an agent built on this module and
-  a person drove it: a prompt, the permission dialog, a command through the
-  editor's terminal, and the stop button. Those bytes are replayed by `go test`:
-  every property the editor sent survives this package's types unchanged, and the
-  turn the user stopped ends with the cancelled stop reason rather than a failed
-  call.
-- **125 cross-SDK fixtures**, whose expected outcomes come from the TypeScript
-  SDK's own deserialisation machinery, regenerated from the pinned schema.
-- **Two fuzz targets** asserting that normalisation is a fixed point, which is the
-  property schema-directed recovery can quietly break.
-- **Cancellation and shutdown tested with `testing/synctest`** rather than with
-  sleeps, under `-race`, on Linux, macOS and Windows.
-- **Every example in the package documentation runs under `go test`**, so one that
-  goes stale fails the build rather than misleading a reader.
+The repository checks the implementation through independent and adversarial
+evidence:
+
+- **Cross-SDK fixtures**: 125 cases use validators generated by the TypeScript SDK
+  from the pinned schema
+- **Subprocess interoperability**: four recorded transcripts run this client
+  against an agent built with the reference TypeScript SDK
+- **Editor interoperability**: a recorded Zed 1.17.2 session covers a prompt, a
+  command run through the editor's terminal, and the stop button
+- **Concurrency**: cancellation and shutdown tests use `testing/synctest` and run
+  under the race detector on Linux, macOS, and Windows
+- **Wire stability**: two fuzz targets require normalisation to reach a fixed point
+- **Examples**: every package example compiles and runs under `go test`
 
 ## Documentation
 
-The reference is [pkg.go.dev](https://pkg.go.dev/github.com/Tangerg/acp), and the
-reason for a decision is in the doc comment on the thing it decided. A separate
-design document was kept while the design was being argued about; it drifted from
-the code the moment the code started answering the same questions better.
-
-- [AGENTS.md](./AGENTS.md) — the rules this repository is built under
-- [CONTRIBUTING.md](./CONTRIBUTING.md) — toolchain, the gate, and how to release
-- [schema/README.md](./schema/README.md) — the vendored schema, and what generation covers
-- [CHANGELOG.md](./CHANGELOG.md) — caller-visible changes
-- [SECURITY.md](./SECURITY.md) — reporting a vulnerability privately
+- [Package reference](https://pkg.go.dev/github.com/Tangerg/acp): exported API
+  contracts and runnable examples
+- [Design decisions](./design/design.md): ownership, state machines, wire fidelity,
+  and rejected alternatives
+- [Contributing](./CONTRIBUTING.md): toolchain, checks, interoperability evidence,
+  and releases
+- [Vendored schema](./schema/README.md): provenance, generation scope, and pin
+  updates
+- [Changelog](./CHANGELOG.md): caller-visible changes
+- [Security](./SECURITY.md): private vulnerability reporting
+- [Repository rules](./AGENTS.md): architectural constraints for every change
 
 ## Licence
 
-Apache-2.0. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
+The module is available under Apache-2.0. See [LICENSE](./LICENSE) and
+[NOTICE](./NOTICE).
 
-The banner is the protocol's own, served from
-[agentclientprotocol.com](https://agentclientprotocol.com/). This module is an
-independent implementation, not affiliated with the protocol's authors.
+The banner comes from
+[agentclientprotocol.com](https://agentclientprotocol.com/). This independent
+implementation is not affiliated with the protocol's authors.

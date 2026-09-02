@@ -11,15 +11,8 @@ import (
 // NewInMemoryTransports returns two transports connected to each other: a message
 // written to one is read from the other.
 //
-// This is what the rest of this package is tested over. A protocol that only
-// works when one end is a subprocess is one whose tests need a subprocess, and
-// then the tests are slow, platform-dependent, and hard to make deterministic —
-// so the connection machinery is written against a transport it can be driven
-// through directly, and `os` stays out of everything but the transports that need
-// it.
-//
-// It is not a toy. Two peers in one process is a real deployment: an editor that
-// embeds an agent, or a test harness that drives both ends of a turn.
+// Messages pass directly without JSON encoding or framing. Use these transports
+// for embedded peers and deterministic connection tests.
 func NewInMemoryTransports() (client, agent Transport) {
 	toAgent := newMessagePipe()
 	toClient := newMessagePipe()
@@ -66,11 +59,8 @@ func (c *inMemoryConnection) Close() error {
 	return nil
 }
 
-// A messagePipe carries messages one way.
-//
-// Messages rather than bytes, deliberately: an in-memory transport that encoded
-// and re-decoded would be testing the codec a second time and hiding a framing
-// bug rather than exposing one. Framing is the byte-stream transports' business.
+// messagePipe carries messages directly so connection tests remain independent
+// of byte framing and JSON encoding.
 type messagePipe struct {
 	messages chan jsonrpc.Message
 	closed   chan struct{}

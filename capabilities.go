@@ -269,11 +269,11 @@ func (t gateTable) exceeded(peer PeerInfo, owner methodSide, implemented func(st
 func (p PeerInfo) permits(method string) error {
 	gate, known := gates[method]
 	if !known || gate.gating == gatingUnimplemented {
-		return newError(ErrorCodeMethodNotFound, "%s is not implemented here", method)
+		return methodNotImplemented(method)
 	}
 	if gate.gating == gatingBaseline || gate.advertised(p) {
 		return nil
 	}
 	return newError(ErrorCodeMethodNotFound,
-		"%s was not advertised: %s is not set", method, gate.capability)
+		"method %q was not advertised because %s is not set", method, gate.capability)
 }

@@ -249,7 +249,7 @@ func (c *ClientConn) requestPermission(ctx context.Context, request *jsonrpc.Req
 		return nil, err
 	}
 	if response == nil {
-		return nil, newError(ErrorCodeInternalError, "the RequestPermission handler returned nothing")
+		return nil, nilHandlerResponse(request.Method)
 	}
 	return response, nil
 }
@@ -434,7 +434,7 @@ func (c *AgentConn) prompt(ctx context.Context, request *jsonrpc.Request) (any, 
 		return nil, err
 	}
 	if response == nil {
-		return nil, newError(ErrorCodeInternalError, "the Prompt handler returned nothing")
+		return nil, nilHandlerResponse(request.Method)
 	}
 	return response, nil
 }

@@ -21,7 +21,7 @@ func (s *AgentSession) ReadTextFile(
 	params *ReadTextFileParams,
 ) (*ReadTextFileResponse, error) {
 	if params == nil {
-		return nil, errors.New("acp: ReadTextFile needs params: the path is in them")
+		return nil, paramsRequired("ReadTextFile", "Path")
 	}
 	request := &ReadTextFileRequest{
 		SessionID: s.id,
@@ -42,7 +42,7 @@ func (s *AgentSession) WriteTextFile(
 	params *WriteTextFileParams,
 ) (*WriteTextFileResponse, error) {
 	if params == nil {
-		return nil, errors.New("acp: WriteTextFile needs params: the path and the content are in them")
+		return nil, paramsRequired("WriteTextFile", "Path and Content")
 	}
 	request := &WriteTextFileRequest{
 		SessionID: s.id,
@@ -67,7 +67,7 @@ func (s *AgentSession) CreateTerminal(
 	params *CreateTerminalParams,
 ) (*TerminalHandle, *CreateTerminalResponse, error) {
 	if params == nil {
-		return nil, nil, errors.New("acp: CreateTerminal needs params: the command is in them")
+		return nil, nil, paramsRequired("CreateTerminal", "Command")
 	}
 	request := &CreateTerminalRequest{
 		SessionID:       s.id,
@@ -117,10 +117,12 @@ type TerminalHandle struct {
 // Release gets this too. A response error still leaves the handle released,
 // because the client may have acted before producing it — retrying could release
 // a terminal the client has since given the same identifier to.
-var ErrTerminalReleased = errors.New("acp: this terminal has been released")
+var ErrTerminalReleased = errors.New("acp: terminal handle is released")
 
+// ID returns the terminal identifier assigned by the client.
 func (t *TerminalHandle) ID() TerminalID { return t.id }
 
+// Session returns the session that owns this terminal handle.
 func (t *TerminalHandle) Session() *AgentSession { return t.session }
 
 // Output reports what the command has written so far, whether that output was

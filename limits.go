@@ -11,7 +11,7 @@ import "errors"
 // requests and never lets them finish, and one that names a new session every
 // time.
 //
-// These are not memory proofs. A count bound multiplied by [maxMessageBytes] is
+// These are not memory proofs. A count bound multiplied by maxMessageBytes is
 // still a large number, and claiming otherwise would be claiming more than the
 // arithmetic gives. What they remove is the two realistic ways a well-formed peer
 // exhausts this process — a backlog that never drains and a population that never
@@ -38,20 +38,18 @@ const (
 	// on work a peer can start and never finish.
 	maxInflightRequests = 1024
 
-	// maxSessionsPerConnection bounds the session handles one connection mints.
+	// maxSessionsPerConnection bounds the session handles one connection caches.
 	//
-	// They cannot be reclaimed: a handle keeps the one-prompt-at-a-time rule, and
-	// two handles for one identifier would each believe they were the only turn.
-	// An application may also still be holding one. So the population only grows,
-	// and a peer naming a fresh session on every prompt would grow it for ever.
+	// A ClientConn reclaims an entry when Close or DeleteSession succeeds. An
+	// AgentConn reclaims one only when it serves session/close, because its
+	// session/delete handler takes no handle and never names the cache. So a peer
+	// that opens a session per prompt and closes none grows this population until
+	// it ends the connection.
 	maxSessionsPerConnection = 1024
 )
 
 var (
-	errTooManyQueued = errors.New(
-		"acp: the peer is sending faster than this side can deliver")
-	errTooManyInflight = errors.New(
-		"acp: the peer has more requests in flight than this connection will serve")
-	errTooManySessions = errors.New(
-		"acp: the peer has named more sessions than this connection will hold")
+	errTooManyQueued   = errors.New("acp: inbound delivery queue limit exceeded")
+	errTooManyInflight = errors.New("acp: inbound request limit exceeded")
+	errTooManySessions = errors.New("acp: session handle limit exceeded")
 )

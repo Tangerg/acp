@@ -1,45 +1,42 @@
-# Examples
+# Run the client and agent examples
 
-Two programs that speak the protocol to each other over a pipe between two
-processes, which is how it is spoken in production: the client spawns the agent
-and owns its stdin and stdout.
+These two programs speak the protocol over a subprocess pipe. The client starts
+the agent and owns its stdin and stdout.
 
-- [`agent`](./agent) — an agent binary. Streams a reply, asks permission before
-  touching the workspace, and appends what it was told to `NOTES.md`.
-- [`client`](./client) — an editor's side. Spawns the agent, renders the turn,
-  asks the user about every permission request, and serves file reads and writes
-  inside one directory and nowhere else.
+- **[`agent`](./agent)**: streams a reply, requests permission, and appends the
+  prompt to `NOTES.md`
+- **[`client`](./client)**: starts the agent, renders the turn, asks the user for
+  permission, and restricts file access to one directory
 
 ```sh
 mkdir /tmp/workspace
 go run ./examples/client -prompt "remember the release is on Friday" -cwd /tmp/workspace
 ```
 
-The agent asks before it writes. Answer `1`, and `/tmp/workspace/NOTES.md` has the
-note in it.
+The agent asks before it writes. Enter `1` to approve the request and write
+`/tmp/workspace/NOTES.md`.
 
-Any other agent works in its place, which is the point of the protocol — neither
-side knows which implementation it is talking to:
+Replace the example agent with any other ACP agent. Neither peer depends on the
+other peer's implementation:
 
 ```sh
 go run ./examples/client -prompt "hello" -- some-other-agent --flag
 ```
 
-## Cancelling
+## Cancel a turn
 
-Interrupt the client while a turn is running — while it is waiting for an answer
-to a permission request, for instance — and it sends `session/cancel` rather than
-exiting.
+Interrupt the client while a turn is running. It sends `session/cancel` rather
+than exiting.
 
-That is the difference the protocol insists on: cancelling the prompt's context
-would only stop the client waiting, while cancelling the turn obliges the agent to
-stop and answer. The pending permission request is answered `cancelled`, the agent
-reports the `cancelled` stop reason, and nothing is written.
+Cancelling the prompt context only stops the client waiting. Cancelling the turn
+requires the agent to stop and answer. The client resolves pending permission
+requests as `cancelled`, the agent reports a `cancelled` stop reason, and no file
+is written.
 
-## Where the smaller examples are
+## Find focused examples
 
-The runnable examples in the package documentation cover one thing each — a turn,
-a cancellation, authentication, terminals, extension methods, `Opt`, `Meta` — with
-both halves in one process over an in-memory transport. See
-[pkg.go.dev/github.com/Tangerg/acp](https://pkg.go.dev/github.com/Tangerg/acp) or
-`example_test.go` in the repository root.
+The package documentation contains focused examples for a turn, cancellation,
+authentication, terminals, extension methods, `Opt`, and `Meta`. Each example
+runs both peers over an in-memory transport and executes under `go test`. See the
+[package examples](https://pkg.go.dev/github.com/Tangerg/acp#pkg-examples) or
+[`example_test.go`](../example_test.go).

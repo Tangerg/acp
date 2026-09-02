@@ -9,16 +9,16 @@ import (
 // null, and keeps the three states those two facts produce apart: absent, null,
 // and present with a value.
 //
-// The stable schema distinguishes an omitted property from one present as null in 222
-// places, so a pointer with omitempty cannot carry this part of the grammar — a
-// nil pointer would have to mean both. The zero Opt is the absent state, which
-// is what the encoder's omitzero tag option consults through [Opt.IsZero]: an
-// absent field emits nothing while an explicit null emits null.
+// The stable schema repeatedly distinguishes an omitted property from one present
+// as null, so a pointer with omitempty cannot carry this part of the grammar. A
+// nil pointer would have to mean both. The zero Opt is the absent state, which is
+// what the encoder's omitzero tag option consults through [Opt.IsZero]: an absent
+// field emits nothing while an explicit null emits null.
 //
-// Where the schema says the two are semantically equivalent — several capability
-// fields document that omitted and null both mean not advertised — the wire
-// representation still retains both states. Domain code decides whether they
-// mean the same thing; the codec does not erase a distinction the schema permits.
+// Where the schema says the two are semantically equivalent, such as capability
+// fields where both mean not advertised, the wire representation still retains
+// both states. Domain code decides whether they mean the same thing; the codec
+// does not erase a distinction the schema permits.
 //
 // An absent Opt asked for JSON anyway encodes as null, because there is nothing
 // else honest to answer: omitting it is the encoder's job, not this type's.
@@ -35,6 +35,7 @@ const (
 	optPresent
 )
 
+// OptValue returns an optional property present with v.
 func OptValue[T any](v T) Opt[T] {
 	return Opt[T]{state: optPresent, value: v}
 }
@@ -57,6 +58,7 @@ func (o Opt[T]) IsZero() bool {
 	return o.state == optAbsent
 }
 
+// IsNull reports whether the property is present as JSON null.
 func (o Opt[T]) IsNull() bool {
 	return o.state == optNull
 }

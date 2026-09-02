@@ -15,14 +15,13 @@ import (
 	"fmt"
 )
 
-// This file contains the go forms of the wire specification.
-// see http://www.jsonrpc.org/specification for details
+// This file contains the Go forms of the JSON-RPC wire specification.
 
 var (
-	// ErrParse is used when invalid JSON was received by the server.
-	ErrParse = NewError(-32700, "JSON RPC parse error")
-	// ErrInvalidRequest is used when the JSON sent is not a valid Request object.
-	ErrInvalidRequest = NewError(-32600, "JSON RPC invalid request")
+	// ErrParse reports invalid JSON.
+	ErrParse = NewError(-32700, "JSON-RPC parse error")
+	// ErrInvalidRequest reports an invalid request envelope.
+	ErrInvalidRequest = NewError(-32600, "JSON-RPC invalid request")
 )
 
 const wireVersion = "2.0"
@@ -50,30 +49,30 @@ type WireError struct {
 
 func (err *WireError) UnmarshalJSON(data []byte) error {
 	if err == nil {
-		return errors.New("decoding JSON-RPC error into nil target")
+		return errors.New("jsonrpc: decode error into nil target")
 	}
 	var members map[string]json.RawMessage
 	if decodeErr := json.Unmarshal(data, &members); decodeErr != nil {
-		return fmt.Errorf("decoding JSON-RPC error: %w", decodeErr)
+		return fmt.Errorf("jsonrpc: decode error: %w", decodeErr)
 	}
 	if members == nil {
-		return errors.New("decoding JSON-RPC error: expected an object")
+		return errors.New("jsonrpc: decode error: expected an object")
 	}
 
 	var decoded WireError
 	rawCode, hasCode := members["code"]
 	if !hasCode {
-		return errors.New("decoding JSON-RPC error: missing code")
+		return errors.New("jsonrpc: decode error: missing code")
 	}
 	if decodeErr := json.Unmarshal(rawCode, &decoded.Code); decodeErr != nil {
-		return fmt.Errorf("decoding JSON-RPC error code: %w", decodeErr)
+		return fmt.Errorf("jsonrpc: decode error code: %w", decodeErr)
 	}
 	rawMessage, hasMessage := members["message"]
 	if !hasMessage {
-		return errors.New("decoding JSON-RPC error: missing message")
+		return errors.New("jsonrpc: decode error: missing message")
 	}
 	if decodeErr := json.Unmarshal(rawMessage, &decoded.Message); decodeErr != nil {
-		return fmt.Errorf("decoding JSON-RPC error message: %w", decodeErr)
+		return fmt.Errorf("jsonrpc: decode error message: %w", decodeErr)
 	}
 	decoded.Data = members["data"]
 	*err = decoded

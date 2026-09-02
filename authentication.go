@@ -17,12 +17,12 @@ func newAuthenticationMethods(
 ) (authenticationMethods, error) {
 	owned, err := ownAuthenticationMethods(methods)
 	if err != nil {
-		return nil, fmt.Errorf("acp: invalid authentication methods: %w", err)
+		return nil, fmt.Errorf("acp: AgentConfig.AuthMethods: %w", err)
 	}
 	for _, method := range owned {
 		id, agentHandled, _ := authenticationMethod(method)
 		if agentHandled && !hasAgentHandler {
-			return nil, fmt.Errorf("acp: authentication method %q requires an Authenticate handler", id)
+			return nil, fmt.Errorf("acp: authentication method %q requires AgentConfig.Authenticate", id)
 		}
 	}
 	return owned, nil
@@ -81,7 +81,7 @@ func (m authenticationMethods) validateOffer(client ClientCapabilities) error {
 	}
 	for _, method := range m {
 		if _, terminal := method.(*AuthMethodTerminal); terminal {
-			return errors.New("acp: the agent advertised terminal authentication although the client did not enable it")
+			return errors.New("acp: agent advertised terminal authentication without client support")
 		}
 	}
 	return nil
@@ -97,11 +97,11 @@ func (m authenticationMethods) accepts(methodID AuthMethodID) error {
 			return nil
 		}
 		return newError(ErrorCodeInvalidParams,
-			"%s is a terminal authentication method, which is performed by running the agent "+
+			"authentication method %q is terminal-based and requires running the agent "+
 				"in a terminal rather than by calling authenticate", methodID)
 	}
 	return newError(ErrorCodeInvalidParams,
-		"%s is not one of the authentication methods advertised in the initialize response", methodID)
+		"%q is not one of the authentication methods advertised in the initialize response", methodID)
 }
 
 // Logout ends the authentication a client established, without ending the

@@ -4,24 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/Tangerg/acp/jsonrpc"
 )
 
-// The generic halves of dispatch, so that each method's row in a switch is one
-// line and the decode, the nil-handler refusal and the validation are stated once
-// rather than once per method.
-
-// A nil handler is method-not-found rather than a panic or a silent success: the
-// peer asked for something this side does not implement, which is what -32601
-// means.
+// These helpers keep decoding and handler failures identical across methods.
 func dispatchCall[Request, Response any](
 	ctx context.Context,
 	request *jsonrpc.Request,
 	handle func(context.Context, *Request) (*Response, error),
 ) (any, error) {
 	if handle == nil {
-		return nil, newError(ErrorCodeMethodNotFound, "%s is not implemented here", request.Method)
+		return nil, methodNotImplemented(request.Method)
 	}
 	params, err := decodeParams[Request](request)
 	if err != nil {
@@ -32,23 +27,18 @@ func dispatchCall[Request, Response any](
 		return nil, err
 	}
 	if response == nil {
-		// Every request in the schema has a response type, however few properties
-		// it has, and a handler that returns neither a response nor an error has
-		// not answered.
-		return nil, newError(ErrorCodeInternalError, "the handler for %s returned nothing", request.Method)
+		return nil, nilHandlerResponse(request.Method)
 	}
 	return response, nil
 }
 
-// A nil handler is method-not-found. A notification has no response, so nobody
-// receives that — the connection logs it, which is the only place it can go.
 func dispatchNotificationContext[Params any](
 	ctx context.Context,
 	request *jsonrpc.Request,
 	handle func(context.Context, *Params),
 ) error {
 	if handle == nil {
-		return newError(ErrorCodeMethodNotFound, "%s is not implemented here", request.Method)
+		return methodNotImplemented(request.Method)
 	}
 	params, err := decodeParams[Params](request)
 	if err != nil {
@@ -74,11 +64,11 @@ func dispatchExtension(
 			// standard notification.
 			return nil, nil //nolint:nilnil // an ignored notification has no result or error.
 		}
-		return nil, newError(ErrorCodeMethodNotFound, "%s is not an extension method", request.Method)
+		return nil, newError(ErrorCodeMethodNotFound, "method %q is not an extension method", request.Method)
 	}
 	if !request.IsCall() {
 		if notify == nil {
-			return nil, newError(ErrorCodeMethodNotFound, "%s is not implemented here", request.Method)
+			return nil, methodNotImplemented(request.Method)
 		}
 		notify(ctx, &ExtNotification{Method: request.Method, Params: request.Params})
 		// A notification has no result and no failure to report. The connection
@@ -87,7 +77,7 @@ func dispatchExtension(
 		return nil, nil //nolint:nilnil // a notification has neither a result nor an error.
 	}
 	if call == nil {
-		return nil, newError(ErrorCodeMethodNotFound, "%s is not implemented here", request.Method)
+		return nil, methodNotImplemented(request.Method)
 	}
 	result, err := call(ctx, &ExtRequest{Method: request.Method, Params: request.Params})
 	if err != nil {
@@ -110,12 +100,12 @@ func decodeParams[Params any](request *jsonrpc.Request) (*Params, error) {
 		// require some fails its own decode below when it is given an object with
 		// nothing in it, so this only reaches the zero value where that is legal.
 		if err := json.Unmarshal([]byte("{}"), params); err != nil {
-			return nil, newError(ErrorCodeInvalidParams, "%s requires params: %s", request.Method, err)
+			return nil, newError(ErrorCodeInvalidParams, "method %q requires params: %s", request.Method, err)
 		}
 		return params, nil
 	}
 	if err := json.Unmarshal(request.Params, params); err != nil {
-		return nil, newError(ErrorCodeInvalidParams, "the params of %s are invalid: %s", request.Method, err)
+		return nil, newError(ErrorCodeInvalidParams, "params for method %q are invalid: %s", request.Method, err)
 	}
 	return params, nil
 }
@@ -132,3 +122,15 @@ func decodeInto(params json.RawMessage, into any) error {
 }
 
 var errNoParams = errors.New("acp: the request carries no params")
+
+func paramsRequired(operation, fields string) error {
+	return fmt.Errorf("acp: %s requires non-nil params with %s", operation, fields)
+}
+
+func methodNotImplemented(method string) *Error {
+	return newError(ErrorCodeMethodNotFound, "method %q is not implemented", method)
+}
+
+func nilHandlerResponse(method string) *Error {
+	return newError(ErrorCodeInternalError, "handler for method %q returned a nil response", method)
+}

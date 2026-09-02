@@ -48,7 +48,7 @@ func (c *connection) Wait() error { return c.wait() }
 // The handle already minted is still honoured, so that whatever is mid-flight
 // fails on the connection ending rather than on a nil pointer.
 func (c *connection) tooManySessions() {
-	c.endReading(fmt.Errorf("%w: more than %d", errTooManySessions, maxSessionsPerConnection))
+	c.endReading(fmt.Errorf("%w (limit %d)", errTooManySessions, maxSessionsPerConnection))
 }
 
 // handshake owns the transition from an unopened connection to an accepted and
@@ -129,7 +129,7 @@ func (a *handshakeAttempt) await(ctx context.Context) error {
 	case <-a.ready:
 		if a.refused {
 			return newError(ErrorCodeInvalidRequest,
-				"this connection is already initializing or initialized")
+				"initialize is already in progress or complete on this connection")
 		}
 		return nil
 	case <-ctx.Done():
@@ -262,7 +262,7 @@ func (s *sessions[Handle]) lookup(id SessionID, open func(SessionID) *Handle) (*
 	return handle, true
 }
 
-// forget is the only way this population shrinks; see limits.go.
+// forget is the only way the cached handle population shrinks; see limits.go.
 func (s *sessions[Handle]) forget(id SessionID) {
 	s.mu.Lock()
 	delete(s.byID, id)

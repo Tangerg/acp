@@ -12,31 +12,18 @@ import (
 	"github.com/Tangerg/acp/jsonrpc"
 )
 
-// A ClientConfig is everything a client is built from.
-//
-// The handlers are fields rather than an interface's methods. The reference
-// implementation declares an interface with fourteen methods, twelve of them
-// optional; Go has no optional interface methods, so that transliteration would
-// make every caller write stubs and would leave capability advertisement as a
-// second list to maintain by hand.
-//
-// The unit is the capability group, not the method, because the specification's
-// capabilities are not one-to-one with methods: terminal is one boolean
-// documented as covering all five terminal methods, and fs is two independent
-// booleans.
+// ClientConfig defines a client's identity, handlers, and capability
+// advertisement. SessionUpdate and RequestPermission are required. Optional
+// handlers derive their corresponding capabilities unless Capabilities is set.
 type ClientConfig struct {
 	// Info identifies this client during initialize. Optional: the schema lets a
 	// peer stay anonymous.
 	Info *Implementation
 	// Meta is attached to this client's initialize request.
 	Meta Meta
-	// Logger is where the two paths that have nowhere else to report go: a handler
-	// error, which is deliberately not sent to the peer in full, and a
-	// notification handler's failure, which has no response channel at all.
-	//
-	// nil means discard, and never "log somewhere sensible". An agent's stdout is
-	// the protocol stream, so a default logger writing there would corrupt every
-	// connection it was supposed to help debug.
+	// Logger receives handler details withheld from the peer and notification
+	// failures that have no response channel. nil discards them. The package does
+	// not write diagnostics to process-global output.
 	Logger *slog.Logger
 
 	// SessionUpdate receives the agent's running commentary for a turn. Baseline:
@@ -81,9 +68,8 @@ type ClientConfig struct {
 	Capabilities *ClientCapabilities
 }
 
-// TerminalHandlers is the terminal capability's complete handler set. All five or
-// none: ClientCapabilities.terminal is one boolean documented as "Whether the
-// Client support all terminal/* methods".
+// TerminalHandlers is the complete terminal capability. When non-nil, all five
+// handlers are required because the protocol advertises them with one boolean.
 type TerminalHandlers struct {
 	Create      func(ctx context.Context, request *CreateTerminalRequest) (*CreateTerminalResponse, error)
 	Output      func(ctx context.Context, request *TerminalOutputRequest) (*TerminalOutputResponse, error)
@@ -92,13 +78,8 @@ type TerminalHandlers struct {
 	Release     func(ctx context.Context, request *ReleaseTerminalRequest) (*ReleaseTerminalResponse, error)
 }
 
-// A Client is a code editor's side of the protocol: it owns the workspace, the
-// terminals, the user, and the authority to say yes to anything that touches
-// them.
-//
-// One client may hold many connections. The client holds the handlers and the
-// advertisement; a connection is one logical link, and a session is one
-// conversation on it.
+// A Client owns the workspace-facing handlers and capabilities shared by its
+// connections. One client may connect to many agents.
 type Client struct {
 	config       ClientConfig
 	capabilities ClientCapabilities
@@ -115,12 +96,10 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		config = &ClientConfig{}
 	}
 	if config.SessionUpdate == nil {
-		return nil, errors.New("acp: a client needs a SessionUpdate handler: " +
-			"accepting a turn's output is baseline client behaviour")
+		return nil, errors.New("acp: ClientConfig.SessionUpdate is required")
 	}
 	if config.RequestPermission == nil {
-		return nil, errors.New("acp: a client needs a RequestPermission handler: " +
-			"the protocol defines no outcome a client may assume, so there is nothing to synthesise")
+		return nil, errors.New("acp: ClientConfig.RequestPermission is required")
 	}
 	if err := config.Terminal.check(); err != nil {
 		return nil, err
@@ -156,8 +135,7 @@ func (handlers *TerminalHandlers) check() error {
 		return nil
 	}
 	slices.Sort(missing)
-	return fmt.Errorf("acp: the terminal capability is one boolean covering all five methods, "+
-		"so its handlers are all or none; these are missing: %v", missing)
+	return fmt.Errorf("acp: TerminalHandlers is incomplete; missing: %v", missing)
 }
 
 func (config *ClientConfig) resolveCapabilities() (ClientCapabilities, error) {
@@ -176,7 +154,7 @@ func (config *ClientConfig) resolveCapabilities() (ClientCapabilities, error) {
 	exceeded := gates.exceeded(PeerInfo{ClientCapabilities: stated}, sideClient, config.implements)
 	if len(exceeded) > 0 {
 		return ClientCapabilities{}, fmt.Errorf(
-			"acp: the stated capabilities advertise what this client cannot serve: %v", exceeded)
+			"acp: ClientConfig.Capabilities advertises unsupported methods: %v", exceeded)
 	}
 	return stated, nil
 }
@@ -254,6 +232,7 @@ func (c *Client) Connect(ctx context.Context, transport Transport) (*ClientConn,
 	return conn, nil
 }
 
+// Conns returns a snapshot iterator over the client's live connections.
 func (c *Client) Conns() iter.Seq[*ClientConn] { return c.conns.all() }
 
 // A ClientConn is one logical connection to an agent, after initialize.
@@ -274,7 +253,7 @@ type ClientConn struct {
 
 func (c *ClientConn) initialize(ctx context.Context) error {
 	if !c.handshake.begin() {
-		return errors.New("acp: this connection is already initializing")
+		return errors.New("acp: initialize is already in progress on this connection")
 	}
 	request := &InitializeRequest{
 		ProtocolVersion:    CurrentProtocolVersion,
@@ -300,10 +279,8 @@ func (c *ClientConn) initialize(ctx context.Context) error {
 }
 
 func (c *ClientConn) accept(request *InitializeRequest, response *InitializeResponse) error {
-	// A protocol number identifies a grammar, not a feature level whose minimum is
-	// automatically safe. This package speaks version 1 and nothing else, so an
-	// answer of anything else — higher or lower — is an agent asking to be spoken
-	// to in a grammar this side does not have, and the connection cannot proceed.
+	// A protocol version identifies a grammar, not a feature level. Accepting a
+	// higher or lower number would claim a grammar this package does not implement.
 	if response.ProtocolVersion != CurrentProtocolVersion {
 		return fmt.Errorf("acp: the agent answered initialize with protocol version %d, "+
 			"and this package implements %d and no other",
@@ -311,7 +288,7 @@ func (c *ClientConn) accept(request *InitializeRequest, response *InitializeResp
 	}
 	auth, err := ownAuthenticationMethods(response.AuthMethods)
 	if err != nil {
-		return fmt.Errorf("acp: the agent's authentication methods are invalid: %w", err)
+		return fmt.Errorf("acp: initialize response contains invalid authentication methods: %w", err)
 	}
 	if err := auth.validateOffer(request.ClientCapabilities); err != nil {
 		return err
@@ -358,7 +335,7 @@ func (c *ClientConn) awaitHandshake(request *jsonrpc.Request) error {
 		return nil
 	}
 	return newError(ErrorCodeInvalidRequest,
-		"%s arrived before initialize was answered", request.Method)
+		"method %q arrived before initialize completed", request.Method)
 }
 
 func (c *ClientConn) serve(ctx context.Context, request *jsonrpc.Request) (any, error) {
@@ -399,10 +376,7 @@ func (c *ClientConn) serve(ctx context.Context, request *jsonrpc.Request) (any, 
 	}
 
 	if isStandardMethod(request.Method) {
-		// A method the specification defines, addressed to the wrong peer or not
-		// implemented here. Either way the honest answer is that it is not found.
-		return nil, newError(ErrorCodeMethodNotFound,
-			"%s is not a method this client serves", request.Method)
+		return nil, methodNotImplemented(request.Method)
 	}
 	return dispatchExtension(ctx, request, config.CallFallback, config.NotifyFallback)
 }

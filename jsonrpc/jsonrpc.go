@@ -1,15 +1,5 @@
-// Package jsonrpc exposes the JSON-RPC message type a custom transport carries.
-//
-// It is public for one reason: a transport has to name the thing it reads and
-// writes, and framing bytes means turning that thing into bytes and back. Nothing
-// else about JSON-RPC appears in this module's API — not request identifiers, not
-// the envelope, not the method strings. Those are plumbing, and a caller who has
-// to know them has been handed the plumbing.
-//
-// The set is therefore as small as a byte-stream transport can be written
-// against, and no smaller. Widening a package is a minor release and narrowing
-// one is not, so this starts at the minimum: a transport frames and unframes, and
-// does not mint request identifiers.
+// Package jsonrpc exposes the message types and codec required by custom ACP
+// transports. Request lifecycle and method dispatch remain in package acp.
 package jsonrpc
 
 import "github.com/Tangerg/acp/internal/jsonrpc2"
@@ -35,13 +25,12 @@ type (
 	Error = jsonrpc2.WireError
 )
 
-// EncodeMessage turns a message into the bytes that go on the wire.
+// EncodeMessage encodes one JSON-RPC message without transport framing.
 func EncodeMessage(message Message) ([]byte, error) {
 	return jsonrpc2.EncodeMessage(message)
 }
 
-// DecodeMessage turns wire bytes into a message, which is a [*Request] or a
-// [*Response] according to what the bytes contain.
+// DecodeMessage decodes one JSON-RPC message and rejects malformed envelopes.
 func DecodeMessage(data []byte) (Message, error) {
 	return jsonrpc2.DecodeMessage(data)
 }

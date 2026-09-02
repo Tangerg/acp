@@ -15,8 +15,7 @@ import (
 	"math/big"
 )
 
-// ID is a Request identifier, which is defined by the spec to be a string, integer, or null.
-// https://www.jsonrpc.org/specification#request_object
+// ID is a JSON-RPC request identifier: a string, integer, or null.
 type ID struct {
 	value any
 	valid bool
@@ -116,7 +115,7 @@ func NewNotification(method string, params any) (*Request, error) {
 // parameters.
 func NewCall(id ID, method string, params any) (*Request, error) {
 	if !id.IsValid() {
-		return nil, errors.New("constructing jsonrpc call: request has no id")
+		return nil, errors.New("jsonrpc: construct call: request has no id")
 	}
 	p, merr := marshalToRaw(params)
 	return &Request{ID: id, Method: method, Params: p}, merr
@@ -133,7 +132,7 @@ func (msg *Request) marshal(to *wireCombined) {
 // NewResponse constructs a response with exactly one of result or rerr.
 func NewResponse(id ID, result any, rerr *WireError) (*Response, error) {
 	if !id.IsValid() {
-		return nil, errors.New("constructing jsonrpc response: response has no request id")
+		return nil, errors.New("jsonrpc: construct response: response has no request id")
 	}
 	r, err := marshalToRaw(result)
 	if err != nil {
@@ -141,7 +140,7 @@ func NewResponse(id ID, result any, rerr *WireError) (*Response, error) {
 	}
 	response := &Response{ID: id, Result: r, Error: rerr}
 	if err := response.validate(); err != nil {
-		return nil, fmt.Errorf("constructing jsonrpc response: %w", err)
+		return nil, fmt.Errorf("jsonrpc: construct response: %w", err)
 	}
 	return response, nil
 }
@@ -171,20 +170,20 @@ func EncodeMessage(msg Message) ([]byte, error) {
 	switch msg := msg.(type) {
 	case *Request:
 		if msg == nil {
-			return nil, errors.New("marshaling jsonrpc message: nil request")
+			return nil, errors.New("jsonrpc: marshal message: nil request")
 		}
 	case *Response:
 		if err := msg.validate(); err != nil {
-			return nil, fmt.Errorf("marshaling jsonrpc message: %w", err)
+			return nil, fmt.Errorf("jsonrpc: marshal message: %w", err)
 		}
 	default:
-		return nil, fmt.Errorf("marshaling jsonrpc message: unsupported %T", msg)
+		return nil, fmt.Errorf("jsonrpc: marshal message: unsupported type %T", msg)
 	}
 	wire := wireCombined{VersionTag: wireVersion}
 	msg.marshal(&wire)
 	data, err := json.Marshal(&wire)
 	if err != nil {
-		return data, fmt.Errorf("marshaling jsonrpc message: %w", err)
+		return data, fmt.Errorf("jsonrpc: marshal message: %w", err)
 	}
 	return data, nil
 }
@@ -192,7 +191,7 @@ func EncodeMessage(msg Message) ([]byte, error) {
 func DecodeMessage(data []byte) (Message, error) {
 	var members map[string]json.RawMessage
 	if err := json.Unmarshal(data, &members); err != nil {
-		return nil, fmt.Errorf("unmarshaling jsonrpc message: %w", err)
+		return nil, fmt.Errorf("jsonrpc: unmarshal message: %w", err)
 	}
 	if members == nil {
 		return nil, ErrInvalidRequest
@@ -203,13 +202,13 @@ func DecodeMessage(data []byte) (Message, error) {
 		return nil, ErrInvalidRequest
 	}
 	if version != wireVersion {
-		return nil, fmt.Errorf("invalid message version tag %q; expected %q", version, wireVersion)
+		return nil, fmt.Errorf("jsonrpc: invalid version %q; want %q", version, wireVersion)
 	}
 
 	var id ID
 	if rawID, present := members["id"]; present {
 		if err := json.Unmarshal(rawID, &id); err != nil {
-			return nil, fmt.Errorf("unmarshaling jsonrpc message: %w", err)
+			return nil, fmt.Errorf("jsonrpc: unmarshal message: %w", err)
 		}
 	}
 
@@ -235,11 +234,11 @@ func DecodeMessage(data []byte) (Message, error) {
 	rawError, hasError := members["error"]
 	if hasError {
 		if bytes.Equal(bytes.TrimSpace(rawError), []byte("null")) {
-			return nil, errors.New("invalid response: error is null")
+			return nil, errors.New("jsonrpc: invalid response: error is null")
 		}
 		wireErr = new(WireError)
 		if err := json.Unmarshal(rawError, wireErr); err != nil {
-			return nil, fmt.Errorf("invalid response: %w", err)
+			return nil, fmt.Errorf("jsonrpc: invalid response: %w", err)
 		}
 	}
 	resp := &Response{
@@ -248,7 +247,7 @@ func DecodeMessage(data []byte) (Message, error) {
 		Error:  wireErr,
 	}
 	if err := resp.validate(); err != nil {
-		return nil, fmt.Errorf("invalid response: %w", err)
+		return nil, fmt.Errorf("jsonrpc: invalid response: %w", err)
 	}
 	return resp, nil
 }

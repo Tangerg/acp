@@ -19,14 +19,13 @@ import (
 // A session is safe for concurrent use; that is a separate question from whether
 // two prompts may overlap, and the answer to the first is yes while the answer to
 // the second is no.
-var ErrPromptInProgress = errors.New("acp: this session already has a prompt in flight")
+var ErrPromptInProgress = errors.New("acp: prompt already in progress for this session")
 
 // A ClientSession is one conversation, as the client sees it.
 //
-// It binds the session identifier and nothing else. Twenty definitions in the
-// schema carry a sessionId property, and threading that string by hand across the
-// operations that need it is the same mistake as threading a terminal identifier
-// through five functions.
+// It binds the session identifier and nothing else. Session identifiers appear
+// across many protocol operations, so binding one prevents mismatched identifiers
+// without expanding the handle's lifetime or responsibility.
 //
 // Handles are connection-bound. A [SessionID] outlives the connection it came
 // from, but a handle does not: LoadSession on a new connection returns a new
@@ -38,8 +37,10 @@ type ClientSession struct {
 	conn *ClientConn
 }
 
+// ID returns the protocol identifier bound to this handle.
 func (s *ClientSession) ID() SessionID { return s.id }
 
+// Conn returns the connection that owns this handle.
 func (s *ClientSession) Conn() *ClientConn { return s.conn }
 
 // Prompt runs one turn and blocks until it ends.
@@ -185,7 +186,7 @@ func (s *ClientSession) SetConfigOption(
 	params *SetConfigOptionParams,
 ) (*SetSessionConfigOptionResponse, error) {
 	if params == nil {
-		return nil, errors.New("acp: SetConfigOption needs params: the option and its value are in them")
+		return nil, paramsRequired("SetConfigOption", "ConfigID and Value")
 	}
 	request := &SetSessionConfigOptionRequest{
 		SessionID: s.id,
@@ -204,9 +205,9 @@ func (s *ClientSession) SetConfigOption(
 //
 // The agent must cancel any work still running for the session before it frees
 // anything, so an outstanding [ClientSession.Prompt] answers with the cancelled
-// stop reason rather than being abandoned. This handle is spent afterwards: the
-// connection forgets it, and naming the same identifier again would produce a new
-// one for a session the agent no longer has.
+// stop reason rather than being abandoned. After success, the connection removes
+// this handle from its identity cache. Callers should discard it; a later
+// operation that reopens the same identifier receives a new handle.
 //
 // Gated on agentCapabilities.sessionCapabilities.close.
 func (s *ClientSession) Close(ctx context.Context, params *CloseParams) (*CloseSessionResponse, error) {
@@ -265,7 +266,7 @@ func (c *ClientConn) LoadSession(
 	params *LoadSessionRequest,
 ) (*ClientSession, *LoadSessionResponse, error) {
 	if params == nil {
-		return nil, nil, errors.New("acp: LoadSession needs params: the session to load is in them")
+		return nil, nil, paramsRequired("LoadSession", "SessionID")
 	}
 	// The outbound half of the gate. A call the peer never advertised is refused
 	// here rather than sent and refused there: the answer would be the same, and
@@ -293,7 +294,7 @@ func (c *ClientConn) ResumeSession(
 	params *ResumeSessionRequest,
 ) (*ClientSession, *ResumeSessionResponse, error) {
 	if params == nil {
-		return nil, nil, errors.New("acp: ResumeSession needs params: the session to resume is in them")
+		return nil, nil, paramsRequired("ResumeSession", "SessionID")
 	}
 	if err := c.Peer().permits(methodSessionResume); err != nil {
 		return nil, nil, err
@@ -343,7 +344,7 @@ func (c *ClientConn) DeleteSession(
 	params *DeleteSessionRequest,
 ) (*DeleteSessionResponse, error) {
 	if params == nil {
-		return nil, errors.New("acp: DeleteSession needs params: the session to delete is in them")
+		return nil, paramsRequired("DeleteSession", "SessionID")
 	}
 	if err := c.Peer().permits(methodSessionDelete); err != nil {
 		return nil, err
@@ -409,8 +410,10 @@ type AgentSession struct {
 	conn *AgentConn
 }
 
+// ID returns the protocol identifier bound to this handle.
 func (s *AgentSession) ID() SessionID { return s.id }
 
+// Conn returns the connection that owns this handle.
 func (s *AgentSession) Conn() *AgentConn { return s.conn }
 
 // Update sends the client one piece of a turn's output.
@@ -420,7 +423,7 @@ func (s *AgentSession) Conn() *AgentConn { return s.conn }
 // prompt.
 func (s *AgentSession) Update(ctx context.Context, params *SessionUpdateParams) error {
 	if params == nil {
-		return errors.New("acp: Update needs params: the update is in them")
+		return paramsRequired("Update", "Update")
 	}
 	if err := s.conn.awaitHandshake(ctx, methodSessionUpdate); err != nil {
 		return err
@@ -443,7 +446,7 @@ func (s *AgentSession) RequestPermission(
 	params *RequestPermissionParams,
 ) (*RequestPermissionResponse, error) {
 	if params == nil {
-		return nil, errors.New("acp: RequestPermission needs params: the tool call and the options are in them")
+		return nil, paramsRequired("RequestPermission", "ToolCall and Options")
 	}
 	if err := s.conn.awaitHandshake(ctx, methodSessionRequestPermission); err != nil {
 		return nil, err
@@ -505,7 +508,7 @@ func (c *AgentConn) closeSession(ctx context.Context, request *jsonrpc.Request) 
 		return nil, err
 	}
 	if c.agent.config.CloseSession == nil {
-		return nil, newError(ErrorCodeMethodNotFound, "%s is not implemented here", request.Method)
+		return nil, methodNotImplemented(request.Method)
 	}
 	c.cancelTurn(params.SessionID)
 
@@ -514,7 +517,7 @@ func (c *AgentConn) closeSession(ctx context.Context, request *jsonrpc.Request) 
 		return nil, err
 	}
 	if response == nil {
-		return nil, newError(ErrorCodeInternalError, "the handler for %s returned nothing", request.Method)
+		return nil, nilHandlerResponse(request.Method)
 	}
 	c.sessions.forget(params.SessionID)
 	return response, nil
@@ -538,7 +541,7 @@ func dispatchSessionCall[Request sessionRequest, Response any](
 	handle func(context.Context, *AgentSession, Request) (*Response, error),
 ) (any, error) {
 	if handle == nil {
-		return nil, newError(ErrorCodeMethodNotFound, "%s is not implemented here", request.Method)
+		return nil, methodNotImplemented(request.Method)
 	}
 	params, err := decodeParams[Request](request)
 	if err != nil {
@@ -549,7 +552,7 @@ func dispatchSessionCall[Request sessionRequest, Response any](
 		return nil, err
 	}
 	if response == nil {
-		return nil, newError(ErrorCodeInternalError, "the handler for %s returned nothing", request.Method)
+		return nil, nilHandlerResponse(request.Method)
 	}
 	return response, nil
 }

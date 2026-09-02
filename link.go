@@ -177,8 +177,7 @@ func (l *link) admit(request *jsonrpc.Request) bool {
 // See limits.go for why a full backlog ends the connection instead of applying
 // backpressure.
 func (l *link) overflowed() {
-	l.endReading(fmt.Errorf("%w: more than %d messages are waiting to be delivered",
-		errTooManyQueued, maxQueuedDeliveries))
+	l.endReading(fmt.Errorf("%w (limit %d)", errTooManyQueued, maxQueuedDeliveries))
 }
 
 // deliverLoop owns the moment the connection becomes observably over: it is the
@@ -293,7 +292,7 @@ func (l *link) acceptsShape(request *jsonrpc.Request) bool {
 		// waiting, and an identifier nobody ever answers is a leak on its side.
 		l.life.spawn(func() {
 			l.writeResponse(request.ID, nil, newError(ErrorCodeInvalidRequest,
-				"%s is a notification and has no response, so it must be sent without an id",
+				"method %q is a notification and must be sent without an id",
 				request.Method))
 		})
 		return false

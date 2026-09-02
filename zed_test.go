@@ -17,8 +17,8 @@ import (
 // agent. This is the mirror of it, and the reference implementation cannot
 // provide it — the client half of ACP is an editor, and an editor is a person
 // clicking. So these transcripts were recorded by hand, once, with Zed spawning
-// an agent built on this package: the wire is real, the permission dialog was
-// answered by a person, and the cancellation came from the editor's stop button.
+// an agent built on this package: the wire is real, the command ran in the
+// editor's terminal, and the cancellation came from its stop button.
 //
 // Being hand-recorded is the cost, and it is why this is a corpus rather than a
 // gate that could re-run: nothing here can catch Zed changing. What it does catch

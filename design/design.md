@@ -1,55 +1,45 @@
-# Go SDK Design
+# Go SDK design decisions
 
-This document discusses the design of a Go implementation of the [Agent Client
-Protocol](https://agentclientprotocol.com). The package is
-[github.com/Tangerg/acp](https://pkg.go.dev/github.com/Tangerg/acp), and it
-implements both halves of the protocol: the client an editor builds, and the
-agent it drives.
+This document explains the ownership, wire, and API decisions behind
+[github.com/Tangerg/acp](https://pkg.go.dev/github.com/Tangerg/acp), a Go
+implementation of both halves of the [Agent Client
+Protocol](https://agentclientprotocol.com). Use the package reference for API
+details and this document for the reasoning behind them.
 
 The wire grammar is not this repository's to design. It is defined by the
-published schema, and where this implementation and the schema disagree the
-schema is right and this is a bug. What is designed here — and what this document
-argues — is the Go shape of it: how the messages are typed, who owns a
-connection, what a caller holds and for how long, and which of the protocol's
-obligations the library keeps so that an application cannot forget them.
+published schema. If this implementation disagrees with that schema, the
+implementation is wrong. This document addresses the Go representation: message
+types, connection ownership, handle lifetimes, and the protocol obligations the
+library enforces for applications.
 
-The reference for the API itself is
-[pkg.go.dev](https://pkg.go.dev/github.com/Tangerg/acp). This document does not
-restate it. It records the decisions behind it, so that a reader deciding whether
-to use this package — or to change it — can argue with the reasoning rather than
-reverse-engineer it.
+## Prior art and deliberate differences
 
-## Similarities and differences with the other Go implementations
+The initial design compared four existing Go libraries for ACP:
 
-Four other Go libraries for ACP existed when this one was written, and all four
-are worth reading:
-
-- [`spachava753/acp-sdk`](https://github.com/spachava753/acp-sdk) — generated
+- [`spachava753/acp-sdk`](https://github.com/spachava753/acp-sdk): generated
   types, method constants, handlers and RPC clients, with a conformance suite of
-  its own. Listed in the protocol's community libraries.
-- [`eino-contrib/acp`](https://github.com/eino-contrib/acp) — a bidirectional RPC
+  its own
+- [`eino-contrib/acp`](https://github.com/eino-contrib/acp): a bidirectional RPC
   abstraction over three transports: stdio, streamable HTTP and WebSocket, with
-  server hosting for Hertz and Gin.
-- [`ironpark/go-acp`](https://github.com/ironpark/go-acp) — connection options and
+  server hosting for Hertz and Gin
+- [`ironpark/go-acp`](https://github.com/ironpark/go-acp): connection options and
   middleware, a session stream abstraction, and helpers for spawning an agent and
-  matching session updates.
-- [`coder/acp-go-sdk`](https://github.com/coder/acp-go-sdk) — a close port of the
-  reference TypeScript SDK, which makes it the easiest of the four to hold
-  against the specification line by line.
+  matching session updates
+- [`coder/acp-go-sdk`](https://github.com/coder/acp-go-sdk): a close port of the
+  reference TypeScript SDK
 
-Where this package diverges, it is usually because of one of the three decisions
-below, and the sections that follow say so at the point where the decision bites.
+This package diverges in three load-bearing areas:
 
-- **Optional properties are a three-state type, not a pointer.** The protocol
+- **Three-state optional properties**: the protocol
   distinguishes absent from explicit null in places where the difference is
   load-bearing, and a `*T` collapses them at the boundary rather than at the
   point where a decision is made.
-- **The protocol's obligations belong to the library.** A cancelled turn must
+- **Library-owned protocol obligations**: a cancelled turn must
   still be answered with the cancelled stop reason; a client that cancels must
   answer the permission requests it left outstanding; a session that is closed
   must have its work cancelled first. An application that has to remember these
   will eventually not.
-- **A published release of the schema is the only input.** Types are generated
+- **Published schema inputs**: types are generated
   from a vendored release asset and committed, so that a schema change is a
   reviewable source diff.
 
@@ -59,38 +49,35 @@ SDK](https://github.com/modelcontextprotocol/go-sdk) arrived at, and the argumen
 for it there applies here unchanged. The bound on queued messages is
 `coder/acp-go-sdk`'s idea; what a connection will hold is discussed below.
 
-## Requirements
+## Design goals
 
-- **Complete.** Every method the specification defines is classified, and 23 of
+- **Complete**: every method the specification defines is classified, and 23 of
   the 25 are served. The two that are not are refused with method-not-found
-  rather than silently absent, and this document says why.
-- **Faithful.** The schema is upstream. Types come from a published release, the
+  rather than silently absent
+- **Faithful**: types come from a published schema release, the
   generator refuses anything it cannot represent exactly, and the corpus of
   fixtures is generated by the reference implementation's own deserialisation
-  machinery rather than by this one.
-- **Idiomatic.** Handlers take `(ctx, *Params)` and return `(*Result, error)`.
+  machinery
+- **Idiomatic**: handlers take `(ctx, *Params)` and return `(*Result, error)`.
   Configuration is a struct. Cancellation is a `context.Context`. Nothing is
   invented where the standard library or an established Go idiom already answers
-  the question.
-- **Obligation-keeping.** Where the protocol says an implementation *must* do
-  something that an application cannot reasonably be trusted to remember, the
-  connection does it.
-- **Robust.** Concurrency and shutdown are tested with `testing/synctest` rather
-  than sleeps, under `-race`, on three platforms; the wire is tested against
-  another implementation's bytes.
-- **Future-proof.** The protocol is moving. Generation from a pinned schema, a
-  capability table checked against the generated method list, and an extension
-  API for `_`-prefixed methods are what let it move without breaking callers.
+  the question
+- **Obligation-keeping**: when the protocol requires work that an application
+  could omit, the connection owns that work and tests its lifecycle
+- **Robust**: `testing/synctest` and the race detector cover concurrency and
+  shutdown on three platforms. Independent fixtures and transcripts cover the
+  wire
+- **Evolvable**: a pinned schema, a checked capability table, and an extension
+  API for `_`-prefixed methods allow protocol growth without silently widening
+  the stable grammar
 
-## Foundations
+## Wire and package foundations
 
 ### Package layout
 
-Almost all of the API lives in one package, `acp`, which is what `net/http`,
-`net/rpc` and the MCP Go SDK do and what makes a package discoverable in
-documentation and in an IDE. Splitting `client` and `server` — as several MCP
-libraries do — creates an import boundary in the middle of a protocol whose two
-halves call each other.
+Almost all of the API lives in one package, `acp`, following `net/http`,
+`net/rpc`, and the MCP Go SDK. Splitting `client` and `server` would create an
+import boundary inside a protocol whose two halves call each other.
 
 ```text
 github.com/Tangerg/acp                     the API: both peers, sessions, turns, the generated types
@@ -105,7 +92,7 @@ makes. A custom transport has to name the message type it carries, and nothing
 else about JSON-RPC is a caller's business: request lifecycle, cancellation and
 shutdown are the connection's.
 
-### The protocol types are generated, and committed
+### Generate and commit protocol types
 
 `schema/schema.json` is the published `schema-v1.21.0` release asset, vendored
 with its SHA-256 recorded. `schema.gen.go` is generated from it and committed.
@@ -114,9 +101,8 @@ Committing the output is the decision worth arguing about. It means `go get`
 needs no generator and no network, `pkg.go.dev` has something to document, and a
 schema change arrives as a source diff a reviewer can read. The cost is that the
 output can drift from its input, which is why `schemagen -check` runs in CI: it
-regenerates and fails if anything differs, which also proves the generator is
-deterministic — Go map iteration is not, and a generator that depended on it
-would pass locally and fail in CI.
+regenerates and fails if anything differs. This also proves deterministic output;
+Go map iteration cannot determine generated source order.
 
 What gets generated is the transitive `$ref` closure of a committed root set
 (`schema/manifest.json`), currently 142 of the schema's 170 definitions. A root
@@ -132,9 +118,8 @@ truth for the one part of the wire the protocol did not invent.
 
 ### Three JSON states
 
-The protocol distinguishes three states for an optional property — absent, an
-explicit `null`, and a value — and it distinguishes them where the difference
-matters. So does the API:
+The protocol distinguishes three states for an optional property: absent,
+explicit `null`, and a value. The API preserves all three:
 
 ```go
 type Opt[T any] struct{ /* absent | null | value */ }
@@ -145,13 +130,12 @@ func (o Opt[T]) Get() (T, bool)
 func (o Opt[T]) IsNull() bool
 ```
 
-**Difference from the other Go libraries**, which model optional properties as
+Other reviewed Go libraries model optional properties as
 `*T`. A pointer has two states, so an implementation using one must decide at the
 codec boundary whether a missing property and a null property are the same thing
-— for every property, once, in the decoder, out of sight of the code that
-actually cares. `Opt` moves that decision to the caller who has the context to
-make it. It costs a `Get` at each use, and that is the price of the distinction
-being visible.
+for every property. `Opt` leaves that decision to domain code with the context to
+make it. The caller pays one `Get` operation to retain a wire distinction that a
+pointer would erase.
 
 `_meta` is the protocol's reserved extension object, and it is a closed value
 type rather than a `map[string]any`:
@@ -169,7 +153,7 @@ arbitrary Go object with hidden mutable state inside one would make both a lie. 
 also means a value that cannot cross JSON fails at `Set`, naming the key, rather
 than at some later protocol write that cannot say what went wrong.
 
-### Transports
+### Define transport ownership
 
 A transport is a bidirectional message stream and nothing more:
 
@@ -190,20 +174,19 @@ here: a higher-level transport with methods for calls and notifications is harde
 to implement and pushes protocol concerns into something that should only move
 bytes. Four implementations ship:
 
-| | |
+| Transport | Role |
 | --- | --- |
-| `NewCommandTransport` | spawns an agent and owns its pipes — what a client uses |
-| `NewStdioTransport` | an agent's own stdin and stdout — what an agent uses |
+| `NewCommandTransport` | spawns an agent and owns its pipes for a client |
+| `NewStdioTransport` | uses an agent's own stdin and stdout |
 | `NewInMemoryTransports` | two peers in one process; what this package's tests run over |
 | `NewIOTransport` | any closeable pair of streams |
 
 Shutdown of a spawned agent is bounded rather than best-effort: closing the
 connection closes the pipes, waits, asks the process to stop, waits again, and
 finally kills it, with `CommandConfig.TerminationGrace` as each step's deadline.
-The agent's exit status is not the connection's error — an agent that exits
-non-zero after being asked to stop has stopped, not failed — but a failure to
-reap it is, because a subprocess that could not be released is still running and
-answering `nil` would report it as gone.
+The agent's exit status is not the connection's error. An agent that exits
+non-zero after a shutdown request has still stopped. Failure to reap the process
+is a connection error because the subprocess remains owned and may still run.
 
 `NewInMemoryTransports` carries messages rather than bytes. An in-memory
 transport that encoded and re-decoded would be testing the codec twice and hiding
@@ -225,10 +208,9 @@ A `Client` or `Agent` holds the handlers and the advertisement and may open many
 connections. A `ClientConn` is one logical link. A `ClientSession` is one
 conversation on it, and a connection carries many.
 
-The naming is deliberate. The specification already means something by "session"
-— `session/new` returns a session identifier, and a session has its own history —
-so calling the connection a session too would have put `NewSession` on a type
-called `ClientSession`.
+The naming follows the specification. `session/new` returns a session identifier,
+and a session has its own history. Calling the connection a session would put
+`NewSession` on a type named `ClientSession`.
 
 ### Handlers are struct fields, not interface methods
 
@@ -239,7 +221,7 @@ type ClientConfig struct {
 	ReadTextFile      func(ctx context.Context, request *ReadTextFileRequest) (*ReadTextFileResponse, error)
 	WriteTextFile     func(ctx context.Context, request *WriteTextFileRequest) (*WriteTextFileResponse, error)
 	Terminal          *TerminalHandlers
-	// ...
+	// Optional handlers omitted.
 }
 ```
 
@@ -248,8 +230,8 @@ of them optional. Go has no optional interface methods, so transliterating that
 would make every caller write ten stubs and would leave capability advertisement
 as a second list to maintain by hand.
 
-Fields solve both problems at once, because **setting a handler is what
-advertises its capability**. There is no way to advertise `fs.readTextFile` and
+Fields solve both problems because setting a handler advertises its capability.
+There is no way to advertise `fs.readTextFile` and
 not implement it, and no way to implement it and forget to advertise it.
 
 The unit is the capability group rather than the method, because the
@@ -259,12 +241,12 @@ boolean documented as covering all five `terminal/*` methods, so it is one
 `*TerminalHandlers` struct whose five fields are all-or-none, checked at
 construction.
 
-`Capabilities` may be stated explicitly, and then it is a complete advertisement
-rather than a patch — a field-by-field merge would need to distinguish "set to
-false" from "not set", and a boolean has no third state to say that. Stating more
-than the handlers can serve fails at construction rather than on the first call.
+`Capabilities` may be stated explicitly as a complete advertisement. A
+field-by-field merge would need to distinguish "set to false" from "not set",
+but a boolean has no third state for that distinction. Advertising more than the
+handlers can serve fails at construction rather than on the first call.
 
-**Difference from the other Go libraries**: several offer functional options
+Several reviewed Go libraries offer functional options
 (`WithMiddleware`, `WithLogger`). This package uses explicit `Config` structs
 throughout. An option function is a closure whose effect is discoverable only by
 reading its implementation; a struct field is visible in the type, in the
@@ -276,10 +258,10 @@ Capabilities are not a feature list. They decide whether an agent may read a
 file, write one, or run a command on the user's machine, and this package
 enforces them in both directions:
 
-- **Outbound**, a call the peer never advertised is refused before it is sent.
+- **Outbound**: a call the peer never advertised is refused before it is sent.
   The answer would be the same after a round trip, and refusing locally means a
   developer reads an error naming the capability instead of a wire trace.
-- **Inbound**, a request for a method this side never advertised is refused
+- **Inbound**: a request for a method this side never advertised is refused
   before it reaches a handler. The peer was told it was not there, and a
   capability that is only advertised is not a boundary.
 
@@ -288,17 +270,17 @@ schema's own words beside each row, and is checked against the generated method
 list in both directions, so a method added by a schema update cannot quietly
 arrive ungated.
 
-### The handshake
+### Handshake ownership and ordering
 
 `Client.Connect` returns a connection that is already initialized: the transport
 connected, `initialize` was answered, the negotiated version is one this package
 implements, and the peer's capabilities are stored. If any of that fails, the
 connection is closed before returning.
 
-There is no exported `Initialize`. Having one would create three failure modes
-this API would then have to define, document and test — a call before
-initialization, a second initialization, and two concurrent ones — and doing it
-inside `Connect` makes all three unrepresentable.
+There is no exported `Initialize`. Such a method would require contracts for a
+call before initialization, a second initialization, and concurrent
+initializations. Keeping the operation inside `Connect` makes those client-side
+states unrepresentable.
 
 The agent side cannot be symmetric, because it answers a handshake rather than
 performing one. `Agent.Connect` returns once the read loop is running; until
@@ -313,14 +295,14 @@ are worth stating:
   and the request it sends next is served on a different goroutine.
 - **A rejected initialize does not poison the connection.** Invalid parameters
   establish no agreement, so once the error response settles, the next queued or
-  later attempt may negotiate. Attempts are serialized in wire order, and every
+  later attempt may negotiate. Attempts are serialised in wire order, and every
   attempt ordered after an accepted one is an invalid renegotiation.
 
 A protocol version is a grammar, not a feature level. This package speaks version
 1, so it answers 1 and refuses any other answer, rather than taking the minimum
 of two numbers and claiming a grammar it does not have.
 
-## A session, and a turn
+## Sessions and turns
 
 ```go
 func (c *ClientConn) NewSession(ctx context.Context, params *NewSessionRequest) (*ClientSession, *NewSessionResponse, error)
@@ -328,10 +310,10 @@ func (s *ClientSession) Prompt(ctx context.Context, params *PromptParams) (*Prom
 func (s *ClientSession) Cancel(ctx context.Context, params *CancelParams) error
 ```
 
-A handle binds the session identifier and nothing else. Thirty-two definitions in
+A handle binds the session identifier and nothing else. Twenty definitions in
 the schema carry a `sessionId`, and threading that string by hand through every
-operation that needs it is the mistake the handle exists to prevent — the same
-mistake as threading a terminal identifier through five calls.
+operation that needs it invites mismatched identifiers. A terminal handle solves
+the same problem for the five terminal calls.
 
 Handles are connection-bound. A `SessionID` outlives the connection it came from;
 a handle does not, so loading the same identifier on a new connection returns a
@@ -343,19 +325,18 @@ because a client never calls `RequestPermission` and an agent never calls
 `Prompt`. One type carrying both method sets would make those calls compile and
 fail at runtime, which is a worse place to find out.
 
-Operations return the response as well as the handle where the response carries
-more than an identifier — `session/new` returns modes, configuration options and
-`_meta` — because a handle alone would put those out of reach.
+Operations return both the response and the handle when the response contains
+more than an identifier. For example, `session/new` also returns modes,
+configuration options, and `_meta`.
 
 ### One prompt at a time
 
 A second overlapping prompt on one session returns `ErrPromptInProgress`.
 
 This is not a scheduling choice. `session/cancel` carries a session identifier
-and nothing else — no turn, no request identifier — so a session with two turns
-in flight could not say which one a cancellation meant. The protocol is only
-coherent if a session has at most one active turn, and enforcing that locally is
-what lets pending permission requests be indexed by session without ambiguity.
+without a turn or request identifier. Two active turns would make the target of
+cancellation ambiguous. Enforcing one active turn also lets the connection index
+pending permission requests by session.
 
 A session is safe for concurrent use. That is a different question from whether
 two prompts may overlap, and the answer to the first is yes while the answer to
@@ -372,15 +353,14 @@ Separating them leaves obligations that cannot be an application's problem, and
 the connection takes them:
 
 - A client that cancels a turn must answer every pending
-  `session/request_permission` for that session with the cancelled outcome —
-  while the user's handler may still be blocked on a dialog, and including one
-  that arrives while the cancellation is still running. The claim on those
-  requests is taken synchronously, before the notification goes out, which is
-  what makes the race decidable: a user's decision arriving afterwards finds the
-  request already answered and is dropped.
+  `session/request_permission` for that session with the cancelled outcome. This
+  includes a handler blocked on a dialog and a request that arrives while
+  cancellation is still running. The connection claims those requests before
+  sending the notification. A later user decision then finds the request already
+  answered and is discarded.
 - An agent whose turn is cancelled must still answer the prompt. The handler is
-  free to return its context's error — that is what a model or tool library will
-  give it — and the connection turns a committed cancellation into
+  free to return its context error, as model and tool libraries commonly do. The
+  connection turns a committed cancellation into
   `StopReasonCancelled` rather than letting an abort error leak as `-32603`,
   which the specification explicitly warns against.
 - A client must keep accepting `session/update` after it has cancelled, because
@@ -393,9 +373,8 @@ the connection takes them:
 Inbound messages pass through an ordered stage before dispatch. Two promises
 depend on it:
 
-- `session/update` is a stream — chunks, tool calls, plans, in the order the
-  agent produced them — so handling two concurrently would scramble a turn's
-  output.
+- `session/update` is an ordered stream of chunks, tool calls, and plans. Serving
+  two notifications concurrently would scramble a turn's output.
 - A response is delivered only after every notification that preceded it on the
   wire. A cancelled turn depends on exactly this: the permission outcomes the
   client owed the turn are delivered before the cancellation that chased them.
@@ -408,29 +387,26 @@ for exactly that reason.
 
 ### How a connection is put together
 
-One `link` and four collaborators, each owning one invariant, because the
-alternative — a connection struct with five mutexes — is where ordering bugs
-live:
+One `link` coordinates four collaborators. Each collaborator owns one invariant;
+combining them behind unrelated mutexes would hide the ordering relationships:
 
-| | |
+| Collaborator | Responsibility |
 | --- | --- |
 | `lifetime` | when reading stopped, when everything accepted had been delivered, and why it ended |
 | `queue` | the ordered stage: nothing is dispatched before the messages that preceded it |
 | `calls` | the outbound half: requests sent and not yet answered |
 | `requests` | the inbound half: who holds the right to answer each request being served |
 
-The two lifetime moments are separate on purpose. A response the read side has
-accepted and queued is an answer this connection holds, and a caller waiting for
-it must not be told the connection ended instead — which is what happened when
-both facts shared one channel and the peer hung up in the same breath as
-answering.
+The two lifetime moments remain separate because an accepted response may already
+be queued when the peer closes. A caller waiting for that response must receive it
+instead of a connection error.
 
 The right to answer a request is a claim rather than an ownership, because two
 parties race for it: a cancelled turn answering pending permission requests, and
 the application's handler returning. Whoever claims first answers; the loser is
 dropped rather than sending a second response for one request.
 
-## The workspace
+## Workspace access
 
 An agent reaches the user's machine through the client, and every operation is
 gated on a capability the client advertised.
@@ -441,21 +417,20 @@ func (s *AgentSession) WriteTextFile(ctx context.Context, params *WriteTextFileP
 func (s *AgentSession) CreateTerminal(ctx context.Context, params *CreateTerminalParams) (*TerminalHandle, *CreateTerminalResponse, error)
 ```
 
-A `TerminalHandle` binds both identifiers the five terminal methods need — the
-session's and the terminal's — so neither is threaded through five calls and
-neither can disagree with itself. It is named `TerminalHandle` and not `Terminal`
+A `TerminalHandle` binds the session and terminal identifiers required by all
+five terminal methods. It is named `TerminalHandle` rather than `Terminal`
 because the schema already defines `Terminal` as the payload of a tool call's
 terminal content, and the schema's names are not this package's to reassign.
 
-Release is one-way, and enforced rather than documented. Once a release reaches
-the transport, every operation on the handle — including a second release —
+Release is one-way and enforced by the type. Once a release reaches the
+transport, every operation on the handle, including a second release,
 returns `ErrTerminalReleased`. A released identifier is the client's to reuse, so
 an operation on a stale handle is not merely pointless: it may name a terminal
 that now belongs to something else, and the client would serve it. A refusal
 before the request reaches the transport rolls the claim back, so a caller can
 correct a context and retry.
 
-## Extensions
+## Safe extension methods
 
 Both peers can send and receive methods the specification does not define, and
 this package exposes exactly that:
@@ -476,13 +451,16 @@ Inbound extension messages reach `CallFallback` and `NotifyFallback` undecoded,
 because there is nothing to decode them against: what an extension carries is
 between the two implementations that agreed on it.
 
-## What a connection will hold
+## Resource limits
 
 A message's size and the time this side will wait were already bounded. Its count
 was not, and count is what a peer controls for free. A connection now holds at
 most 1024 messages read but not yet delivered, 1024 inbound calls at once, and
-1024 session handles — the last because a handle keeps the one-prompt-at-a-time
-rule and is only reclaimed when the session is closed or deleted.
+1024 cached session handles. Serving `session/close` reclaims an agent's cache
+entry, and a client also reclaims one when `DeleteSession` succeeds; the agent
+side of `session/delete` takes no handle and so never names the cache. Until an
+entry is reclaimed, the handle preserves caller-visible identity while the
+connection separately enforces one active prompt per session identifier.
 
 Breaching one ends the connection with an error saying which. That is a
 deliberate choice over backpressure: refusing to read until the backlog drains
@@ -490,11 +468,10 @@ would turn the documented rule that a notification handler must not wait on its
 own connection into a deadlock, because the response that would release it
 arrives on the read loop that is no longer reading.
 
-These are bounds on how much a peer can make this side hold. They are not memory
-proofs — a single legal message can be large — and the file that defines them
-says so.
+These counts bound how much state a peer can create. They are not memory proofs
+because one legal message can still be large.
 
-## Errors
+## Error model and privacy
 
 ```go
 type Error struct {
@@ -518,11 +495,10 @@ and a sentinel per code would be API surface nobody asked for.
 A handler's error is not relayed unless it is deliberately an ACP `Error`.
 Arbitrary Go errors routinely contain paths and host identifiers; the peer gets
 `-32603` and the detail goes to the configured logger. `nil` for a logger means
-discard, and never "log somewhere sensible" — an agent's stdout is the protocol
-stream, and a default logger writing there would corrupt every connection it was
-meant to help debug.
+discard. The package never chooses a default logger because an agent's stdout is
+the protocol stream; writing diagnostics there would corrupt the connection.
 
-## What is not implemented
+## Unimplemented elicitation methods
 
 `elicitation/create` and `elicitation/complete` are not served. They are one
 feature rather than two methods: a request carries a mode and a scope as two
@@ -532,39 +508,40 @@ own state machine, and adding it as two more handlers would be the kind of
 half-implementation that is worse than an honest refusal.
 
 Until it exists, a peer calling either is answered method-not-found, and an agent
-that tries to advertise the capability is refused at construction. Zed advertises
-elicitation support today, so this is a real gap rather than a hypothetical one.
+that advertises the capability is refused at construction. The recorded Zed
+transcript advertises elicitation support, so this gap affects an observed client.
 
-## How the design is checked
+## Verification
 
 A design document is a claim about code. These are the checks that keep the two
 in agreement:
 
-- **125 cross-SDK fixtures**, whose expected outcomes come from the reference
+- **Cross-SDK fixtures**: 125 expected outcomes come from the reference
   TypeScript SDK's own deserialisation machinery, regenerated from the pinned
   schema and replayed by `go test` with no network.
-- **Four interoperability transcripts** recorded by running this module's client
+- **Subprocess interoperability**: four transcripts record this module's client
   against an agent built on the reference SDK as a real subprocess.
-- **A transcript from a real editor.** Zed spawned an agent built on this module
+- **Editor interoperability**: Zed spawned an agent built on this module
   and a person drove it, including the stop button. Every property Zed sent
   survives this package's types unchanged.
-- **Two fuzz targets** asserting that normalisation is a fixed point, which is
-  the property schema-directed recovery can quietly break.
-- **`testing/synctest`** for the cancellation and shutdown contracts, under
-  `-race`, on Linux, macOS and Windows.
-- **Reachability**, which reports an exported operation with no caller-side test
-  or example. An unused export is not dead API — whether it belongs is a design
-  question — but one with no executable evidence is an untested contract.
-- **Every example in the package documentation runs under `go test`.**
+- **Wire fuzzing**: two targets assert that normalisation reaches a fixed point
+  because schema-directed recovery can quietly break that property.
+- **Concurrency**: `testing/synctest` covers cancellation and shutdown, under
+  `-race`, on Linux, macOS, and Windows.
+- **Reachability**: the check reports an exported operation with no caller-side
+  test or example. Repository usage alone does not decide whether a library
+  export is necessary, but every retained export needs executable contract
+  evidence.
+- **Examples**: every package example runs under `go test`.
 
-## Versioning
+## Version and release policy
 
 The module is pre-1.0 and its Go API is expected to change; the protocol version
 it targets is not. The language floor is Go 1.25, chosen for `testing/synctest`
 and kept as low as it can be justified, because a floor is a cost imposed on
 everyone who imports the module.
 
-`scripts/release.sh` is the only release path. A published tag is immutable — the
-module proxy and checksum database keep the first thing they saw forever — so the
-script verifies before it plans, prints the whole plan, and is a dry run unless
-told otherwise.
+`scripts/release.sh` is the only release path. The module proxy and checksum
+database make published tags immutable. The script therefore verifies before it
+plans, prints the complete plan, and performs a dry run unless explicitly told to
+execute it.

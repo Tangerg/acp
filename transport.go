@@ -8,13 +8,7 @@ import (
 	"github.com/Tangerg/acp/jsonrpc"
 )
 
-// A Transport is something a logical connection can be established over.
-//
-// The interface is the MCP Go SDK's, unchanged, because it is the minimum a
-// bidirectional JSON-RPC link needs and the easiest thing for a caller to
-// implement. Nothing in this package requires a subprocess: anything that can
-// carry messages in both directions will do, which is what makes the same code
-// testable over an in-memory pipe.
+// A Transport establishes one logical ACP connection.
 type Transport interface {
 	// Connect establishes the connection. The context scopes establishing it and
 	// not the connection's lifetime: a caller who passed a five-second dial
@@ -24,9 +18,7 @@ type Transport interface {
 
 // A Connection is an established bidirectional message stream.
 //
-// The signatures are the easy half. What a custom transport is actually being
-// asked to promise is this, and it is stated rather than left in a comment on one
-// implementation:
+// Custom transports must satisfy these lifecycle and concurrency rules:
 //
 //   - A transport is connected at most once.
 //   - Write may be called concurrently, from any number of goroutines.
@@ -42,9 +34,6 @@ type Transport interface {
 //     transport whose commit state is uncertain must return another error, even
 //     when cancellation caused it. A terminal failure is the connection's error,
 //     and every caller of Wait sees the same one.
-//
-// Untested concurrency contracts are not contracts, so these are tested with
-// testing/synctest rather than with sleeps.
 type Connection interface {
 	// Read returns the next message, or an error. io.EOF means the peer closed
 	// the stream cleanly.
@@ -58,14 +47,8 @@ type Connection interface {
 	Close() error
 }
 
-// A singleUse enforces the first clause of the Connection contract for the
-// transports in this package.
-//
-// It is a type rather than the same two lines in three places because the obvious
-// spelling of it is wrong. A sync.Once that sets a flag, followed by a read of
-// that flag outside the once, lets two concurrent Connect calls both see it set:
-// the second call's Do returns as soon as the first has finished, and neither
-// knows which of them ran it.
+// singleUse identifies which concurrent Connect call claimed a transport.
+// sync.Once cannot report which caller executed its function.
 type singleUse struct{ used atomic.Bool }
 
 func (s *singleUse) claim() error {
@@ -75,4 +58,4 @@ func (s *singleUse) claim() error {
 	return errTransportUsed
 }
 
-var errTransportUsed = errors.New("acp: a transport is connected at most once, and this one already has been")
+var errTransportUsed = errors.New("acp: transport is already connected")

@@ -17,32 +17,22 @@ import (
 
 // maxMessageBytes bounds one message.
 //
-// A peer that sends a gigabyte on one line is either broken or hostile, and
-// bufio's own answer to a line that does not fit is an error the reader cannot
-// recover from — so the limit is stated rather than inherited. It is generous:
-// the largest ordinary message is a prompt carrying embedded file contents.
+// The explicit limit prevents a peer from growing the read buffer without bound.
+// It accommodates prompts that carry embedded file contents.
 const maxMessageBytes = 64 << 20
 
 // NewStdioTransport returns the agent's side of a local connection: this process's
 // own stdin and stdout.
 //
-// An agent's stdout is the protocol stream. One fmt.Println corrupts it, and the
-// failure surfaces at the other end as an unrelated parse error — so this names
-// the streams it uses rather than reaching for the globals from inside, which is
-// what makes the collision visible in the code that caused it. An agent that wants
-// to print should print to stderr, which the client conventionally forwards to its
-// log.
+// Stdout carries only protocol messages. Send agent diagnostics to stderr.
 func NewStdioTransport() Transport {
 	return NewIOTransport(os.Stdin, os.Stdout)
 }
 
 // NewIOTransport frames newline-delimited JSON over a reader and a writer.
 //
-// Both are closed when the connection is: a reader with no way to close it leaves
-// a pending Read, and the goroutine blocked in it, with no way to stop. That is
-// why this takes the streams rather than a bare io.Reader and io.Writer — a
-// caller who genuinely has unclosable streams can wrap them in io.NopCloser and
-// has then said so.
+// Closing the connection closes both streams so a pending Read can unblock. Wrap
+// an uncloseable stream with io.NopCloser when its lifetime is managed elsewhere.
 func NewIOTransport(reader io.ReadCloser, writer io.WriteCloser) Transport {
 	return &ioTransport{reader: reader, writer: writer}
 }
@@ -61,7 +51,7 @@ func (t *ioTransport) Connect(ctx context.Context) (Connection, error) {
 		return nil, err
 	}
 	if t.reader == nil || t.writer == nil {
-		return nil, errors.New("acp: an IO transport needs both a reader and a writer")
+		return nil, errors.New("acp: IO transport requires non-nil reader and writer")
 	}
 	lines := bufio.NewReaderSize(t.reader, 64<<10)
 	return &ioConnection{reader: t.reader, writer: t.writer, lines: lines}, nil
@@ -106,15 +96,15 @@ func (c *ioConnection) Read(ctx context.Context) (jsonrpc.Message, error) {
 	}
 }
 
-// A message too long to be one is refused rather than grown into until the
-// process dies.
+// readLine applies the limit while assembling a line because bufio may return one
+// logical line across many ErrBufferFull reads.
 func (c *ioConnection) readLine() ([]byte, error) {
 	var line []byte
 	for {
 		chunk, err := c.lines.ReadSlice('\n')
 		line = append(line, chunk...)
 		if len(line) > maxMessageBytes {
-			return nil, fmt.Errorf("acp: a message exceeded %d bytes", maxMessageBytes)
+			return nil, fmt.Errorf("acp: message exceeds %d-byte limit", maxMessageBytes)
 		}
 		switch {
 		case err == nil:
@@ -162,10 +152,7 @@ func (c *ioConnection) Close() error {
 // terminationGrace is how long a subprocess is given to stop at each step of
 // being asked, when the caller did not say.
 //
-// Five seconds is the same budget the MCP Go SDK gives, and the same order as the
-// one this package gives a peer to be told about a cancellation. It is long enough
-// for an agent to flush what it was writing and short enough that a client
-// shutting down is not left wondering.
+// Five seconds gives an agent time to flush while keeping shutdown bounded.
 const terminationGrace = 5 * time.Second
 
 // A CommandConfig is how an agent is run as a subprocess.
@@ -194,9 +181,8 @@ type CommandConfig struct {
 // the agent as a subprocess and frames newline-delimited JSON over its stdin and
 // stdout.
 //
-// Closing the connection closes the pipes and reaps the process on a bounded
-// sequence, so that a client that stops talking to an agent neither leaves one
-// running nor waits on one for ever.
+// Closing the connection closes the pipes and reaps the process within the
+// configured shutdown budget.
 func NewCommandTransport(config *CommandConfig) Transport {
 	var owned CommandConfig
 	if config != nil {
@@ -220,10 +206,10 @@ func (t *commandTransport) Connect(ctx context.Context) (Connection, error) {
 
 	cmd := t.config.Command
 	if cmd == nil {
-		return nil, errors.New("acp: a command transport needs Command")
+		return nil, errors.New("acp: CommandConfig.Command is required")
 	}
 	if t.config.TerminationGrace < 0 {
-		return nil, errors.New("acp: command TerminationGrace cannot be negative")
+		return nil, errors.New("acp: CommandConfig.TerminationGrace must not be negative")
 	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

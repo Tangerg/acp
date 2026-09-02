@@ -51,7 +51,7 @@ func (r *requests) accept(id jsonrpc.ID, cancel context.CancelFunc) error {
 	}
 	if len(r.serving) >= maxInflightRequests {
 		cancel()
-		return fmt.Errorf("%w: %d", errTooManyInflight, maxInflightRequests)
+		return fmt.Errorf("%w (limit %d)", errTooManyInflight, maxInflightRequests)
 	}
 	r.serving[id] = &inboundRequest{cancel: cancel, settled: make(chan struct{})}
 	return nil

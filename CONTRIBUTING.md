@@ -2,22 +2,16 @@
 
 Focused issues and pull requests are welcome. Before changing behaviour or an
 exported API, read the rules this repository is built under in
-[AGENTS.md](./AGENTS.md). The reasoning behind an API decision is in the doc
-comment on the thing it decided, and each check below says in `.golangci.yml`,
-`ci.yml` or its own script what it is there to catch.
+[AGENTS.md](./AGENTS.md) and the [design decisions](./design/design.md). API doc
+comments define caller-visible contracts. Each repository check documents the
+failure it prevents in `.golangci.yml`, `ci.yml`, or its own script.
 
 ## Requirements
 
-- Go 1.25 or newer. The module declares and independently tests that language
-  floor, so a local toolchain cannot hide a newer language dependency from a
-  downstream user.
-
-  1.25 rather than the newest release, because a library's floor is a cost it
-  imposes on everyone who imports it and should be the lowest one it can
-  justify. The justification here is `testing/synctest`, stable since 1.25: the
-  connection layer's concurrency and shutdown contracts are tested with it
-  rather than with sleeps. Nothing in the design needs anything newer, and the
-  official MCP Go SDK declares 1.25 for comparable code.
+- Go 1.25 or newer. Continuous integration (CI) tests the exact language floor,
+  so a newer local toolchain cannot hide an unsupported language dependency.
+  Go 1.25 is required for `testing/synctest`, which tests concurrency and shutdown
+  without sleeps.
 - `golangci-lint` v2 (CI pins v2.13.1), `deadcode` from `golang.org/x/tools`
   (v0.49.0), `gofumpt` (v0.11.0), `shfmt` (v3.13.1), and `govulncheck` (v1.7.0).
   The release check pins `golang.org/x/exp/cmd/gorelease` at
@@ -29,16 +23,15 @@ comment on the thing it decided, and each check below says in `.golangci.yml`,
 This is one module at the repository root. There is no workspace file, and a plain
 checkout builds.
 
-The Markdown toolchain installs into `.tools` rather than the repository root. Go's
-`./...` walks every directory that does not begin with a dot or an underscore, so a
-root `node_modules` would hand an npm dependency's vendored Go source to `go build`,
-`go vet` and the reachability gate — cspell ships one today. The npm scripts step
-back up to the root, so the checkers still see the configuration and the prose where
-those live.
+The Markdown toolchain installs into `.tools` rather than the repository root.
+Go's `./...` pattern walks every directory that does not begin with a dot or an
+underscore. A root `node_modules` would therefore expose vendored Go source from
+npm dependencies to `go build`, `go vet`, and the reachability gate. The npm
+scripts return to the repository root before checking Markdown.
 
-## Development workflow
+## Run checks locally
 
-While iterating:
+Run the focused development loop while editing:
 
 ```sh
 gofumpt -w .
@@ -46,7 +39,7 @@ go generate ./...
 go test ./...
 ```
 
-Before opening a pull request, the whole gate CI runs:
+Before opening a pull request, run the required local checks:
 
 ```sh
 set -eu
@@ -63,6 +56,9 @@ go run ./internal/cmd/schemagen -check
 (cd .tools && npm ci && npm run docs:check)
 ```
 
+CI also runs fuzz targets, the Go 1.25.0 floor, platform-specific lint, and the
+cross-compilation matrix.
+
 Fuzz targets run in CI on every push. Run one locally with:
 
 ```sh
@@ -75,11 +71,12 @@ The wire grammar belongs to the [Agent Client Protocol
 specification](https://github.com/agentclientprotocol/agent-client-protocol). A
 change to a message name, field, or its meaning is a change to that specification
 and belongs in an issue there, not in a pull request here. What belongs here is the
-Go shape of it: how the messages are typed, how a connection is owned, what a caller
-holds and for how long.
+Go shape of it: how the messages are typed, how a connection is owned, and what a
+caller holds and for how long.
 
-Where this implementation and the published schema disagree, the schema is right and
-the disagreement is a bug. Say which schema version a wire-affecting change follows.
+Where this implementation and the published schema disagree, the schema is right
+and the disagreement is a bug. Say which schema version a wire-affecting change
+follows.
 
 ### The protocol types are generated
 
@@ -90,8 +87,8 @@ edit is reverted by the next `go generate` and reported by the gate before that.
 - To widen the API, add a root to [`schema/manifest.json`](./schema/manifest.json)
   and regenerate. Scope is the transitive `$ref` closure of that file.
 - To change how a shape is generated, change the generator. It refuses a construct
-  it does not implement rather than emitting something that merely compiles, so a
-  new shape usually announces itself as a generation failure naming the definition.
+  it cannot represent instead of emitting code that merely compiles. A new shape
+  therefore produces a generation failure that names the definition.
 - To move the schema pin, follow [`schema/README.md`](./schema/README.md). It is a
   reviewable commit, never a build step.
 
@@ -104,11 +101,11 @@ published schema; the SDK's normal v1 input is explicitly unstable and is not a
 stable-protocol oracle. This checks the Go codec against a second implementation
 without letting either implementation widen the published wire grammar.
 
-There is a second corpus for the same reason: `testdata/interop` holds what crossed
-the wire between this module's client and an agent built on the reference SDK, and
-`scripts/interop.sh` records it by running that agent as a real subprocess. A
-scenario is added in `scripts/interop-agent.ts` and `internal/cmd/interop`, and then
-recorded — never written by hand.
+There is a second corpus for the same reason. `testdata/interop` records messages
+between this module's client and an agent built on the reference SDK.
+`scripts/interop.sh` runs that agent as a real subprocess. Add a scenario in
+`scripts/interop-agent.ts` and `internal/cmd/interop`, then record it with the
+script. Never write an expected transcript by hand.
 
 Add a fixture case by writing its `name`, `why` and `input`, then running
 `scripts/update-fixtures.sh` to fill in the outcome. It needs Node and either the
@@ -120,7 +117,7 @@ the point is that the answer comes from somewhere else.
 
 Any exported change must include:
 
-- A comment that defines behaviour and edge cases, not just restates the name.
+- A comment that defines behaviour and edge cases instead of restating the name.
 - A test in the external package (`acp_test`) showing it from a caller's side.
   Tests go inside the package only in `*_internals_test.go`, and only for
   properties with no public form.
@@ -131,22 +128,21 @@ Related construction settings belong in a `Config` struct, whose optional fields
 have useful zero meanings. Do not add a functional-options API.
 
 Repository usage is not an API-retention criterion. A library operation may exist
-solely for downstream callers or to satisfy a consumer-owned interface. A `deadcode`
-finding on an export asks for caller-side contract coverage; removal additionally
-requires an API review showing that the responsibility is misplaced, duplicated, or
-cannot be given a coherent contract.
+solely for downstream callers or to satisfy a consumer-owned interface. A
+`deadcode` finding on an export asks for caller-side contract coverage; removal
+additionally requires an API review showing that the responsibility is misplaced,
+duplicated, or cannot be given a coherent contract.
 
 Adding a method to an exported interface is breaking. Raising the `go` directive
 raises every dependent's toolchain floor. Both are compatibility decisions rather
 than routine cleanup.
 
-## Releases
+## Create a release
 
-Tags are immutable dependency promises; never move or recreate one that has been
-published. [`scripts/release.sh`](scripts/release.sh) is the only supported release
-path. It refuses a dirty tree, an existing tag and a `replace` directive, runs the
-pinned compatibility policy against the preceding tag, and then creates and pushes
-one.
+Tags are immutable dependency promises. Never move or recreate a published tag.
+[`scripts/release.sh`](scripts/release.sh) is the only supported release path. It
+refuses a dirty tree, an existing tag, and a `replace` directive. It then checks
+compatibility against the preceding tag before creating and pushing the release.
 
 Inspect the dry run before enabling its only destructive mode:
 
@@ -158,7 +154,7 @@ scripts/release.sh X.Y.Z --execute
 Do not create tags or edit versions by hand; that would introduce a second release
 path whose ordering and failure semantics are not guarded.
 
-## Tests
+## Write tests
 
 State behaviour, not implementation: which message a cancelled request must still
 produce, what a half-read stream must not decode, what an unknown method must
@@ -171,17 +167,15 @@ exists to catch a specific mistake, make the mistake once and check that it fail
 
 ## Interoperability evidence
 
-Two Go endpoints talking to each other share any wire bug they have, so nothing
-inside this repository can establish that another implementation would understand
-it. Two recorded corpora do, and they are produced differently.
+Two Go endpoints can share the same wire bug. The repository therefore records
+two corpora produced by independent implementations.
 
 `testdata/interop` is this module's client against an agent built on the reference
 TypeScript SDK. `scripts/interop.sh` records it against a pinned checkout, and
 `go test` replays it with no network and no Node. Re-record it when the pin moves.
 
-`testdata/zed` is the same evidence from the other side, and it cannot be
-automated: the client half of ACP is an editor, and driving one means a person
-clicking. It was recorded by hand, with Zed, and here is how to record another.
+`testdata/zed` records the agent side against a real editor. This process requires
+a person to drive Zed, so record it manually as follows.
 
 Build an agent and put a wrapper in front of it that tees both directions of the
 stream to a file:
@@ -206,9 +200,9 @@ a thread with it:
 }
 ```
 
-Then drive one conversation — a prompt, the permission dialog, the stop button —
-and save the two logs as a transcript beside the existing ones, with the editor
-version from the `clientInfo` it sent and the date.
+Drive one conversation that includes a prompt, the permission dialog, and the
+stop button. Save both logs beside the existing transcript. Record the date and
+the editor version from its `clientInfo` message.
 
 The replay is a corpus rather than a gate: nothing in it can catch the editor
 changing. What it catches is this package changing under bytes another
@@ -217,5 +211,5 @@ implementation actually sent.
 ## Pull requests
 
 Keep commits reviewable and do not mix unrelated cleanup with behavioural change.
-Explain the problem and the user-visible outcome, the trade-offs, and — for any
-performance claim — the benchmark that supports it.
+Explain the problem, the user-visible outcome, and the trade-offs. Support every
+performance claim with a benchmark.

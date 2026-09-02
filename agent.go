@@ -10,11 +10,9 @@ import (
 	"github.com/Tangerg/acp/jsonrpc"
 )
 
-// An AgentConfig is everything an agent is built from.
-//
-// It is the mirror of [ClientConfig] in structure and not in content: an agent
-// serves rather than drives, so its fields are the operations a client calls on
-// it.
+// AgentConfig defines an agent's identity, handlers, and capability
+// advertisement. NewSession, Prompt, and Cancel are required. Capability-gated
+// optional handlers derive their advertisement unless Capabilities is set.
 type AgentConfig struct {
 	// Info identifies this agent during initialize.
 	Info *Implementation
@@ -34,10 +32,9 @@ type AgentConfig struct {
 	Prompt     func(ctx context.Context, session *AgentSession, request *PromptRequest) (*PromptResponse, error)
 	Cancel     func(ctx context.Context, session *AgentSession, notification *CancelNotification)
 
-	// Authenticate answers the method a client calls after being told to. It is
-	// not gated on a capability — an agent asks for authentication by listing
-	// AuthMethods, or by answering session/new with -32000 — so a nil handler here
-	// simply means this agent requires none.
+	// Authenticate answers an agent-managed method listed in AuthMethods. It is
+	// required when any listed method is agent-managed, and nil means this agent
+	// requires no authentication.
 	Authenticate func(ctx context.Context, request *AuthenticateRequest) (*AuthenticateResponse, error)
 
 	// LoadSession is gated on the loadSession capability. Setting it advertises
@@ -64,7 +61,7 @@ type AgentConfig struct {
 	// The session lifecycle, each gated on its own property of
 	// agentCapabilities.sessionCapabilities and each advertised by being set.
 	//
-	// ListSession and DeleteSession take no handle: the schema describes deletion
+	// ListSessions and DeleteSession take no handle: the schema describes deletion
 	// as removing a session "from session/list", so both name sessions this
 	// connection may never have opened, and minting a handle for one would spend
 	// the connection's session budget on a session nobody is in.
@@ -79,8 +76,8 @@ type AgentConfig struct {
 		request *ResumeSessionRequest,
 	) (*ResumeSessionResponse, error)
 
-	// CloseSession frees what a session holds. The connection has already
-	// cancelled the session's turn by the time this runs; see [AgentConn.serve].
+	// CloseSession frees what a session holds. The connection cancels the session's
+	// turn before this handler runs.
 	CloseSession func(
 		ctx context.Context,
 		session *AgentSession,
@@ -99,11 +96,8 @@ type AgentConfig struct {
 	Capabilities *AgentCapabilities
 }
 
-// An Agent is the program that uses a model to read and change a workspace.
-//
-// One agent may serve many connections. Ordinarily there is one — a client starts
-// the agent as a subprocess and speaks over its stdin and stdout — but nothing
-// here assumes that.
+// An Agent owns the model-facing handlers and capabilities shared by its
+// connections. One agent may serve many clients.
 type Agent struct {
 	config       AgentConfig
 	capabilities AgentCapabilities
@@ -127,8 +121,7 @@ func NewAgent(config *AgentConfig) (*Agent, error) {
 		missing = append(missing, "Cancel")
 	}
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("acp: an agent needs these baseline handlers, which are the whole of a "+
-			"turn and cannot be optional: %v", missing)
+		return nil, fmt.Errorf("acp: AgentConfig is missing required handlers: %v", missing)
 	}
 	capabilities, err := config.resolveCapabilities()
 	if err != nil {
@@ -156,14 +149,14 @@ func (c *AgentConn) authenticate(ctx context.Context, request *jsonrpc.Request) 
 		return nil, refusal
 	}
 	if c.agent.config.Authenticate == nil {
-		return nil, newError(ErrorCodeMethodNotFound, "%s is not implemented here", request.Method)
+		return nil, methodNotImplemented(request.Method)
 	}
 	response, err := c.agent.config.Authenticate(ctx, params)
 	if err != nil {
 		return nil, err
 	}
 	if response == nil {
-		return nil, newError(ErrorCodeInternalError, "the handler for %s returned nothing", request.Method)
+		return nil, nilHandlerResponse(request.Method)
 	}
 	return response, nil
 }
@@ -193,7 +186,7 @@ func (config *AgentConfig) resolveCapabilities() (AgentCapabilities, error) {
 	exceeded := gates.exceeded(PeerInfo{AgentCapabilities: stated}, sideAgent, config.implements)
 	if len(exceeded) > 0 {
 		return AgentCapabilities{}, fmt.Errorf(
-			"acp: the stated capabilities advertise what this agent cannot serve: %v", exceeded)
+			"acp: AgentConfig.Capabilities advertises unsupported methods: %v", exceeded)
 	}
 	return stated, nil
 }
@@ -287,6 +280,7 @@ func (a *Agent) Run(ctx context.Context, transport Transport) error {
 	}
 }
 
+// Conns returns a snapshot iterator over the agent's live connections.
 func (a *Agent) Conns() iter.Seq[*AgentConn] { return a.conns.all() }
 
 // An AgentConn is one logical connection to a client.
@@ -333,7 +327,7 @@ func (c *AgentConn) awaitHandshake(ctx context.Context, method string) error {
 	case <-c.over():
 		return c.failure()
 	case <-ctx.Done():
-		return fmt.Errorf("acp: %s waited for the client to initialize: %w", method, ctx.Err())
+		return fmt.Errorf("acp: method %q waited for the client to initialize: %w", method, ctx.Err())
 	}
 }
 
@@ -348,15 +342,8 @@ func (c *AgentConn) awaitHandshake(ctx context.Context, method string) error {
 // The answer is built per connection because a terminal authentication method
 // may be advertised only to a client that enabled it.
 func (c *AgentConn) initialize(request *InitializeRequest) *InitializeResponse {
-	// This package speaks version 1 and nothing else, so the answer is always the
-	// version it implements — not the lower of the two.
-	//
-	// Taking the minimum was wrong in a way that matters: a client asking for
-	// version 0 would have been told 0, and this agent would then have claimed a
-	// grammar it does not have. The schema's rule is that an agent answers with
-	// the requested version when it supports it and with its own latest otherwise,
-	// and that the client disconnects if it cannot speak the answer. For a
-	// single-version package both branches are the same number.
+	// A protocol version identifies a grammar, so negotiating a numeric minimum
+	// could claim a grammar this package does not implement.
 	version := CurrentProtocolVersion
 
 	capabilities := deepCopy(c.agent.capabilities)
@@ -402,7 +389,7 @@ func (c *AgentConn) serve(ctx context.Context, request *jsonrpc.Request) (any, e
 	// exchanged.
 	if !c.handshake.isAccepted() {
 		return nil, newError(ErrorCodeInvalidRequest,
-			"%s arrived before initialize", request.Method)
+			"method %q arrived before initialize", request.Method)
 	}
 
 	if isStandardMethod(request.Method) {
@@ -439,8 +426,7 @@ func (c *AgentConn) serve(ctx context.Context, request *jsonrpc.Request) (any, e
 	}
 
 	if isStandardMethod(request.Method) {
-		return nil, newError(ErrorCodeMethodNotFound,
-			"%s is not a method this agent serves", request.Method)
+		return nil, methodNotImplemented(request.Method)
 	}
 	return dispatchExtension(ctx, request, config.CallFallback, config.NotifyFallback)
 }

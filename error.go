@@ -41,6 +41,8 @@ func (x *Error) Is(target error) bool {
 	return false
 }
 
+// String returns the protocol name of a standard code and a decimal label for
+// extension codes.
 func (x ErrorCode) String() string {
 	switch x {
 	case ErrorCodeParseError:
@@ -109,7 +111,7 @@ var (
 //
 // It is not a wire error and has no code: no peer sent it, and there was nobody to
 // send it to. A caller who needs to know why the connection ended asks Wait.
-var ErrConnectionClosed = errors.New("acp: the connection is closed")
+var ErrConnectionClosed = errors.New("acp: connection is closed")
 
 func newError(code ErrorCode, format string, args ...any) *Error {
 	return &Error{Code: code, Message: fmt.Sprintf(format, args...)}
