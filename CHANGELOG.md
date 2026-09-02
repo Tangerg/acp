@@ -4,7 +4,7 @@ This file records caller-visible changes, newest first. The module is pre-1.0, s
 a minor release may change its public API. Each released entry will include
 migration instructions.
 
-## Unreleased
+## v0.1.0 — 2026-09-02
 
 This is the first release. It implements both peers of Agent Client Protocol
 (ACP) version 1 against the published `schema-v1.21.0` assets.
@@ -115,4 +115,4 @@ This is the first release. It implements both peers of Agent Client Protocol
 
 ### Migration
 
-No migration is required because no version has been released.
+Nothing to migrate from: this is the first release.
