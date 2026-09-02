@@ -58,7 +58,7 @@
     "MultiSelectItems": "an open object union: a `not` catch-all arm, an untagged arm, and extra properties that must survive"
   },
   "projections": {
-    "$comment": "Handle-facing params types: the generated wire request minus the identifiers a handle owns. See docs/design.md#handles-bind-identifiers-and-nothing-else.",
+    "$comment": "Handle-facing params types: the generated wire request minus the identifiers a handle owns.",
     "PromptParams": {
       "from": "PromptRequest",
       "without": [

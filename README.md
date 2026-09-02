@@ -226,20 +226,14 @@ generator.
 
 ## Documentation
 
-Design notes, written before the code and meant to be argued with:
-
-- [docs/protocol.md](./docs/protocol.md) — what ACP is: roles, the 25 methods, the shape of a turn
-- [docs/design.md](./docs/design.md) — what it looks like in Go, and why that and not something else
-- [docs/repository.md](./docs/repository.md) — how this repository is built and what each gate proves
-- [docs/roadmap.md](./docs/roadmap.md) — the order of work, and what is still open
-
-Sources for every claim in them — the specification, the TypeScript SDK, and the
-official MCP Go SDK — are listed in [docs/README.md](./docs/README.md#sources).
-
-And the usual:
+The reference is [pkg.go.dev](https://pkg.go.dev/github.com/Tangerg/acp), and the
+reason for a decision is in the doc comment on the thing it decided. A separate
+design document was kept while the design was being argued about; it drifted from
+the code the moment the code started answering the same questions better.
 
 - [AGENTS.md](./AGENTS.md) — the rules this repository is built under
 - [CONTRIBUTING.md](./CONTRIBUTING.md) — toolchain, the gate, and how to release
+- [schema/README.md](./schema/README.md) — the vendored schema, and what generation covers
 - [CHANGELOG.md](./CHANGELOG.md) — caller-visible changes
 - [SECURITY.md](./SECURITY.md) — reporting a vulnerability privately
 

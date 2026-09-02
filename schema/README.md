@@ -48,8 +48,7 @@ or removes a method — the capability table, which CI compares against
 
 Generation scope is the transitive `$ref` closure of a committed root set, so
 adding an operation is a diff in one file and the size of the exported surface is
-an output CI checks rather than a number maintained in prose. See
-[docs/design.md](../docs/design.md#a-root-manifest-not-a-number-in-three-documents).
+an output CI checks rather than a number maintained in prose.
 
 A definition is a root for one of four reasons, and the manifest keeps them
 apart because they retire at different times:
@@ -62,10 +61,8 @@ apart because they retire at different times:
 - `internal` — protocol plumbing the connection needs but callers must not name;
   every entry records why it stays unexported.
 - `probes` — definitions rooted only to exercise a wire shape no implemented
-  payload reaches yet. This list exists for the layer-1 spike described in
-  [docs/roadmap.md](../docs/roadmap.md#1-wire-semantics-spike) and empties as the
-  payload roots grow to reach the same shapes; every entry records the shape it
-  is there to prove.
+  payload reaches yet. The list empties as the payload roots grow to reach the
+  same shapes; every entry records the shape it is there to prove.
 
 Projection sources are roots too. They currently duplicate payload roots, but
 the generator derives that fact rather than relying on it.

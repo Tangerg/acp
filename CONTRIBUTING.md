@@ -2,9 +2,9 @@
 
 Focused issues and pull requests are welcome. Before changing behaviour or an
 exported API, read the rules this repository is built under in
-[AGENTS.md](./AGENTS.md) and the reasoning behind the API in
-[docs/design.md](./docs/design.md). [docs/repository.md](./docs/repository.md)
-explains why the gate below is shaped the way it is.
+[AGENTS.md](./AGENTS.md). The reasoning behind an API decision is in the doc
+comment on the thing it decided, and each check below says in `.golangci.yml`,
+`ci.yml` or its own script what it is there to catch.
 
 ## Requirements
 
