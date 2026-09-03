@@ -554,6 +554,42 @@ half-implementation that is worse than an honest refusal.
 Until it exists, a peer calling either is answered method-not-found, and an agent
 that advertises the capability is refused at construction. The recorded Zed
 transcript advertises elicitation support, so this gap affects an observed client.
+Upstream has also stabilised elicitation in the v2 alpha line, so the decision
+recorded under the version policy comes due at the same time this does.
+
+### What the work is, measured rather than estimated
+
+The paragraph above was written before anyone asked the generator. Adding the
+three payload roots to the manifest and running it settles which half of this is
+hard, and the answer is not the half the prose implies.
+
+The types are free. Generation succeeds, the closure grows from 142 definitions
+to 153, roughly thirty exported names appear, the package builds, and the new
+codec property holds over all of them. The two nested flattened unions the
+paragraph above worries about are within what the planner already does.
+
+Generation stops once, on something better than a limitation:
+`ElicitationRequestScope` names a `RequestId`, which is on the manifest's internal
+list because this API never surfaces a JSON-RPC request identifier. So the feature
+arrives holding a design decision rather than a workload. Request-scoped
+elicitation exists for the phases before any session — an agent eliciting from
+inside its own `authenticate` handler — and the scope has to say which request it
+belongs to.
+
+Exporting `RequestId` to satisfy it would give a caller the plumbing this package
+is built not to hand out. The alternative worth designing is that the caller never
+names it: the connection already knows which request a handler is serving, that
+being what `requests` is for, so an agent calling the operation from inside a
+handler can have the scope filled in from the context it was given. That keeps the
+rule the rest of the API keeps — a caller names a method by calling the operation
+for it — and it is a change to context plumbing rather than to the codec.
+
+What remains after that is the handler layer and not the type layer: two client
+handler fields and the capability they derive, the two rows in the capability
+gate, the agent-side operations, and the correlation between a URL-mode
+`elicitation/create` and the `elicitation/complete` that answers it later. None of
+it is blocked. It is written down here because the shape above was established by
+running the generator, and rediscovering it is the expensive part.
 
 ## Verification
 
