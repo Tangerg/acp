@@ -70,9 +70,13 @@ jobs:
       - name: Benchmarks still run
         run: go test -run '^$' -bench . -benchtime 1x ./...
 
+  # Runs on every change and not only on a tag. A gate whose first execution is
+  # the release it guards is not a gate: this one spent its whole life unrun,
+  # then failed its debut for a reason that had nothing to do with the release.
+  # Ordinary runs have no version to propose, so they compare against the newest
+  # release and report the drift.
   compatibility:
     name: public API release contract
-    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -81,15 +85,9 @@ jobs:
           # shallow checkout cannot know which tag that is.
           fetch-depth: 0
 
-      # Deliberately not the module's floor, for the reason the quality job also
-      # records: this job builds its tool from source, the pinned x/exp revision
-      # needs Go 1.26 to compile, and setup-go pins GOTOOLCHAIN=local, so under
-      # the floor the install dies before a single API is compared. The version
-      # this job builds under is not the version the module promises; that is the
-      # floor job's business.
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.25.x"
           check-latest: true
           cache-dependency-path: go.sum
 
@@ -97,8 +95,14 @@ jobs:
       # and the module/dependency facts that make a release usable. Pinning the
       # x/exp revision keeps that interpretation from changing under an unrelated
       # pull request.
+      #
+      # GOTOOLCHAIN=auto because the pin decides which Go compiles it: setup-go
+      # pins GOTOOLCHAIN=local, so without this a tool that outgrows the version
+      # above dies at install with a message about toolchains, and the coupling
+      # is invisible until someone moves the pin. A tool brings its own compiler;
+      # the version above is for this module's own commands.
       - name: Install gorelease
-        run: go install golang.org/x/exp/cmd/gorelease@v0.0.0-20260820142414-ca536658362e
+        run: GOTOOLCHAIN=auto go install golang.org/x/exp/cmd/gorelease@v0.0.0-20260820142414-ca536658362e
 
       - name: Compare the proposed module with its released baseline
         shell: bash
@@ -120,6 +124,26 @@ jobs:
             break
           done < <(git tag --list 'v*' --sort=-v:refname)
           base="${previous:-none}"
+
+          # No version proposed: this is an ordinary change, so there is nothing
+          # to validate a tag against, only drift to report against the newest
+          # release.
+          #
+          # GOPROXY=direct because the baseline was just chosen from git tags, and
+          # gorelease will only suggest a version when that baseline is also the
+          # newest one it can see. The module proxy's version list trails a fresh
+          # tag by up to half an hour, so through the proxy this asks git which
+          # release is newest and a cache whether it agrees. The release path
+          # below must not copy this: there, git's newest tag is the one being
+          # released, and the baseline is deliberately the one before it.
+          if [[ -z "$version" ]]; then
+            if [[ "$base" == none ]]; then
+              echo "no released baseline to compare against yet"
+              exit 0
+            fi
+            GOPROXY=direct gorelease -base="$base"
+            exit 0
+          fi
 
           # Major zero is the explicitly unstable development period: report every
           # API change, but do not pretend patch-number compatibility is promised.
@@ -157,22 +181,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Deliberately not the module's floor. This job builds its tools from
-      # source, and the pinned golangci-lint needs Go 1.26 to compile; setup-go
-      # pins GOTOOLCHAIN=local, so the install cannot fetch a toolchain for
-      # itself and the whole job dies before the first check runs. What the
-      # module must compile under is the floor job's business, and what the
-      # analysis is allowed to suggest is decided by the go directive in go.mod
-      # either way.
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.25.x"
           check-latest: true
           cache-dependency-path: go.sum
 
       # Pinned rather than floating: a linter that changes under a repository is
       # one whose findings arrive as unrelated failures on somebody else's change.
-      - run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
+      # GOTOOLCHAIN=auto lets each pin bring the compiler it declares, so moving
+      # one is never also a decision about the version this job runs under.
+      - run: GOTOOLCHAIN=auto go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
 
       # Once per platform, because a linter only sees the files that build for the
       # one it is standing on. A shadowed variable in a platform-guarded file is
@@ -187,11 +206,11 @@ jobs:
       # Reachability finds dead private implementation and public contracts without
       # executable caller-side coverage. An unused export is not dead library API:
       # whether it belongs is an API-design decision, never a repository call count.
-      - run: go install golang.org/x/tools/cmd/deadcode@v0.49.0
+      - run: GOTOOLCHAIN=auto go install golang.org/x/tools/cmd/deadcode@v0.49.0
       - name: callable code reachability
         run: scripts/check-reachability.sh
 
-      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+      - run: GOTOOLCHAIN=auto go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
       - name: govulncheck
         run: govulncheck ./...
 
@@ -263,7 +282,7 @@ jobs:
       # gofumpt rather than gofmt: it is gofmt plus the decisions gofmt left open,
       # and a repository that argues about them in review is one that has not made
       # them.
-      - run: go install mvdan.cc/gofumpt@v0.11.0
+      - run: GOTOOLCHAIN=auto go install mvdan.cc/gofumpt@v0.11.0
       - name: gofumpt
         run: |
           set -euo pipefail
@@ -276,7 +295,7 @@ jobs:
 
       # These scripts are executable repository policy, so their format gets the
       # same pinned, mechanical check as Go source instead of relying on review.
-      - run: go install mvdan.cc/sh/v3/cmd/shfmt@v3.13.1
+      - run: GOTOOLCHAIN=auto go install mvdan.cc/sh/v3/cmd/shfmt@v3.13.1
       - name: shfmt
         run: shfmt -d scripts
 
