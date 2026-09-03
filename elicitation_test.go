@@ -518,3 +518,67 @@ func stringContent(value string) *acp.ElicitationContentValueString {
 	content := acp.ElicitationContentValueString(value)
 	return &content
 }
+
+// The contracts a caller can break without a peer being involved at all. They are
+// refused before anything is sent, and the message says which field.
+func TestElicitationRefusesWhatACallerGetsWrong(t *testing.T) {
+	client, err := acp.NewClient(&acp.ClientConfig{
+		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		RequestPermission: denyingPermission,
+		Elicitation: &acp.ElicitationHandlers{
+			URL: func(
+				context.Context,
+				*acp.CreateElicitationRequest,
+				*acp.ElicitationURLMode,
+			) (*acp.CreateElicitationResponse, error) {
+				return &acp.CreateElicitationResponse{Value: &acp.ElicitationAcceptAction{}}, nil
+			},
+			Complete: func(context.Context, *acp.CompleteElicitationNotification) {},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	var noParams, noCompletionParams, scopedURL error
+	agent := testAgent(t, func(
+		ctx context.Context,
+		session *acp.AgentSession,
+		_ *acp.PromptRequest,
+	) (*acp.PromptResponse, error) {
+		_, noParams = session.CreateElicitation(ctx, nil)
+		noCompletionParams = session.Conn().CompleteElicitation(ctx, nil)
+		_, scopedURL = session.CreateElicitation(ctx, &acp.CreateElicitationParams{
+			Message: "sign in",
+			Mode: &acp.ElicitationURLMode{
+				ElicitationID: "e-1",
+				URL:           "https://example.invalid/",
+				Value:         &acp.ElicitationURLModeSession{},
+			},
+		})
+		return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+	})
+
+	session := connectAndOpen(t, client, agent)
+	if _, promptErr := session.Prompt(context.Background(), &acp.PromptParams{}); promptErr != nil {
+		t.Fatalf("Prompt: %v", promptErr)
+	}
+
+	for name, test := range map[string]struct {
+		err   error
+		wants string
+	}{
+		"an elicitation with no params":     {noParams, "Message and Mode"},
+		"a completion with no params":       {noCompletionParams, "ElicitationID"},
+		"a url mode carrying its own scope": {scopedURL, "scope"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if test.err == nil {
+				t.Fatal("accepted")
+			}
+			if !strings.Contains(test.err.Error(), test.wants) {
+				t.Fatalf("refused with %q, which does not mention %q", test.err, test.wants)
+			}
+		})
+	}
+}
