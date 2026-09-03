@@ -80,9 +80,16 @@ jobs:
           # A release-tag check compares with the preceding immutable tag. A
           # shallow checkout cannot know which tag that is.
           fetch-depth: 0
+
+      # Deliberately not the module's floor, for the reason the quality job also
+      # records: this job builds its tool from source, the pinned x/exp revision
+      # needs Go 1.26 to compile, and setup-go pins GOTOOLCHAIN=local, so under
+      # the floor the install dies before a single API is compared. The version
+      # this job builds under is not the version the module promises; that is the
+      # floor job's business.
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25.x"
+          go-version: "1.26.x"
           check-latest: true
           cache-dependency-path: go.sum
 
