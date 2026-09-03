@@ -49,6 +49,11 @@ type ClientConfig struct {
 	// is one boolean covering all five.
 	Terminal *TerminalHandlers
 
+	// Elicitation is this client's ability to put a structured request in front of
+	// the user. Its two modes are two independent capabilities, so it is a group
+	// whose fields advertise themselves rather than an all-or-none set.
+	Elicitation *ElicitationHandlers
+
 	// CallFallback and NotifyFallback receive extension methods: names outside the
 	// set the specification defines. A standard method never reaches them, however
 	// it is spelled.
@@ -109,6 +114,9 @@ func NewClient(config *ClientConfig) (*Client, error) {
 	if err := config.Terminal.check(); err != nil {
 		return nil, err
 	}
+	if err := config.Elicitation.check(); err != nil {
+		return nil, err
+	}
 	if err := config.Limits.check(); err != nil {
 		return nil, err
 	}
@@ -152,7 +160,8 @@ func (config *ClientConfig) resolveCapabilities() (ClientCapabilities, error) {
 			ReadTextFile:  config.ReadTextFile != nil,
 			WriteTextFile: config.WriteTextFile != nil,
 		},
-		Terminal: config.Terminal != nil,
+		Terminal:    config.Terminal != nil,
+		Elicitation: config.Elicitation.capabilities(),
 	}
 	if config.Capabilities == nil {
 		return derived, nil
@@ -181,6 +190,14 @@ func (config *ClientConfig) implements(method string) bool {
 	case methodTerminalCreate, methodTerminalOutput, methodTerminalWaitForExit,
 		methodTerminalKill, methodTerminalRelease:
 		return config.Terminal != nil
+	case methodElicitationCreate:
+		// Either mode serves the method; which modes it can render is the parameter
+		// capability, and the handler group has already refused serving neither.
+		return config.Elicitation != nil
+	case methodElicitationComplete:
+		// Gated on the url mode, and check has already tied Complete to it in both
+		// directions, so this reads the handler that actually serves the method.
+		return config.Elicitation != nil && config.Elicitation.Complete != nil
 	default:
 		return false
 	}
@@ -381,6 +398,10 @@ func (c *ClientConn) serve(ctx context.Context, request *jsonrpc.Request) (any, 
 		return dispatchCall(ctx, request, config.Terminal.Kill)
 	case methodTerminalRelease:
 		return dispatchCall(ctx, request, config.Terminal.Release)
+	case methodElicitationCreate:
+		return c.createElicitation(ctx, request)
+	case methodElicitationComplete:
+		return nil, dispatchNotificationContext(ctx, request, config.Elicitation.completion())
 	}
 
 	if isStandardMethod(request.Method) {

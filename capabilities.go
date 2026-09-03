@@ -46,6 +46,14 @@ const (
 	// construction reads it: advertising a capability whose method this package
 	// cannot serve is a promise that will be broken on the first call, and the
 	// place to refuse it is before a connection exists.
+	//
+	// No row uses it as of schema-v1.21.0; elicitation was the last one and is
+	// served now. It stays because the table has to be able to say this. A method
+	// arriving in a schema bump has to be classified — the test that holds this
+	// table against the generated method list sees to that — and the only
+	// alternatives to saying "known, not served" would be to claim it is baseline
+	// or to claim a capability gates something nothing implements. Both are
+	// lies the gate would then act on.
 	gatingUnimplemented
 )
 
@@ -169,23 +177,26 @@ var gates = gateTable{
 			"config options by returning them, and an agent that offers none has nothing to set",
 	},
 
-	// -- Not implemented yet --------------------------------------------------
+	// Elicitation is one group and not two methods: a request carries a mode and a
+	// scope as two flattened unions, url mode answers asynchronously through
+	// elicitation/complete under an identifier of its own, and form mode hands the
+	// client a JSON Schema to render.
 	//
-	// The row is here so that the table is complete rather than as far as the work
-	// has got. Elicitation is one group and not two methods: a request carries a
-	// mode and a scope as two flattened unions, url mode answers asynchronously
-	// through elicitation/complete under an identifier of its own, and form mode
-	// hands the client a JSON Schema to render. That is a layer, not an addition.
-
+	// The method capability is `elicitation` alone. Which of the two modes a client
+	// can render is `elicitation.form` and `elicitation.url`, and those gate a
+	// parameter rather than a method — see [PeerInfo.permitsElicitationMode], and
+	// the paragraph below on why the two kinds are enforced in different
+	// directions. The exception is elicitation/complete, which exists only to
+	// finish a url elicitation, so the url mode gates the method itself.
 	methodElicitationCreate: {
-		gating:     gatingUnimplemented,
+		gating:     gatingCapability,
 		capability: "clientCapabilities.elicitation",
 		owner:      sideClient,
 		advertised: func(peer PeerInfo) bool { return hasCapability(peer.ClientCapabilities.Elicitation) },
 		why:        `"Determines which elicitation modes the agent may use"`,
 	},
 	methodElicitationComplete: {
-		gating:     gatingUnimplemented,
+		gating:     gatingCapability,
 		capability: "clientCapabilities.elicitation.url",
 		owner:      sideClient,
 		advertised: elicitationURL,

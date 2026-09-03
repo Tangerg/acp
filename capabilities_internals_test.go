@@ -186,7 +186,7 @@ func TestAdvertisingAnUnimplementedMethodIsRefusedAtConstruction(t *testing.T) {
 		})
 	}
 
-	t.Run("a client advertising elicitation", func(t *testing.T) {
+	t.Run("a client advertising elicitation with no handlers", func(t *testing.T) {
 		_, err := NewClient(&ClientConfig{
 			SessionUpdate: func(context.Context, *SessionNotification) {},
 			RequestPermission: func(context.Context, *RequestPermissionRequest) (*RequestPermissionResponse, error) {
@@ -195,7 +195,8 @@ func TestAdvertisingAnUnimplementedMethodIsRefusedAtConstruction(t *testing.T) {
 			Capabilities: &ClientCapabilities{Elicitation: OptValue(ElicitationCapabilities{})},
 		})
 		if err == nil {
-			t.Fatal("a client advertised elicitation, which this package does not implement")
+			t.Fatal("a client advertised elicitation with nothing to serve it, and the inbound " +
+				"gate would then admit a method whose handler group is nil")
 		}
 	})
 }
@@ -248,33 +249,76 @@ func TestOfferingAuthMethodsWithoutTheHandlerIsRefused(t *testing.T) {
 	}
 }
 
-// A baseline method needs no capability, and a method this package does not serve
-// yet is refused however much a peer advertises. The second is what keeps an
-// unimplemented row from reading as an implemented one.
-func TestBaselineIsAllowedAndUnimplementedIsNot(t *testing.T) {
+// A baseline method needs no capability, and a gated one is refused until the peer
+// that serves it says it is there.
+func TestBaselineIsAllowedAndGatedIsNotUntilAdvertised(t *testing.T) {
 	var silent PeerInfo
 	for _, name := range []string{methodInitialize, methodSessionNew, methodSessionPrompt, methodSessionUpdate} {
 		if silent.permits(name) != nil {
 			t.Errorf("the baseline method %q was refused", name)
 		}
 	}
-	// Gated: refused until the peer that serves them says they are there.
-	for _, name := range []string{methodLogout, methodSessionList, methodSessionClose} {
+	for _, name := range []string{
+		methodLogout, methodSessionList, methodSessionClose,
+		methodElicitationCreate, methodElicitationComplete,
+	} {
 		if silent.permits(name) == nil {
 			t.Errorf("%q is gated but the gate allowed it unadvertised", name)
 		}
 	}
-	// Not implemented: refused however much a peer advertises, which is what keeps
-	// an unimplemented row from reading as a gated one.
+
 	var loud PeerInfo
 	loud.ClientCapabilities.Elicitation = OptValue(ElicitationCapabilities{
 		Form: OptValue(ElicitationFormCapabilities{}),
 		URL:  OptValue(ElicitationURLCapabilities{}),
 	})
 	for _, name := range []string{methodElicitationCreate, methodElicitationComplete} {
-		if loud.permits(name) == nil {
-			t.Errorf("%q is not implemented yet but the gate allowed it", name)
+		if err := loud.permits(name); err != nil {
+			t.Errorf("%q was advertised and the gate still refused it: %v", name, err)
 		}
+	}
+
+	// The url mode gates the completion on its own, so a client that renders forms
+	// and not pages serves the one and not the other.
+	var formOnly PeerInfo
+	formOnly.ClientCapabilities.Elicitation = OptValue(ElicitationCapabilities{
+		Form: OptValue(ElicitationFormCapabilities{}),
+	})
+	if err := formOnly.permits(methodElicitationCreate); err != nil {
+		t.Errorf("a form-only client was refused elicitation/create: %v", err)
+	}
+	if formOnly.permits(methodElicitationComplete) == nil {
+		t.Error("a client that advertised no url mode was allowed elicitation/complete")
+	}
+}
+
+// The unimplemented classification, which no row uses now that elicitation is
+// served. It is tested on a table of its own because the thing being checked is
+// that the classification still means what capabilities.go says it means — the
+// day a schema bump adds a method, this is the row somebody will reach for.
+func TestAnUnimplementedRowIsRefusedToBothSides(t *testing.T) {
+	const method = "example/not_served"
+	table := gateTable{method: {
+		gating:     gatingUnimplemented,
+		capability: "clientCapabilities.example",
+		owner:      sideClient,
+		advertised: func(PeerInfo) bool { return true },
+	}}
+
+	// Construction: an advertisement is refused for the method, not for a missing
+	// handler, because no handler could make it servable.
+	exceeded := table.exceeded(PeerInfo{}, sideClient, func(string) bool { return true })
+	if len(exceeded) != 1 {
+		t.Fatalf("exceeded reported %v, want the one unimplemented method", exceeded)
+	}
+	if !strings.Contains(exceeded[0], "does not implement") {
+		t.Errorf("exceeded said %q, which does not say the package cannot serve it", exceeded[0])
+	}
+
+	// And it is refused even when the implementation check would have passed,
+	// which is what keeps an unimplemented row from reading as a gated one.
+	if got := table.exceeded(PeerInfo{}, sideClient, func(string) bool { return false }); len(got) != 1 {
+		t.Fatalf("exceeded reported %v with no handler either, want the same one", got)
 	}
 }
 

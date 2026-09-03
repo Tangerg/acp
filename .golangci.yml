@@ -205,9 +205,16 @@ linters:
       # gives a type. A decoder has one branch per property because each one
       # recovers, defaults or fails on its own, and the alternative is one method
       # per property — more code, more indirection, and the same total.
+      #
+      # goconst reports that a union's arms name the same JSON type in their own
+      # case clauses — "string" appearing once per arm that accepts a string. Those
+      # are the schema's words at the position the schema puts them, not a repeated
+      # decision, and hoisting them would have the generator emit a const block
+      # whose only purpose is to lower a count.
       - path: \.gen\.go
         linters:
           - dupl
+          - goconst
           - gocognit
           - gocyclo
           - maintidx

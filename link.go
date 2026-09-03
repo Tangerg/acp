@@ -168,7 +168,10 @@ func (l *link) admit(request *jsonrpc.Request) bool {
 		return true
 	}
 
-	ctx, cancel := context.WithCancel(l.life.ctx)
+	// The request travels on its own context, which is also what carries its
+	// identifier to a handler that needs to name the call it is answering without
+	// being handed one. See elicitation.go.
+	ctx, cancel := context.WithCancel(withServingRequest(l.life.ctx, request.ID))
 	if err := l.requests.accept(request.ID, cancel); err != nil {
 		l.endReading(err)
 		return false

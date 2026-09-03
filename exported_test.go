@@ -52,6 +52,11 @@ var handWritten = map[string]string{
 	"TerminalHandle": "workspace.go — one terminal, binding both identifiers its five methods need",
 	"TerminalHandlers": "client.go — the terminal capability's complete handler set, which is all five " +
 		"or none because the capability is one boolean",
+	"ElicitationHandlers": "elicitation.go — the elicitation handler group, whose two fields advertise " +
+		"themselves because the two modes are two independent capabilities reached through one method",
+	"CreateElicitationParams": "elicitation.go — an elicitation without its scope, which is not a " +
+		"generated projection because the scope is nested inside the mode union rather than a " +
+		"property the generator could drop",
 
 	// The transport boundary.
 	"Transport":             "transport.go — what a connection is established over",

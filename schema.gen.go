@@ -3135,7 +3135,7 @@ func (x *ElicitationAcceptAction) UnmarshalJSON(data []byte) error {
 		if wire.IsNull(raw) {
 			x.Content = OptNull[map[string]ElicitationContentValue]()
 		} else {
-			value, err := wire.UnmarshalValue[map[string]ElicitationContentValue](raw)
+			value, err := wire.UnmarshalMapFunc(raw, unmarshalElicitationContentValue)
 			if err == nil {
 				x.Content = OptValue(value)
 			} else {
@@ -3149,7 +3149,15 @@ func (x *ElicitationAcceptAction) UnmarshalJSON(data []byte) error {
 
 func (x ElicitationAcceptAction) MarshalJSON() ([]byte, error) {
 	var writer wire.ObjectWriter
-	writer.SetOptional("content", x.Content)
+	if value, ok := x.Content.Get(); ok {
+		raw, err := wire.MarshalMapFunc(value, marshalElicitationContentValue)
+		if err != nil {
+			return nil, wire.At("content", err)
+		}
+		writer.SetRaw("content", raw)
+	} else if x.Content.IsNull() {
+		writer.SetRaw("content", []byte("null"))
+	}
 
 	return writer.Bytes()
 }
@@ -3742,7 +3750,7 @@ func (x *ElicitationSchema) UnmarshalJSON(data []byte) error {
 	}
 
 	if raw, ok := object["properties"]; ok {
-		value, err := wire.UnmarshalValue[map[string]ElicitationPropertySchema](raw)
+		value, err := wire.UnmarshalMapFunc(raw, unmarshalElicitationPropertySchema)
 		if err == nil {
 			x.Properties = value
 		} else {
@@ -3794,7 +3802,13 @@ func (x ElicitationSchema) MarshalJSON() ([]byte, error) {
 	var writer wire.ObjectWriter
 	writer.Set("type", x.Type)
 	writer.SetOptional("title", x.Title)
-	writer.Set("properties", x.Properties)
+	{
+		raw, err := wire.MarshalMapFunc(x.Properties, marshalElicitationPropertySchema)
+		if err != nil {
+			return nil, wire.At("properties", err)
+		}
+		writer.SetRaw("properties", raw)
+	}
 	if value, ok := x.Required.Get(); ok {
 		raw, err := wire.MarshalSlice(value)
 		if err != nil {

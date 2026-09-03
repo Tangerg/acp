@@ -565,6 +565,14 @@ func (e *emitter) decodeExpr(field *Field) string {
 			return fmt.Sprintf("wire.UnmarshalSlice[%s](raw)", elem.Go)
 		}
 	}
+	// A map of unions needs the same treatment an array of them does, and for the
+	// same reason: json.Unmarshal cannot decode into an interface, so the arm is
+	// selected by the union's generated function. x-deserialize-skip-invalid-items
+	// has no map form — the planner refuses it on anything but an array — so there
+	// is no skipping variant to choose between.
+	if value.Kind == vMap && value.Elem.IsUnion {
+		return fmt.Sprintf("wire.UnmarshalMapFunc(raw, unmarshal%s)", value.Elem.Ident)
+	}
 	if value.IsUnion {
 		return fmt.Sprintf("unmarshal%s(raw)", value.Ident)
 	}
@@ -686,6 +694,12 @@ func (e *emitter) encodeExpr(field *Field) string {
 			return fmt.Sprintf("wire.MarshalSliceFunc($, marshal%s)", value.Elem.Ident)
 		}
 		return "wire.MarshalSlice($)"
+	}
+	// And on the way out the discriminant is the union's to write, so a map of
+	// unions handed to the writer would encode every value without the property
+	// that says which arm it is — a message this side could not read back.
+	if value.Kind == vMap && value.Elem.IsUnion {
+		return fmt.Sprintf("wire.MarshalMapFunc($, marshal%s)", value.Elem.Ident)
 	}
 	if value.IsUnion {
 		return fmt.Sprintf("marshal%s($)", value.Ident)
