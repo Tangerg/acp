@@ -627,6 +627,11 @@ already holds every handle it uses — it created the session it is being told
 about. Adding a parameter to nine client handlers would be churn for a need
 nothing has demonstrated.
 
+The recorded Zed transcript advertises both modes, so the gap this used to be
+affected an observed client. That the gap is closed is now asserted against the
+editor's own recorded advertisement rather than against a capability object
+written to agree with the answer.
+
 ### What implementing it found
 
 The schema's `ElicitationSchema.properties` is a map whose values are a union, and

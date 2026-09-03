@@ -3,6 +3,8 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -152,4 +154,57 @@ func denyingPermissionInternal(
 	*RequestPermissionRequest,
 ) (*RequestPermissionResponse, error) {
 	return &RequestPermissionResponse{Outcome: &RequestPermissionOutcomeCancelled{}}, nil
+}
+
+// The observed client, held against the gate.
+//
+// design.md recorded this gap as one that affected a real editor: Zed advertises
+// both elicitation modes, and an agent built on this package could not use either.
+// The transcript is the evidence the gap is closed, and it is the editor's own
+// recorded advertisement rather than a capability object written here to agree
+// with the answer.
+func TestTheRecordedEditorCanBeElicitedFrom(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "zed", "terminal-and-cancellation.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var transcript struct {
+		ClientToAgent []json.RawMessage `json:"clientToAgent"`
+	}
+	if err := json.Unmarshal(data, &transcript); err != nil {
+		t.Fatal(err)
+	}
+
+	var peer PeerInfo
+	for _, message := range transcript.ClientToAgent {
+		var envelope struct {
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		if err := json.Unmarshal(message, &envelope); err != nil || envelope.Method != methodInitialize {
+			continue
+		}
+		var request InitializeRequest
+		if err := json.Unmarshal(envelope.Params, &request); err != nil {
+			t.Fatalf("decoding the editor's initialize: %v", err)
+		}
+		peer = PeerInfo{ClientCapabilities: request.ClientCapabilities}
+	}
+	if !hasCapability(peer.ClientCapabilities.Elicitation) {
+		t.Fatal("the transcript no longer carries an initialize advertising elicitation")
+	}
+
+	for _, method := range []string{methodElicitationCreate, methodElicitationComplete} {
+		if err := peer.permits(method); err != nil {
+			t.Errorf("the editor advertised %s and the gate refused it: %v", method, err)
+		}
+	}
+	for name, mode := range map[string]CreateElicitationRequestValue{
+		"form": &ElicitationFormMode{},
+		"url":  &ElicitationURLMode{},
+	} {
+		if err := peer.permitsElicitationMode(mode); err != nil {
+			t.Errorf("the editor advertised the %s mode and the gate refused it: %v", name, err)
+		}
+	}
 }
