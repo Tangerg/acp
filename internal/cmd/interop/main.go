@@ -73,6 +73,7 @@ func run(agentCommand []string, dir string, provenance Provenance) error {
 		{name: "a cancelled turn whose final updates still arrive", file: "cancel.json", play: playCancel},
 		{name: "authentication as control flow", file: "auth.json", play: playAuth},
 		{name: "the workspace operations", file: "workspace.json", play: playWorkspace},
+		{name: "both elicitation modes", file: "elicitation.json", play: playElicitation},
 	}
 
 	for _, scenario := range scenarios {
@@ -165,6 +166,8 @@ type Observed struct {
 	FilesRead          []string `json:"filesRead"`
 	FilesWritten       []string `json:"filesWritten"`
 	TerminalsCreated   int      `json:"terminalsCreated"`
+	Elicitations       []string `json:"elicitations,omitempty"`
+	ElicitationsDone   []string `json:"elicitationsDone,omitempty"`
 	AuthRequired       bool     `json:"authRequired"`
 	Authenticated      bool     `json:"authenticated"`
 }
@@ -202,6 +205,43 @@ func interopClient(seen *observations) (*acp.Client, error) {
 			return &acp.RequestPermissionResponse{
 				Outcome: &acp.SelectedPermissionOutcome{OptionID: request.Options[0].OptionID},
 			}, nil
+		},
+		// Both modes, because the capability the client advertises is what decides
+		// whether the reference implementation may send either.
+		Elicitation: &acp.ElicitationHandlers{
+			Form: func(
+				_ context.Context,
+				request *acp.CreateElicitationRequest,
+				mode *acp.ElicitationFormMode,
+			) (*acp.CreateElicitationResponse, error) {
+				seen.mu.Lock()
+				seen.Elicitations = append(seen.Elicitations,
+					"form:"+describeScope(mode.Value)+":"+request.Message)
+				seen.mu.Unlock()
+				answer := acp.ElicitationContentValueString("main")
+				return &acp.CreateElicitationResponse{
+					Value: &acp.ElicitationAcceptAction{
+						Content: acp.OptValue(map[string]acp.ElicitationContentValue{"branch": &answer}),
+					},
+				}, nil
+			},
+			URL: func(
+				_ context.Context,
+				_ *acp.CreateElicitationRequest,
+				mode *acp.ElicitationURLMode,
+			) (*acp.CreateElicitationResponse, error) {
+				seen.mu.Lock()
+				seen.Elicitations = append(seen.Elicitations, "url:"+string(mode.ElicitationID))
+				seen.mu.Unlock()
+				return &acp.CreateElicitationResponse{
+					Value: &acp.ElicitationAcceptAction{},
+				}, nil
+			},
+			Complete: func(_ context.Context, notification *acp.CompleteElicitationNotification) {
+				seen.mu.Lock()
+				seen.ElicitationsDone = append(seen.ElicitationsDone, string(notification.ElicitationID))
+				seen.mu.Unlock()
+			},
 		},
 		ReadTextFile: func(
 			_ context.Context,
@@ -366,6 +406,40 @@ func playWorkspace(ctx context.Context, conn *acp.ClientConn, seen *observations
 	seen.StopReason = string(response.StopReason)
 	seen.mu.Unlock()
 	return nil
+}
+
+func playElicitation(ctx context.Context, conn *acp.ClientConn, seen *observations) error {
+	session, _, err := conn.NewSession(ctx, &acp.NewSessionRequest{Cwd: "/w"})
+	if err != nil {
+		return err
+	}
+	response, err := session.Prompt(ctx, &acp.PromptParams{
+		Prompt: []acp.ContentBlock{&acp.TextContent{Text: "elicit"}},
+	})
+	if err != nil {
+		return err
+	}
+	seen.mu.Lock()
+	seen.StopReason = string(response.StopReason)
+	seen.mu.Unlock()
+	return nil
+}
+
+// describeScope names which of the two scopes an elicitation arrived under,
+// without naming the identifier that distinguishes them: a request scope carries
+// a JSON-RPC id, and this API does not hand those out.
+func describeScope(scope acp.ElicitationFormModeValue) string {
+	switch scope := scope.(type) {
+	case *acp.ElicitationFormModeSession:
+		if id, tied := scope.ToolCallID.Get(); tied {
+			return "session/" + string(id)
+		}
+		return "session"
+	case *acp.ElicitationFormModeRequest:
+		return "request"
+	default:
+		return "unknown"
+	}
 }
 
 // A recordingTransport logs every message in both directions.

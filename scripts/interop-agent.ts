@@ -79,6 +79,8 @@ class InteropAgent implements Agent {
         return await this.cancelledTurn(params.sessionId);
       case "workspace":
         return await this.workspaceTurn(params.sessionId);
+      case "elicit":
+        return await this.elicitingTurn(params.sessionId);
       default:
         return await this.ordinaryTurn(params.sessionId);
     }
@@ -137,6 +139,38 @@ class InteropAgent implements Agent {
     // accepting until the prompt is answered.
     await this.chunk(session, "stopping");
     return { stopReason: "cancelled" };
+  }
+
+  // Both elicitation modes, from the side this package's client serves. A form
+  // asks for a value and gets one back; a URL sends the user somewhere and is
+  // finished later by a notification rather than by its own response.
+  private async elicitingTurn(session: string): Promise<schema.PromptResponse> {
+    const form = await this.conn.createElicitation({
+      sessionId: session,
+      message: "which branch?",
+      mode: "form",
+      requestedSchema: {
+        type: "object",
+        properties: { branch: { type: "string" } },
+        required: ["branch"],
+      },
+    });
+    const answered =
+      form.action === "accept" && form.content ? JSON.stringify(form.content) : form.action;
+    await this.chunk(session, `form: ${answered}`);
+
+    const page = await this.conn.createElicitation({
+      sessionId: session,
+      toolCallId: "call-1",
+      message: "sign in",
+      mode: "url",
+      elicitationId: "elicit-1",
+      url: "https://example.invalid/sign-in",
+    });
+    await this.chunk(session, `url: ${page.action}`);
+    await this.conn.completeElicitation({ elicitationId: "elicit-1" });
+
+    return { stopReason: "end_turn" };
   }
 
   private async workspaceTurn(session: string): Promise<schema.PromptResponse> {

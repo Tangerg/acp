@@ -1,6 +1,6 @@
 {
   "$comment": "Recorded by internal/cmd/interop against an agent built on the reference implementation. Written by scripts/interop.sh; replayed by interop_test.go. Do not edit.",
-  "scenario": "a cancelled turn whose final updates still arrive",
+  "scenario": "both elicitation modes",
   "provenance": {
     "sdkCommit": "5dac09aaae3ebde1eaaf4a11840f7543f4806e20",
     "sdkVersion": "1.4.0",
@@ -8,14 +8,21 @@
   },
   "observed": {
     "updates": [
-      "agent_message_chunk:working",
-      "agent_message_chunk:stopping"
+      "agent_message_chunk:form: {\"branch\":\"main\"}",
+      "agent_message_chunk:url: accept"
     ],
     "permissionRequests": 0,
-    "stopReason": "cancelled",
+    "stopReason": "end_turn",
     "filesRead": null,
     "filesWritten": null,
     "terminalsCreated": 0,
+    "elicitations": [
+      "form:session:which branch?",
+      "url:elicit-1"
+    ],
+    "elicitationsDone": [
+      "elicit-1"
+    ],
     "authRequired": false,
     "authenticated": false
   },
@@ -105,7 +112,7 @@
           "prompt": [
             {
               "type": "text",
-              "text": "cancel"
+              "text": "elicit"
             }
           ]
         }
@@ -115,15 +122,22 @@
       "from": "agent",
       "message": {
         "jsonrpc": "2.0",
-        "method": "session/update",
+        "id": 0,
+        "method": "elicitation/create",
         "params": {
           "sessionId": "interop-session",
-          "update": {
-            "sessionUpdate": "agent_message_chunk",
-            "content": {
-              "type": "text",
-              "text": "working"
-            }
+          "message": "which branch?",
+          "mode": "form",
+          "requestedSchema": {
+            "type": "object",
+            "properties": {
+              "branch": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "branch"
+            ]
           }
         }
       }
@@ -132,9 +146,12 @@
       "from": "client",
       "message": {
         "jsonrpc": "2.0",
-        "method": "session/cancel",
-        "params": {
-          "sessionId": "interop-session"
+        "id": 0,
+        "result": {
+          "action": "accept",
+          "content": {
+            "branch": "main"
+          }
         }
       }
     },
@@ -149,9 +166,62 @@
             "sessionUpdate": "agent_message_chunk",
             "content": {
               "type": "text",
-              "text": "stopping"
+              "text": "form: {\"branch\":\"main\"}"
             }
           }
+        }
+      }
+    },
+    {
+      "from": "agent",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "elicitation/create",
+        "params": {
+          "sessionId": "interop-session",
+          "toolCallId": "call-1",
+          "message": "sign in",
+          "mode": "url",
+          "elicitationId": "elicit-1",
+          "url": "https://example.invalid/sign-in"
+        }
+      }
+    },
+    {
+      "from": "client",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "action": "accept"
+        }
+      }
+    },
+    {
+      "from": "agent",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "interop-session",
+          "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {
+              "type": "text",
+              "text": "url: accept"
+            }
+          }
+        }
+      }
+    },
+    {
+      "from": "agent",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "elicitation/complete",
+        "params": {
+          "elicitationId": "elicit-1"
         }
       }
     },
@@ -161,7 +231,7 @@
         "jsonrpc": "2.0",
         "id": 3,
         "result": {
-          "stopReason": "cancelled"
+          "stopReason": "end_turn"
         }
       }
     }

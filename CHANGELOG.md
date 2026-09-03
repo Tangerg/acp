@@ -26,6 +26,10 @@ migration instructions.
   A client that advertised elicitation before this release was refused at
   construction; it is now accepted when the handlers back it.
 
+  Both verification layers cover it: 22 cross-SDK fixture cases decided by the
+  reference TypeScript SDK, and a recorded subprocess transcript of that SDK's
+  agent eliciting from this package's client in both modes.
+
   The generated closure grows from 142 of the schema's 170 definitions to 153.
   `ElicitationRequestScope` is generated unexported, so the arms that carry it are
   exported types wrapping an unexported one: a client can tell a request-scoped

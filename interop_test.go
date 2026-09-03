@@ -46,6 +46,8 @@ type transcript struct {
 		FilesRead          []string `json:"filesRead"`
 		FilesWritten       []string `json:"filesWritten"`
 		TerminalsCreated   int      `json:"terminalsCreated"`
+		Elicitations       []string `json:"elicitations"`
+		ElicitationsDone   []string `json:"elicitationsDone"`
 		AuthRequired       bool     `json:"authRequired"`
 		Authenticated      bool     `json:"authenticated"`
 	} `json:"observed"`
@@ -463,6 +465,8 @@ type observedFields struct {
 	FilesRead          []string
 	FilesWritten       []string
 	TerminalsCreated   int
+	Elicitations       []string
+	ElicitationsDone   []string
 	AuthRequired       bool
 	Authenticated      bool
 }
@@ -486,6 +490,8 @@ func sameObservations(got observedFields, want struct {
 	FilesRead          []string `json:"filesRead"`
 	FilesWritten       []string `json:"filesWritten"`
 	TerminalsCreated   int      `json:"terminalsCreated"`
+	Elicitations       []string `json:"elicitations"`
+	ElicitationsDone   []string `json:"elicitationsDone"`
 	AuthRequired       bool     `json:"authRequired"`
 	Authenticated      bool     `json:"authenticated"`
 },
@@ -495,6 +501,8 @@ func sameObservations(got observedFields, want struct {
 		strings.Join(got.FilesRead, "|") == strings.Join(want.FilesRead, "|") &&
 		strings.Join(got.FilesWritten, "|") == strings.Join(want.FilesWritten, "|") &&
 		got.TerminalsCreated == want.TerminalsCreated &&
+		strings.Join(got.Elicitations, "|") == strings.Join(want.Elicitations, "|") &&
+		strings.Join(got.ElicitationsDone, "|") == strings.Join(want.ElicitationsDone, "|") &&
 		got.AuthRequired == want.AuthRequired &&
 		got.Authenticated == want.Authenticated
 }
@@ -521,6 +529,39 @@ func interopClient(seen *interopObservations) (*acp.Client, error) {
 			return &acp.RequestPermissionResponse{
 				Outcome: &acp.SelectedPermissionOutcome{OptionID: request.Options[0].OptionID},
 			}, nil
+		},
+		Elicitation: &acp.ElicitationHandlers{
+			Form: func(
+				_ context.Context,
+				request *acp.CreateElicitationRequest,
+				mode *acp.ElicitationFormMode,
+			) (*acp.CreateElicitationResponse, error) {
+				seen.mu.Lock()
+				seen.Elicitations = append(seen.Elicitations,
+					"form:"+describeInteropScope(mode.Value)+":"+request.Message)
+				seen.mu.Unlock()
+				answer := acp.ElicitationContentValueString("main")
+				return &acp.CreateElicitationResponse{
+					Value: &acp.ElicitationAcceptAction{
+						Content: acp.OptValue(map[string]acp.ElicitationContentValue{"branch": &answer}),
+					},
+				}, nil
+			},
+			URL: func(
+				_ context.Context,
+				_ *acp.CreateElicitationRequest,
+				mode *acp.ElicitationURLMode,
+			) (*acp.CreateElicitationResponse, error) {
+				seen.mu.Lock()
+				seen.Elicitations = append(seen.Elicitations, "url:"+string(mode.ElicitationID))
+				seen.mu.Unlock()
+				return &acp.CreateElicitationResponse{Value: &acp.ElicitationAcceptAction{}}, nil
+			},
+			Complete: func(_ context.Context, notification *acp.CompleteElicitationNotification) {
+				seen.mu.Lock()
+				seen.ElicitationsDone = append(seen.ElicitationsDone, string(notification.ElicitationID))
+				seen.mu.Unlock()
+			},
 		},
 		ReadTextFile: func(
 			_ context.Context,
@@ -580,5 +621,22 @@ func describeInteropUpdate(update acp.SessionUpdate) string {
 		return "tool_call_update:" + string(status)
 	default:
 		return fmt.Sprintf("%T", update)
+	}
+}
+
+// describeInteropScope names which scope an elicitation arrived under without
+// naming the identifier that tells them apart: a request scope carries a JSON-RPC
+// id, and this API does not hand those out.
+func describeInteropScope(scope acp.ElicitationFormModeValue) string {
+	switch scope := scope.(type) {
+	case *acp.ElicitationFormModeSession:
+		if id, tied := scope.ToolCallID.Get(); tied {
+			return "session/" + string(id)
+		}
+		return "session"
+	case *acp.ElicitationFormModeRequest:
+		return "request"
+	default:
+		return "unknown"
 	}
 }

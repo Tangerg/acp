@@ -680,8 +680,11 @@ in agreement:
   one would omit exactly the type a schema bump just added. What it does not do is
   say how a populated value encodes; that is what the fixtures and the golden
   tests are for.
-- **Subprocess interoperability**: four transcripts record this module's client
-  against an agent built on the reference SDK as a real subprocess.
+- **Subprocess interoperability**: five transcripts record this module's client
+  against an agent built on the reference SDK as a real subprocess. One of them is
+  the reference implementation eliciting from this package's client in both modes,
+  which is the inbound direction an agent built on this package cannot exercise:
+  its own outbound gate refuses a mode the client did not advertise.
 - **Editor interoperability**: Zed spawned an agent built on this module
   and a person drove it, including the stop button. Every property Zed sent
   survives this package's types unchanged.

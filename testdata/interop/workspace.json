@@ -40,6 +40,10 @@
             "terminal": true,
             "auth": {
               "terminal": false
+            },
+            "elicitation": {
+              "form": {},
+              "url": {}
             }
           },
           "clientInfo": {
