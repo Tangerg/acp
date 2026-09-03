@@ -20,9 +20,18 @@ import "reflect"
 // them quietly wrong rather than loudly broken.
 //
 // Meta and Opt own their hidden representation and copy themselves. Every other
-// retained schema type is generated with exported fields, so reaching an
-// unexported field here is an internal invariant violation rather than a value to
-// share behind the caller's back.
+// type reachable from a retained value is generated with exported fields, so
+// reaching an unexported field here is an internal invariant violation rather
+// than a value to share behind the caller's back.
+//
+// Reachable from a retained value is the whole of the claim, and it is narrower
+// than every generated type. A union arm may carry unexported state — the
+// elicitation scope that names a JSON-RPC request identifier does, deliberately,
+// because this API does not hand those out — and copying one would panic. Nothing
+// retained holds one: a configuration and a Peer snapshot are identities and
+// capabilities, and the one place this package copies a mode copies it before the
+// scope is written into it. clone_test.go walks the retained types and holds that
+// boundary, which is what makes this paragraph a claim rather than a hope.
 
 func deepCopy[T any](value T) T {
 	var copied T
