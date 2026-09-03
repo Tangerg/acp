@@ -133,9 +133,7 @@ jobs:
           # gorelease will only suggest a version when that baseline is also the
           # newest one it can see. The module proxy's version list trails a fresh
           # tag by up to half an hour, so through the proxy this asks git which
-          # release is newest and a cache whether it agrees. The release path
-          # below must not copy this: there, git's newest tag is the one being
-          # released, and the baseline is deliberately the one before it.
+          # release is newest and a cache whether it agrees.
           if [[ -z "$version" ]]; then
             if [[ "$base" == none ]]; then
               echo "no released baseline to compare against yet"
@@ -145,13 +143,35 @@ jobs:
             exit 0
           fi
 
+          # A tag push, which means publication already happened — and that
+          # decides what is still answerable. Both of gorelease's comparison
+          # modes refuse a version that exists: -version because the version is
+          # taken, and suggest mode because it needs the baseline to be the
+          # newest release, which the tag just pushed now is. So compatibility
+          # against the baseline is a question for before the tag, and
+          # scripts/release.sh is where it is asked, while the answer can still
+          # stop something.
+          #
+          # What survives publication is whether the module can be released under
+          # this version at all. That catches the one release mistake an
+          # immutable tag cannot walk back and a compatibility report would never
+          # mention: a major bump whose module path was not bumped with it.
+          if [[ -n "$current_tag" ]]; then
+            gorelease -base=none -version="$version"
+            exit 0
+          fi
+
+          # A version named through workflow_dispatch: the rehearsal, on a
+          # version that does not exist yet, which is the only way CI can ask the
+          # compatibility question at all.
+          #
           # Major zero is the explicitly unstable development period: report every
           # API change, but do not pretend patch-number compatibility is promised.
           # From v1 onward the proposed tag must satisfy Go's compatibility rules
           # against the preceding immutable release.
           if [[ "$version" == v0.* ]]; then
             gorelease -base=none -version="$version" >/dev/null
-            gorelease -base="$base"
+            GOPROXY=direct gorelease -base="$base"
           else
             gorelease -base="$base" -version="$version"
           fi
