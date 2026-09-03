@@ -169,9 +169,13 @@ func (config *ClientConfig) resolveCapabilities() (ClientCapabilities, error) {
 
 	stated := deepCopy(*config.Capabilities)
 	exceeded := gates.exceeded(PeerInfo{ClientCapabilities: stated}, sideClient, config.implements)
+	// The elicitation modes are checked beside the methods rather than after them,
+	// because an advertisement is one promise: a mode with no handler is refused on
+	// its first use exactly as a method with no handler is.
+	exceeded = append(exceeded, exceededElicitationModes(stated, config.Elicitation)...)
 	if len(exceeded) > 0 {
 		return ClientCapabilities{}, fmt.Errorf(
-			"acp: ClientConfig.Capabilities advertises unsupported methods: %v", exceeded)
+			"acp: ClientConfig.Capabilities advertises what this client cannot serve: %v", exceeded)
 	}
 	return stated, nil
 }
@@ -195,9 +199,12 @@ func (config *ClientConfig) implements(method string) bool {
 		// capability, and the handler group has already refused serving neither.
 		return config.Elicitation != nil
 	case methodElicitationComplete:
-		// Gated on the url mode, and check has already tied Complete to it in both
-		// directions, so this reads the handler that actually serves the method.
-		return config.Elicitation != nil && config.Elicitation.Complete != nil
+		// Serving the url mode is what makes a client able to accept completions.
+		// Whether one reaches the application is Complete's business: the protocol
+		// makes sending optional and requires a client to ignore a completion it
+		// does not recognise, so a client with no Complete handler is not one that
+		// cannot serve the method.
+		return config.Elicitation != nil && config.Elicitation.URL != nil
 	default:
 		return false
 	}
@@ -212,9 +219,17 @@ func (config *ClientConfig) clone() ClientConfig {
 	copied.Info = deepCopy(config.Info)
 	copied.Meta = deepCopy(config.Meta)
 	copied.Capabilities = deepCopy(config.Capabilities)
+	// Every handler group is copied, not aliased. A caller who kept a pointer
+	// could otherwise swap a handler after NewClient validated the set, changing
+	// what a running client serves without going back through the check that
+	// made it valid — and racing the dispatcher that reads it.
 	if config.Terminal != nil {
 		handlers := *config.Terminal
 		copied.Terminal = &handlers
+	}
+	if config.Elicitation != nil {
+		handlers := *config.Elicitation
+		copied.Elicitation = &handlers
 	}
 	return copied
 }
@@ -244,6 +259,7 @@ func (c *Client) Connect(ctx context.Context, transport Transport) (*ClientConn,
 
 	conn := &ClientConn{connection: newConnection(), client: c}
 	conn.link = newLink(stream, conn, c.config.Logger, c.config.Limits)
+	conn.elicitations.limit = conn.limits.OutstandingElicitations
 	conn.run()
 
 	if err := conn.initialize(ctx); err != nil {
@@ -272,7 +288,8 @@ type ClientConn struct {
 	client   *Client
 	sessions sessions[ClientSession]
 
-	turns clientTurns
+	turns        clientTurns
+	elicitations urlElicitations
 }
 
 func (c *ClientConn) initialize(ctx context.Context) error {
@@ -400,7 +417,7 @@ func (c *ClientConn) serve(ctx context.Context, request *jsonrpc.Request) (any, 
 	case methodElicitationCreate:
 		return c.createElicitation(ctx, request)
 	case methodElicitationComplete:
-		return nil, dispatchNotificationContext(ctx, request, config.Elicitation.completion())
+		return nil, c.completeElicitation(ctx, request)
 	}
 
 	if isStandardMethod(request.Method) {

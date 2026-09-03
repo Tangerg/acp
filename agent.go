@@ -262,6 +262,7 @@ func (a *Agent) Connect(ctx context.Context, transport Transport) (*AgentConn, e
 
 	conn := &AgentConn{connection: newConnection(), agent: a}
 	conn.link = newLink(stream, conn, a.config.Logger, a.config.Limits)
+	conn.elicitations.limit = conn.limits.OutstandingElicitations
 	conn.run()
 
 	a.conns.add(conn)
@@ -307,7 +308,8 @@ type AgentConn struct {
 	agent    *Agent
 	sessions sessions[AgentSession]
 
-	turns agentTurns
+	turns        agentTurns
+	elicitations urlElicitations
 }
 
 // Call sends an extension request. Extension methods only; see [ClientConn.Call].

@@ -6,7 +6,7 @@ import (
 )
 
 // A message's size and the time this side will wait were already bounded; its
-// count was not, and count is what a peer controls for free. These are the three
+// count was not, and count is what a peer controls for free. These are the four
 // places one connection could grow without limit on nothing but inbound messages.
 //
 // They are not memory proofs — a count times maxMessageBytes is still a large
@@ -33,6 +33,11 @@ const (
 	// So a peer opening a session per prompt and closing none grows this until the
 	// connection ends.
 	defaultSessionHandles = 1024
+
+	// A URL elicitation stays outstanding until a completion clears it, and the
+	// protocol makes sending one optional — so a peer that opens pages and
+	// completes none grows this set for as long as the connection lives.
+	defaultOutstandingElicitations = 1024
 )
 
 // Limits bounds what one connection will hold on a peer's behalf. The zero value
@@ -45,9 +50,10 @@ const (
 // disconnection — which is why this is a field and not a constant. The package
 // cannot know how fast a caller's handler returns.
 type Limits struct {
-	QueuedDeliveries int
-	InflightRequests int
-	SessionHandles   int
+	QueuedDeliveries        int
+	InflightRequests        int
+	SessionHandles          int
+	OutstandingElicitations int
 }
 
 func (l Limits) resolve() Limits {
@@ -59,6 +65,9 @@ func (l Limits) resolve() Limits {
 	}
 	if l.SessionHandles == 0 {
 		l.SessionHandles = defaultSessionHandles
+	}
+	if l.OutstandingElicitations == 0 {
+		l.OutstandingElicitations = defaultOutstandingElicitations
 	}
 	return l
 }
@@ -74,6 +83,7 @@ func (l Limits) check() error {
 		{"QueuedDeliveries", l.QueuedDeliveries},
 		{"InflightRequests", l.InflightRequests},
 		{"SessionHandles", l.SessionHandles},
+		{"OutstandingElicitations", l.OutstandingElicitations},
 	} {
 		if bound.value < 0 {
 			return fmt.Errorf("acp: Limits.%s is %d; a bound cannot be negative", bound.name, bound.value)
@@ -83,7 +93,8 @@ func (l Limits) check() error {
 }
 
 var (
-	errTooManyQueued   = errors.New("acp: inbound delivery queue limit exceeded")
-	errTooManyInflight = errors.New("acp: inbound request limit exceeded")
-	errTooManySessions = errors.New("acp: session handle limit exceeded")
+	errTooManyQueued       = errors.New("acp: inbound delivery queue limit exceeded")
+	errTooManyInflight     = errors.New("acp: inbound request limit exceeded")
+	errTooManySessions     = errors.New("acp: session handle limit exceeded")
+	errTooManyElicitations = errors.New("acp: outstanding URL elicitation limit exceeded")
 )

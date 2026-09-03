@@ -388,8 +388,10 @@ func TestASuppliedScopeIsRefused(t *testing.T) {
 	}
 }
 
-// The two rules that make an advertisement servable, and the one that keeps a
-// tool call out of a scope that has no session.
+// A group that could not serve what it advertises is refused. Serving the URL
+// mode without a completion handler is not one of those: the protocol makes
+// sending a completion optional, so a client that never hears about one is a
+// client that chose not to.
 func TestElicitationConfigurationIsRefusedWhenItCannotBeServed(t *testing.T) {
 	form := func(
 		context.Context,
@@ -409,7 +411,6 @@ func TestElicitationConfigurationIsRefusedWhenItCannotBeServed(t *testing.T) {
 
 	for name, handlers := range map[string]*acp.ElicitationHandlers{
 		"neither mode":                  {},
-		"a url mode with no completion": {URL: url},
 		"a completion with no url mode": {Form: form, Complete: complete},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -423,6 +424,18 @@ func TestElicitationConfigurationIsRefusedWhenItCannotBeServed(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("a url mode with no completion", func(t *testing.T) {
+		_, err := acp.NewClient(&acp.ClientConfig{
+			SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+			RequestPermission: denyingPermission,
+			Elicitation:       &acp.ElicitationHandlers{URL: url},
+		})
+		if err != nil {
+			t.Fatalf("a client that shows pages and does not want to hear they finished "+
+				"was refused, and the protocol makes the completion optional: %v", err)
+		}
+	})
 }
 
 // A request-scoped elicitation has no session, so the tool call a session scope
@@ -580,5 +593,93 @@ func TestElicitationRefusesWhatACallerGetsWrong(t *testing.T) {
 				t.Fatalf("refused with %q, which does not mention %q", test.err, test.wants)
 			}
 		})
+	}
+}
+
+// The identifier's lifetime, which the connection owns because neither side's
+// application can see the whole set.
+//
+// An agent "MUST keep each elicitationId unique among outstanding URL
+// elicitations on that Agent-Client connection", and a URL elicitation stays
+// outstanding past its own response — the response says the page was shown, the
+// completion says it is finished.
+func TestAURLElicitationIdentifierIsUniqueWhileItIsOutstanding(t *testing.T) {
+	shown := make(chan struct{}, 4)
+	client, err := acp.NewClient(&acp.ClientConfig{
+		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		RequestPermission: denyingPermission,
+		Elicitation: &acp.ElicitationHandlers{
+			URL: func(
+				context.Context,
+				*acp.CreateElicitationRequest,
+				*acp.ElicitationURLMode,
+			) (*acp.CreateElicitationResponse, error) {
+				shown <- struct{}{}
+				return &acp.CreateElicitationResponse{Value: &acp.ElicitationAcceptAction{}}, nil
+			},
+			Complete: func(context.Context, *acp.CompleteElicitationNotification) {},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	page := func(id acp.ElicitationID) *acp.CreateElicitationParams {
+		return &acp.CreateElicitationParams{
+			Message: "sign in",
+			Mode: &acp.ElicitationURLMode{
+				ElicitationID: id,
+				URL:           "https://example.invalid/",
+			},
+		}
+	}
+
+	var reused, unopened, afterCompleting, secondCompletion error
+	agent := testAgent(t, func(
+		ctx context.Context,
+		session *acp.AgentSession,
+		_ *acp.PromptRequest,
+	) (*acp.PromptResponse, error) {
+		conn := session.Conn()
+		if _, err := session.CreateElicitation(ctx, page("e-1")); err != nil {
+			return nil, err
+		}
+		_, reused = session.CreateElicitation(ctx, page("e-1"))
+		unopened = conn.CompleteElicitation(ctx, &acp.CompleteElicitationNotification{
+			ElicitationID: "never-opened",
+		})
+
+		// Completing frees the name, so the same page may be opened again.
+		if err := conn.CompleteElicitation(ctx, &acp.CompleteElicitationNotification{
+			ElicitationID: "e-1",
+		}); err != nil {
+			return nil, err
+		}
+		secondCompletion = conn.CompleteElicitation(ctx, &acp.CompleteElicitationNotification{
+			ElicitationID: "e-1",
+		})
+		_, afterCompleting = session.CreateElicitation(ctx, page("e-1"))
+		return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+	})
+
+	session := connectAndOpen(t, client, agent)
+	if _, err := session.Prompt(context.Background(), &acp.PromptParams{}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	if reused == nil || !strings.Contains(reused.Error(), "already outstanding") {
+		t.Errorf("a second elicitation under a live identifier was answered %v, want a refusal", reused)
+	}
+	if unopened == nil || !strings.Contains(unopened.Error(), "not outstanding") {
+		t.Errorf("completing an elicitation nothing opened was answered %v, want a refusal", unopened)
+	}
+	if secondCompletion == nil {
+		t.Error("completing the same elicitation twice was allowed, so the second names nothing")
+	}
+	if afterCompleting != nil {
+		t.Errorf("the identifier was not free again after its completion: %v", afterCompleting)
+	}
+	if len(shown) != 2 {
+		t.Errorf("the client was shown %d pages, want 2: the first and the one reopened after it closed", len(shown))
 	}
 }

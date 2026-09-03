@@ -192,8 +192,9 @@ var gates = gateTable{
 		gating:     gatingCapability,
 		capability: "clientCapabilities.elicitation",
 		owner:      sideClient,
-		advertised: func(peer PeerInfo) bool { return hasCapability(peer.ClientCapabilities.Elicitation) },
-		why:        `"Determines which elicitation modes the agent may use"`,
+		advertised: func(peer PeerInfo) bool { return anyElicitationMode(peer.ClientCapabilities) },
+		why: `"Determines which elicitation modes the agent may use" — which is why a present ` +
+			"object advertising no mode does not advertise the method either",
 	},
 	methodElicitationComplete: {
 		gating:     gatingCapability,
@@ -217,6 +218,53 @@ func sessionCapability(name string, set func(SessionCapabilities) bool) methodGa
 func elicitationURL(peer PeerInfo) bool {
 	elicitation, advertised := peer.ClientCapabilities.Elicitation.Get()
 	return advertised && hasCapability(elicitation.URL)
+}
+
+// anyElicitationMode reports whether the client can render anything at all.
+//
+// A present object advertising no mode is the case worth naming. The schema says
+// each mode field means "not advertised" when omitted, and the elicitation RFD is
+// explicit that "a present capability object with no non-null mode fields
+// advertises no supported modes, not form support". So it does not advertise the
+// method either: an agent permitted to call it would have every call refused for
+// its mode, which is a client saying yes and meaning no.
+func anyElicitationMode(client ClientCapabilities) bool {
+	elicitation, advertised := client.Elicitation.Get()
+	return advertised && (hasCapability(elicitation.Form) || hasCapability(elicitation.URL))
+}
+
+// exceededElicitationModes reports the modes an advertisement claims that no
+// handler serves.
+//
+// The mode capabilities gate a parameter rather than a method, so
+// [gateTable.exceeded] cannot see them — it walks methods. The promise is the same
+// one: advertising a mode this client cannot render is broken on the first
+// elicitation that uses it, and the place to refuse it is before a connection
+// exists rather than in a -32602 the agent has to interpret.
+//
+// Advertising fewer modes than the handlers implement is left alone. That is a
+// client choosing not to offer something, which is its own to decide.
+func exceededElicitationModes(stated ClientCapabilities, handlers *ElicitationHandlers) []string {
+	elicitation, advertised := stated.Elicitation.Get()
+	if !advertised {
+		return nil
+	}
+	var exceeded []string
+	for _, mode := range []struct {
+		name       string
+		advertised bool
+		served     bool
+	}{
+		{elicitationModeForm, hasCapability(elicitation.Form), handlers != nil && handlers.Form != nil},
+		{elicitationModeURL, hasCapability(elicitation.URL), handlers != nil && handlers.URL != nil},
+	} {
+		if mode.advertised && !mode.served {
+			exceeded = append(exceeded,
+				"clientCapabilities.elicitation."+mode.name+
+					" advertises a mode with no handler that renders it")
+		}
+	}
+	return exceeded
 }
 
 // Capability objects use present `{}` as true and both absent and null as

@@ -17,8 +17,16 @@ other entry is additive or a fix.
   A client sets `ClientConfig.Elicitation` to an `ElicitationHandlers` whose
   `Form` and `URL` fields each advertise the mode they serve. Both modes arrive
   through one method, so a mode with no handler is refused with invalid-params
-  rather than method-not-found. `Complete` is required alongside `URL` and
-  refused without it.
+  rather than method-not-found. `Complete` is optional even alongside `URL`,
+  because the protocol makes sending a completion optional, and refused without
+  it, because nothing could reach it.
+
+  The connection owns a URL elicitation's identifier for as long as it is
+  outstanding, which is longer than the request that created it. That is what
+  keeps the two rules neither application can keep for itself: an agent's
+  identifier is unique among the URL elicitations one connection has open, and a
+  client ignores a completion for an identifier it does not recognise or has
+  already closed.
 
   An agent calls `AgentSession.CreateElicitation` to elicit within a session, or
   `AgentConn.CreateElicitation` to elicit within the request it is serving.

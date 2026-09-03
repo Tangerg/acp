@@ -187,17 +187,36 @@ func TestAdvertisingAnUnimplementedMethodIsRefusedAtConstruction(t *testing.T) {
 		})
 	}
 
-	t.Run("a client advertising elicitation with no handlers", func(t *testing.T) {
+	t.Run("a client advertising an elicitation mode it cannot render", func(t *testing.T) {
 		_, err := NewClient(&ClientConfig{
-			SessionUpdate: func(context.Context, *SessionNotification) {},
-			RequestPermission: func(context.Context, *RequestPermissionRequest) (*RequestPermissionResponse, error) {
-				return &RequestPermissionResponse{Outcome: &RequestPermissionOutcomeCancelled{}}, nil
-			},
-			Capabilities: &ClientCapabilities{Elicitation: OptValue(ElicitationCapabilities{})},
+			SessionUpdate:     func(context.Context, *SessionNotification) {},
+			RequestPermission: permissionStub,
+			Capabilities: &ClientCapabilities{Elicitation: OptValue(ElicitationCapabilities{
+				Form: OptValue(ElicitationFormCapabilities{}),
+			})},
 		})
 		if err == nil {
-			t.Fatal("a client advertised elicitation with nothing to serve it, and the inbound " +
-				"gate would then admit a method whose handler group is nil")
+			t.Fatal("a client advertised the form mode with no handler that renders it, so every " +
+				"form elicitation would be refused after the agent was told it could send one")
+		}
+	})
+
+	// The mode is checked in the same direction as a method: advertising more than
+	// the handlers serve is refused, advertising less is a client's own choice.
+	t.Run("a client advertising one mode of two it serves", func(t *testing.T) {
+		_, err := NewClient(&ClientConfig{
+			SessionUpdate:     func(context.Context, *SessionNotification) {},
+			RequestPermission: permissionStub,
+			Elicitation: &ElicitationHandlers{
+				Form: formStub,
+				URL:  urlStub,
+			},
+			Capabilities: &ClientCapabilities{Elicitation: OptValue(ElicitationCapabilities{
+				Form: OptValue(ElicitationFormCapabilities{}),
+			})},
+		})
+		if err != nil {
+			t.Fatalf("a client that renders both modes and offers one was refused: %v", err)
 		}
 	})
 }
@@ -465,5 +484,56 @@ func TestEveryCapabilityIsRead(t *testing.T) {
 		if _, listed := leaves[path]; !listed {
 			t.Errorf("the gate table reads %s, which this list does not name", path)
 		}
+	}
+}
+
+func permissionStub(
+	context.Context,
+	*RequestPermissionRequest,
+) (*RequestPermissionResponse, error) {
+	return &RequestPermissionResponse{Outcome: &RequestPermissionOutcomeCancelled{}}, nil
+}
+
+func formStub(
+	context.Context,
+	*CreateElicitationRequest,
+	*ElicitationFormMode,
+) (*CreateElicitationResponse, error) {
+	return &CreateElicitationResponse{Value: &ElicitationAcceptAction{}}, nil
+}
+
+func urlStub(
+	context.Context,
+	*CreateElicitationRequest,
+	*ElicitationURLMode,
+) (*CreateElicitationResponse, error) {
+	return &CreateElicitationResponse{Value: &ElicitationAcceptAction{}}, nil
+}
+
+// A present capability object advertising no mode advertises nothing, so it
+// promises nothing to break. The elicitation RFD is explicit that it "advertises
+// no supported modes, not form support", and the method gate reads it the same
+// way: an agent is not permitted a call every mode of which would be refused.
+func TestAnEmptyElicitationObjectAdvertisesNoMode(t *testing.T) {
+	empty := PeerInfo{ClientCapabilities: ClientCapabilities{
+		Elicitation: OptValue(ElicitationCapabilities{}),
+	}}
+	if empty.permits(methodElicitationCreate) == nil {
+		t.Error("a client advertising no mode was offered elicitation/create, so every call " +
+			"it accepted would then be refused for its mode")
+	}
+
+	client, err := NewClient(&ClientConfig{
+		SessionUpdate:     func(context.Context, *SessionNotification) {},
+		RequestPermission: permissionStub,
+		Capabilities: &ClientCapabilities{
+			Elicitation: OptValue(ElicitationCapabilities{}),
+		},
+	})
+	if err != nil {
+		t.Fatalf("an empty elicitation object was refused, and it promises nothing: %v", err)
+	}
+	if anyElicitationMode(client.capabilities) {
+		t.Error("an empty elicitation object was read as advertising a mode")
 	}
 }

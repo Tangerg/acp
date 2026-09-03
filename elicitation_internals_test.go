@@ -208,3 +208,118 @@ func TestTheRecordedEditorCanBeElicitedFrom(t *testing.T) {
 		}
 	}
 }
+
+// "Clients MUST ignore notifications referencing unknown or already-completed
+// IDs", which only a peer outside this package can test: an agent built here
+// refuses to complete anything it did not open.
+//
+// Ignoring is the connection's job rather than the application's. A handler
+// cannot tell a completion for a page it never showed from one it has already
+// closed, because it does not hold the set.
+func TestACompletionForAnUnknownElicitationIsIgnored(t *testing.T) {
+	completions := make(chan ElicitationID, 4)
+	client, err := NewClient(&ClientConfig{
+		SessionUpdate:     func(context.Context, *SessionNotification) {},
+		RequestPermission: denyingPermissionInternal,
+		Elicitation: &ElicitationHandlers{
+			URL: func(
+				context.Context,
+				*CreateElicitationRequest,
+				*ElicitationURLMode,
+			) (*CreateElicitationResponse, error) {
+				return &CreateElicitationResponse{Value: &ElicitationAcceptAction{}}, nil
+			},
+			Complete: func(_ context.Context, notification *CompleteElicitationNotification) {
+				completions <- notification.ElicitationID
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	stream, conn := connectRawClient(t, client)
+	defer conn.Close() //nolint:errcheck // idempotent.
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Never opened.
+	if err := stream.Write(ctx, rawNotification(methodElicitationComplete,
+		`{"elicitationId":"never-shown"}`)); err != nil {
+		t.Fatalf("write the unknown completion: %v", err)
+	}
+
+	// Opened, then completed twice. The first reaches the application; the second
+	// names an identifier that is no longer outstanding.
+	url := `{"message":"sign in","mode":"url","elicitationId":"e-1",` +
+		`"url":"https://example.invalid/","sessionId":"sess-1"}`
+	if err := stream.Write(ctx, rawCall(7, methodElicitationCreate, url)); err != nil {
+		t.Fatalf("write the elicitation: %v", err)
+	}
+	if _, err := stream.Read(ctx); err != nil {
+		t.Fatalf("read the elicitation answer: %v", err)
+	}
+	for range 2 {
+		if err := stream.Write(ctx, rawNotification(methodElicitationComplete,
+			`{"elicitationId":"e-1"}`)); err != nil {
+			t.Fatalf("write the completion: %v", err)
+		}
+	}
+
+	// One round trip after the notifications, which the ordered delivery stage
+	// puts behind them, so everything above has been served by the time it answers.
+	if err := stream.Write(ctx, rawCall(8, methodElicitationCreate, url)); err != nil {
+		t.Fatalf("write the second elicitation: %v", err)
+	}
+	if _, err := stream.Read(ctx); err != nil {
+		t.Fatalf("read the second answer: %v", err)
+	}
+
+	if got := len(completions); got != 1 {
+		t.Fatalf("the application saw %d completions, want 1: the unknown one and the repeat "+
+			"are both the connection's to ignore", got)
+	}
+	if id := <-completions; id != "e-1" {
+		t.Errorf("the application saw a completion for %q", id)
+	}
+}
+
+// A client that renders pages and does not want to hear they finished still
+// tracks them, because the tracking is what the ignore rule is made of.
+func TestACompletionIsClosedEvenWithNoHandler(t *testing.T) {
+	client, err := NewClient(&ClientConfig{
+		SessionUpdate:     func(context.Context, *SessionNotification) {},
+		RequestPermission: denyingPermissionInternal,
+		Elicitation: &ElicitationHandlers{
+			URL: func(
+				context.Context,
+				*CreateElicitationRequest,
+				*ElicitationURLMode,
+			) (*CreateElicitationResponse, error) {
+				return &CreateElicitationResponse{Value: &ElicitationAcceptAction{}}, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	stream, conn := connectRawClient(t, client)
+	defer conn.Close() //nolint:errcheck // idempotent.
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	url := `{"message":"sign in","mode":"url","elicitationId":"e-1",` +
+		`"url":"https://example.invalid/","sessionId":"sess-1"}`
+	if err := stream.Write(ctx, rawCall(7, methodElicitationCreate, url)); err != nil {
+		t.Fatalf("write the elicitation: %v", err)
+	}
+	if _, err := stream.Read(ctx); err != nil {
+		t.Fatalf("read the answer: %v", err)
+	}
+	if !conn.elicitations.close("e-1") {
+		t.Fatal("the elicitation was not recorded, so a completion for it would have been ignored")
+	}
+}
