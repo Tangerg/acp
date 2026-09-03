@@ -141,8 +141,11 @@ than routine cleanup.
 
 Tags are immutable dependency promises. Never move or recreate a published tag.
 [`scripts/release.sh`](scripts/release.sh) is the only supported release path. It
-refuses a dirty tree, an existing tag, and a `replace` directive. It then checks
-compatibility against the preceding tag before creating and pushing the release.
+refuses a dirty tree, an existing tag, a `replace` directive, and a version the
+repository's own prose does not claim — `CHANGELOG.md` must have the entry and
+`README.md`'s table must name it, because a tag is the one statement of the
+version that a later commit cannot correct. It then checks compatibility against
+the preceding tag before creating and pushing the release.
 
 Inspect the dry run before enabling its only destructive mode:
 

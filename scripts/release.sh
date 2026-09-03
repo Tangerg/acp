@@ -85,6 +85,19 @@ if grep -qE '^[[:space:]]*replace[[:space:]]' go.mod; then
 	exit 2
 fi
 
+# The tag is not the only place the repository names its version, and it is the
+# only one a later commit cannot correct. Prose that still names the previous
+# release is not wrong on the wire, but it is wrong in the two files a reader
+# consults first, and the fix is then another release. Both are one grep.
+if ! grep -qE "^## ${tag//./\\.}( |$)" CHANGELOG.md; then
+	echo "release: CHANGELOG.md has no '## $tag' entry" >&2
+	exit 2
+fi
+if ! grep -qF "| Module version | \`$tag\` |" README.md; then
+	echo "release: README.md's version table does not name $tag" >&2
+	exit 2
+fi
+
 previous=$(git tag --list 'v*' --sort=-v:refname | head -n 1)
 base="${previous:-none}"
 

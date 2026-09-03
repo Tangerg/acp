@@ -82,8 +82,9 @@
 // otherwise. A peer that supports both still works, since the specification
 // requires an agent to answer with the version its client asked for.
 //
-// Upstream is drafting version 2, which drops eleven of the twenty-five methods
-// rather than adding to them. It will arrive as a separate major version of this
+// Upstream is drafting version 2, and it is a different grammar rather than an
+// increment: eleven of the twenty-five methods go, two of them returning under
+// new names. This package will speak it as a separate major version of the
 // module rather than as a negotiated mode; README.md has what to expect and
 // design/design.md has the argument.
 package acp

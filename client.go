@@ -517,20 +517,6 @@ func (c *ClientConn) initialize(ctx context.Context) error {
 	})
 }
 
-// awaitHandshake holds an inbound message until this side knows what was
-// negotiated, or refuses one that genuinely arrived first.
-//
-// The delivery queue processes the initialize answer before every message that
-// followed it, so an unaccepted handshake here proves the peer sent the request
-// too early rather than exposing a publication race.
-func (c *ClientConn) awaitHandshake(request *jsonrpc.Request) error {
-	if c.handshake.isAccepted() {
-		return nil
-	}
-	return newError(ErrorCodeInvalidRequest,
-		"method %q arrived before initialize completed", request.Method)
-}
-
 func (c *ClientConn) accept(request *InitializeRequest, response *InitializeResponse) error {
 	// A protocol version identifies a grammar, not a feature level. Accepting a
 	// higher or lower number would claim a grammar this package does not implement.
@@ -565,8 +551,13 @@ func (c *ClientConn) accept(request *InitializeRequest, response *InitializeResp
 func (c *ClientConn) serve(ctx context.Context, request *jsonrpc.Request) (any, error) {
 	config := &c.client.config
 
-	if err := c.awaitHandshake(request); err != nil {
-		return nil, err
+	// Nothing is legal here before initialize completes: this side asked the
+	// question, so anything arriving first arrived too early. The delivery queue
+	// processes the answer ahead of every message that followed it, which is what
+	// makes that a fact about the agent rather than a publication race here.
+	if !c.handshake.isAccepted() {
+		return nil, newError(ErrorCodeInvalidRequest,
+			"method %q arrived before initialize completed", request.Method)
 	}
 
 	// The capability gate first, and in this direction too. Capabilities are an

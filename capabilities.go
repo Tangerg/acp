@@ -121,6 +121,11 @@ var gates = gateTable{
 		why: "gated by data rather than by a capability: an agent offers modes by returning " +
 			"them from session/new, and a client with no modes has nothing to set",
 	},
+	methodSessionSetConfigOption: {
+		gating: gatingBaseline,
+		why: "gated by data rather than by a capability, like session/set_mode: an agent offers " +
+			"config options by returning them, and an agent that offers none has nothing to set",
+	},
 	methodCancelRequest: {
 		gating: gatingBaseline,
 		why:    "the connection's own, and the only method that belongs to neither peer",
@@ -171,11 +176,6 @@ var gates = gateTable{
 	methodSessionDelete: sessionCapability("delete", func(s SessionCapabilities) bool { return hasCapability(s.Delete) }),
 	methodSessionResume: sessionCapability("resume", func(s SessionCapabilities) bool { return hasCapability(s.Resume) }),
 	methodSessionClose:  sessionCapability("close", func(s SessionCapabilities) bool { return hasCapability(s.Close) }),
-	methodSessionSetConfigOption: {
-		gating: gatingBaseline,
-		why: "gated by data rather than by a capability, like session/set_mode: an agent offers " +
-			"config options by returning them, and an agent that offers none has nothing to set",
-	},
 
 	// Elicitation is one group and not two methods: a request carries a mode and a
 	// scope as two flattened unions, url mode answers asynchronously through
