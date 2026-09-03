@@ -202,7 +202,7 @@ The module is pre-1.0, so its Go API may change. Its protocol target is fixed:
 | --- | --- |
 | Protocol version | 1 |
 | Schema release | `schema-v1.21.0` |
-| Module version | `v0.2.0` |
+| Module version | `v0.2.1` |
 | Minimum Go version | 1.25 |
 
 The [published

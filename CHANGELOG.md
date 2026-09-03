@@ -4,6 +4,39 @@ This file records caller-visible changes, newest first. The module is pre-1.0, s
 a minor release may change its public API. Each released entry will include
 migration instructions.
 
+## v0.2.1 — 2026-09-04
+
+No API change: `gorelease` reports the exported surface identical to v0.2.0, and
+the protocol target has not moved — still ACP version 1 against
+`schema-v1.21.0`, whose two vendored assets remain byte-identical to the upstream
+release. What this release corrects is what the repository says about itself.
+
+### Fixed
+
+- **The package documentation's account of the v2 draft.** It said version 2
+  "drops eleven of the twenty-five methods rather than adding to them".
+  `schema-v2.0.0-alpha.3` drops eleven and adds two — `auth/login` and
+  `auth/logout`, the renamed `authenticate` and `logout` — which README.md's own
+  table already listed. That claim is read on pkg.go.dev without opening the
+  repository, so it now says eleven go and two return under new names.
+
+- **README.md's own version and evidence.** The version table still named
+  `v0.1.0` after v0.2.0 shipped, and the cross-SDK fixture count still said 147
+  cases after the corpus grew to 154. Both are numbers a reader checks the
+  repository against, and neither was checked by anything.
+
+  `scripts/release.sh` now checks them. It already refused a dirty tree, an
+  existing tag and a `replace` directive, on the grounds that a published tag
+  cannot be corrected; the version the repository states about itself is in that
+  same category, because a wrong one is only fixable by a further release. A tag
+  therefore now also requires its `## vX.Y.Z` entry in this file and its own row
+  in README.md's table.
+
+The rest of the release is internal and has no caller-visible effect:
+`awaitHandshake` named two opposite behaviours and now names one, and
+`session/set_config_option` sits in the capability table's baseline section,
+where its own classification and stated reason already placed it.
+
 ## v0.2.0 — 2026-09-03
 
 This release serves every method in the pinned schema. It is the first to cover
