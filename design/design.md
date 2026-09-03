@@ -105,7 +105,7 @@ regenerates and fails if anything differs. This also proves deterministic output
 Go map iteration cannot determine generated source order.
 
 What gets generated is the transitive `$ref` closure of a committed root set
-(`schema/manifest.json`), currently 142 of the schema's 170 definitions. A root
+(`schema/manifest.json`), currently 153 of the schema's 170 definitions. A root
 is added when an operation needs it, so the exported surface is an output CI
 checks rather than a number maintained by hand. The generator refuses rather than
 guesses: a union it cannot discriminate, a numeric bound the Go type does not

@@ -26,6 +26,11 @@ migration instructions.
   A client that advertised elicitation before this release was refused at
   construction; it is now accepted when the handlers back it.
 
+  The generated closure grows from 142 of the schema's 170 definitions to 153.
+  `ElicitationRequestScope` is generated unexported, so the arms that carry it are
+  exported types wrapping an unexported one: a client can tell a request-scoped
+  elicitation from a session-scoped one without being handed the identifier.
+
 - **`Limits`**: `ClientConfig.Limits` and `AgentConfig.Limits` bound what one
   connection will hold on a peer's behalf — the delivery backlog, the inbound
   calls in flight, and the cached session handles. A zero field takes the default

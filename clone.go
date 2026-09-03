@@ -30,8 +30,9 @@ import "reflect"
 // because this API does not hand those out — and copying one would panic. Nothing
 // retained holds one: a configuration and a Peer snapshot are identities and
 // capabilities, and the one place this package copies a mode copies it before the
-// scope is written into it. clone_test.go walks the retained types and holds that
-// boundary, which is what makes this paragraph a claim rather than a hope.
+// scope is written into it. clone_internals_test.go walks the retained types and
+// holds that boundary, which is what makes this paragraph a claim rather than a
+// hope.
 
 func deepCopy[T any](value T) T {
 	var copied T
@@ -43,8 +44,12 @@ func deepCopy[T any](value T) T {
 //
 // [Opt] and [Meta] are the two. Their state lives in unexported fields, which
 // reflection may read and may not write, so the copy has to be made from inside
-// the type. Every generated struct's fields are exported, so nothing else needs
-// this — and a test holds that fact against the generated types.
+// the type.
+//
+// Nothing else needs it because nothing else retained has unexported state, which
+// is a narrower claim than every generated type satisfying it — a union arm may
+// not, and one does. clone_internals_test.go walks the retained types and holds
+// exactly the narrower claim.
 type deepCopier interface {
 	deepCopySelf() any
 }

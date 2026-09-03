@@ -205,7 +205,7 @@ implementation is wrong. Proposed grammar changes belong upstream rather than in
 a local dialect.
 
 The repository vendors `schema/schema.json` from the published release. The
-generator commits 142 of its 170 definitions to `schema.gen.go`, so schema updates
+generator commits 153 of its 170 definitions to `schema.gen.go`, so schema updates
 produce reviewable source diffs and `go get` needs no generator.
 
 ## Verification
