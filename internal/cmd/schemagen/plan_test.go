@@ -220,3 +220,58 @@ func TestPropertyOrderIsTheDocumentsOwn(t *testing.T) {
 		}
 	}
 }
+
+// A union has to reach the generated function that encodes and decodes it. The
+// emitter routes one at the property itself, one element deep inside an array,
+// and one value deep inside an object; anything deeper falls through to
+// encoding/json, which cannot write the discriminant the union owns and cannot
+// decode into an interface at all.
+//
+// The failure that would produce is not a build error. It is a message encoded
+// without its discriminant, put on the wire, and unreadable by the peer and by
+// this package alike — which is what the map form of it did until a schema
+// property first had one. So the planner refuses the shape instead.
+func TestAUnionMustReachItsGeneratedCodec(t *testing.T) {
+	union := &ValueType{Kind: vRef, Go: "ContentBlock", Ident: "ContentBlock", IsUnion: true}
+	scalar := &ValueType{Kind: vScalar, Go: "string"}
+
+	slice := func(elem *ValueType) *ValueType {
+		return &ValueType{Kind: vSlice, Go: "[]" + elem.Go, Elem: elem}
+	}
+	object := func(elem *ValueType) *ValueType {
+		return &ValueType{Kind: vMap, Go: "map[string]" + elem.Go, Elem: elem}
+	}
+
+	routed := map[string]*ValueType{
+		"the property itself":      union,
+		"one element into a list":  slice(union),
+		"one value into an object": object(union),
+		"a list of scalars":        slice(scalar),
+		"an object of scalars":     object(scalar),
+	}
+	for name, value := range routed {
+		t.Run(name, func(t *testing.T) {
+			if err := checkUnionIsRouted(value); err != nil {
+				t.Fatalf("refused %s, which the emitter routes: %v", value.Go, err)
+			}
+		})
+	}
+
+	unrouted := map[string]*ValueType{
+		"a list of lists":      slice(slice(union)),
+		"a list of objects":    slice(object(union)),
+		"an object of lists":   object(slice(union)),
+		"an object of objects": object(object(union)),
+	}
+	for name, value := range unrouted {
+		t.Run(name, func(t *testing.T) {
+			err := checkUnionIsRouted(value)
+			if err == nil {
+				t.Fatalf("accepted %s; if the emitter routes it now, move this case above", value.Go)
+			}
+			if !strings.Contains(err.Error(), "no generated codec") {
+				t.Fatalf("refused with %q, which does not say the codec is missing", err)
+			}
+		})
+	}
+}

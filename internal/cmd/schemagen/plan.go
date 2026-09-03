@@ -388,6 +388,62 @@ func valueArmName(arm *Schema) string {
 	return "Null"
 }
 
+// checkUnionIsRouted refuses a property whose union would not reach the generated
+// selector that encodes and decodes it.
+//
+// A union is not something encoding/json can carry. Its discriminant belongs to
+// the union rather than to the arm — TextContent encodes as {"text":"hi"} and it
+// is marshalContentBlock that puts {"type":"text"} around it — and a Go interface
+// cannot decode into itself. So every union has to reach a generated function,
+// and the emitter knows three positions: the property itself, one element deep
+// inside an array, and one value deep inside an object.
+//
+// A union deeper than that would fall through to the writer, which is not a
+// generation failure anybody would see. It is a message encoded without its
+// discriminant, put on the wire, and unreadable by the peer and by this package
+// alike. That is the shape this refuses, because it is worth more as a stopped
+// build than as a silent one.
+//
+// It is a real case rather than a hypothetical: the map form of it was reached the
+// first time a schema property had one, and had been wrong until then.
+func checkUnionIsRouted(value *ValueType) error {
+	if value == nil || value.IsUnion {
+		// Routed at the property itself.
+		return nil
+	}
+	if value.Kind != vSlice && value.Kind != vMap {
+		return nil
+	}
+	elem := value.Elem
+	if elem == nil || elem.IsUnion {
+		// Routed by the slice or map variant that takes the union's function.
+		return nil
+	}
+	if containsUnion(elem) {
+		return fmt.Errorf(
+			"a union nested inside %s has no generated codec: it would be encoded without the "+
+				"discriminant the union owns and could not be decoded at all", value.Go)
+	}
+	return nil
+}
+
+// containsUnion reports whether a union is reachable through containers.
+//
+// It does not follow a reference to a named type. That type has a codec of its
+// own, and whatever unions are inside it are that codec's business.
+func containsUnion(value *ValueType) bool {
+	for value != nil {
+		if value.IsUnion {
+			return true
+		}
+		if value.Kind != vSlice && value.Kind != vMap {
+			return false
+		}
+		value = value.Elem
+	}
+	return false
+}
+
 // isFlattenedUnion reports a definition that is an object and a union at once:
 // properties of its own, plus a choice of kind-specific shapes in the same JSON
 // object.
@@ -708,6 +764,9 @@ func (p *planner) planStruct(def *Def, schema *Schema) error {
 func (p *planner) planField(jsonName string, schema *Schema, required bool) (*Field, error) {
 	value, err := p.valueType(schema)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkUnionIsRouted(value); err != nil {
 		return nil, err
 	}
 	field := &Field{
