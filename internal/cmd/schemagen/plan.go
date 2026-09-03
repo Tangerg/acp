@@ -412,8 +412,19 @@ func isValueUnion(schema *Schema) bool {
 // properties of its own besides the discriminant, and no other arm anywhere in
 // the schema shares that payload. That is what makes ContentBlock's arms
 // TextContent and ImageContent rather than something invented. Otherwise the arm
-// needs a type of its own, named after the arm — its title, or its discriminant
-// value — and qualified by the union when that name is already taken.
+// needs a type of its own, named after the arm — its discriminant value, or its
+// title — and qualified by the union.
+//
+// Which of those two the name came from decides whether it may stand alone, and
+// the difference is what each one is for. A discriminant is an identifier: the
+// schema chose that string to tell this arm from its siblings on the wire, so it
+// is as specific as the arm is, and SessionUpdate's agent_message_chunk arm is
+// AgentMessageChunk without further qualification. A title is prose written for
+// someone reading the schema. It promises nothing about being specific or unique,
+// and the elicitation scopes prove it: the arms titled "Session" and "Request"
+// appear under both the form mode and the URL mode, and letting the first one
+// asked take the bare name would put acp.Session and acp.Request in a package
+// that already means something else by both words.
 func (p *planner) allocateArm(union string, index int, arm *Schema) (string, error) {
 	owner := fmt.Sprintf("#/$defs/%s arm %d", union, index)
 	payload := armPayload(arm)
@@ -421,10 +432,10 @@ func (p *planner) allocateArm(union string, index int, arm *Schema) (string, err
 		return p.goNames[payload], nil
 	}
 
-	preferred := ""
+	preferred, fromTitle := "", false
 	switch {
 	case arm.Title != "":
-		preferred = goName(arm.Title)
+		preferred, fromTitle = goName(arm.Title), true
 	default:
 		if tag := armTag(arm); tag != "" {
 			preferred = goName(tag)
@@ -434,11 +445,11 @@ func (p *planner) allocateArm(union string, index int, arm *Schema) (string, err
 		return "", fmt.Errorf("%s: cannot name an arm with neither a title nor a discriminant constant", owner)
 	}
 
-	// An arm with no payload of its own has no domain name to inherit: it is not
-	// a thing, it is this union's cancelled case, or its catch-all. Naming it
-	// after the union says so, and keeps a word as general as Cancelled out of
+	// An arm with no payload of its own has no domain name to inherit either: it
+	// is not a thing, it is this union's cancelled case, or its catch-all. Naming
+	// it after the union says so, and keeps a word as general as Cancelled out of
 	// the package's namespace, where a later schema release could want it.
-	if payload == "" {
+	if payload == "" || fromTitle {
 		qualified := p.goNames[union] + preferred
 		if err := p.names.claim(qualified, owner); err != nil {
 			return "", err

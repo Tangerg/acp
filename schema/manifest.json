@@ -6,6 +6,9 @@
     "CancelNotification",
     "CloseSessionRequest",
     "CloseSessionResponse",
+    "CompleteElicitationNotification",
+    "CreateElicitationRequest",
+    "CreateElicitationResponse",
     "CreateTerminalRequest",
     "CreateTerminalResponse",
     "DeleteSessionRequest",
@@ -51,7 +54,8 @@
   "internal": {
     "$comment": "Generated but not exported: JSON-RPC plumbing a caller never names. Each value says why. An exported definition that reaches one of these is a generation failure, because a published type whose field a caller cannot name is worse than no type.",
     "CancelRequestNotification": "the params of $/cancel_request, which the connection sends on its own behalf; a caller cancels by cancelling a context",
-    "RequestId": "a JSON-RPC request identifier, which the API never surfaces: not request IDs, not the envelope, not the method strings"
+    "RequestId": "a JSON-RPC request identifier, which the API never surfaces: not request IDs, not the envelope, not the method strings",
+    "ElicitationRequestScope": "the scope of a request-tied elicitation, which names a JSON-RPC request id; the agent-side operation reads it from the context of the request being served, so a caller never spells one"
   },
   "probes": {
     "$comment": "Layer-1 wire-shape probes. Each key is a definition; each value is the shape it proves that no payload root reaches yet. Entries leave as the payload roots grow to reach the same shapes.",

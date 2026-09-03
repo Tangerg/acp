@@ -1,7 +1,7 @@
 # Written by internal/cmd/schemagen. Do not edit.
 #
 # Every exported Go name generation produces, one per line, sorted. The
-# transitive $ref closure of manifest.json is 142 of the schema's
+# transitive $ref closure of manifest.json is 153 of the schema's
 # definitions; exported_test.go holds the package's exports against this list.
 AgentAuthCapabilities
 AgentCapabilities
@@ -21,6 +21,7 @@ AvailableCommandInput
 AvailableCommandsUpdate
 BlobResourceContents
 BooleanConfigOptionCapabilities
+BooleanPropertySchema
 CancelNotification
 CancelParams
 ClientCapabilities
@@ -28,11 +29,20 @@ ClientSessionCapabilities
 CloseParams
 CloseSessionRequest
 CloseSessionResponse
+CompleteElicitationNotification
 ConfigOptionUpdate
 Content
 ContentBlock
 ContentChunk
 Cost
+CreateElicitationRequest
+CreateElicitationRequestOther
+CreateElicitationRequestValue
+CreateElicitationResponse
+CreateElicitationResponseCancel
+CreateElicitationResponseDecline
+CreateElicitationResponseOther
+CreateElicitationResponseValue
 CreateTerminalParams
 CreateTerminalRequest
 CreateTerminalResponse
@@ -40,9 +50,31 @@ CurrentModeUpdate
 DeleteSessionRequest
 DeleteSessionResponse
 Diff
+ElicitationAcceptAction
 ElicitationCapabilities
+ElicitationContentValue
+ElicitationContentValueBoolean
+ElicitationContentValueInteger
+ElicitationContentValueNumber
+ElicitationContentValueString
+ElicitationContentValueStringArray
 ElicitationFormCapabilities
+ElicitationFormMode
+ElicitationFormModeRequest
+ElicitationFormModeSession
+ElicitationFormModeValue
+ElicitationID
+ElicitationPropertySchema
+ElicitationPropertySchemaOther
+ElicitationSchema
+ElicitationSchemaType
+ElicitationSchemaTypeObject
+ElicitationSessionScope
 ElicitationURLCapabilities
+ElicitationURLMode
+ElicitationURLModeRequest
+ElicitationURLModeSession
+ElicitationURLModeValue
 EmbeddedResource
 EmbeddedResourceResource
 EnumOption
@@ -63,6 +95,7 @@ ImageContent
 Implementation
 InitializeRequest
 InitializeResponse
+IntegerPropertySchema
 KillTerminalParams
 KillTerminalRequest
 KillTerminalResponse
@@ -81,8 +114,10 @@ McpServerStdio
 MessageID
 MultiSelectItems
 MultiSelectItemsOther
+MultiSelectPropertySchema
 NewSessionRequest
 NewSessionResponse
+NumberPropertySchema
 PermissionOption
 PermissionOptionID
 PermissionOptionKind
@@ -171,7 +206,13 @@ StopReasonEndTurn
 StopReasonMaxTokens
 StopReasonMaxTurnRequests
 StopReasonRefusal
+StringFormat
+StringFormatDate
+StringFormatDateTime
+StringFormatEmail
+StringFormatURI
 StringMultiSelectItems
+StringPropertySchema
 Terminal
 TerminalExitStatus
 TerminalID
