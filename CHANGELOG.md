@@ -4,6 +4,31 @@ This file records caller-visible changes, newest first. The module is pre-1.0, s
 a minor release may change its public API. Each released entry will include
 migration instructions.
 
+## Unreleased
+
+### Added
+
+- **`Limits`**: `ClientConfig.Limits` and `AgentConfig.Limits` bound what one
+  connection will hold on a peer's behalf — the delivery backlog, the inbound
+  calls in flight, and the cached session handles. A zero field takes the default
+  it had as a constant (1024), so existing configurations are unchanged. A
+  negative one is refused by `NewClient` and `NewAgent` rather than by the message
+  that would breach it.
+
+  The bound worth setting is `QueuedDeliveries`. It is the only one an honest peer
+  reaches: a turn's `session/update` stream is produced by an agent and consumed
+  by a `SessionUpdate` handler that may render it, and because a breach ends the
+  connection, an application whose handler is slow now has somewhere to say so.
+
+### Changed
+
+- `Opt` documents that two codecs decode it and how they differ. A generated field
+  goes through the schema-directed codec, which leaves an unreadable optional
+  property absent so the rest of a peer's message still arrives; an `Opt` in a
+  caller's own type goes through `Opt.UnmarshalJSON`, which reports the failure the
+  way `encoding/json` does. Behaviour is unchanged; only the difference was
+  previously unstated.
+
 ## v0.1.0 — 2026-09-02
 
 This is the first release. It implements both peers of Agent Client Protocol

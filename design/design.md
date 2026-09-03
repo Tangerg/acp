@@ -486,9 +486,9 @@ between the two implementations that agreed on it.
 ## Resource limits
 
 A message's size and the time this side will wait were already bounded. Its count
-was not, and count is what a peer controls for free. A connection now holds at
-most 1024 messages read but not yet delivered, 1024 inbound calls at once, and
-1024 cached session handles. Serving `session/close` reclaims an agent's cache
+was not, and count is what a peer controls for free. A connection holds at most
+1024 messages read but not yet delivered, 1024 inbound calls at once, and 1024
+cached session handles. Serving `session/close` reclaims an agent's cache
 entry, and a client also reclaims one when `DeleteSession` succeeds; the agent
 side of `session/delete` takes no handle and so never names the cache. Until an
 entry is reclaimed, the handle preserves caller-visible identity while the
@@ -502,6 +502,18 @@ arrives on the read loop that is no longer reading.
 
 These counts bound how much state a peer can create. They are not memory proofs
 because one legal message can still be large.
+
+The three are `Limits` on both configurations, with a zero field taking the
+default and a negative one refused at construction. They were constants first,
+and the reason they are not any more is the interaction between two of the
+decisions above. Two of the bounds are only reached by a peer that is hostile or
+broken, but the delivery backlog is reached by an honest one: a turn's
+`session/update` stream is produced by an agent and consumed by a handler that
+may render it, so how deep the backlog gets is a fact about the application, not
+about the protocol. Since a breach ends the connection rather than slowing the
+peer down, a constant chosen here decides on every caller's behalf how slow their
+handler is allowed to be before their user loses a session. The package cannot
+know that, and the field is where a caller who does says so.
 
 ## Error model and privacy
 
@@ -551,6 +563,15 @@ in agreement:
 - **Cross-SDK fixtures**: 125 expected outcomes come from the reference
   TypeScript SDK's own deserialisation machinery, regenerated from the pinned
   schema and replayed by `go test` with no network.
+- **A codec property over every generated type**: the corpus starts from JSON a
+  peer sent, so it reaches the encoder only where a case re-encodes, and 163
+  generated types had a `MarshalJSON` nothing called. The generator emits the list
+  of types it produced and the property walks it: a zero value either encodes and
+  normalises to a fixed point, or is refused by this package with a reason. The
+  list is generated because the property is about all of them, and a hand-written
+  one would omit exactly the type a schema bump just added. What it does not do is
+  say how a populated value encodes; that is what the fixtures and the golden
+  tests are for.
 - **Subprocess interoperability**: four transcripts record this module's client
   against an agent built on the reference SDK as a real subprocess.
 - **Editor interoperability**: Zed spawned an agent built on this module
@@ -565,6 +586,12 @@ in agreement:
   export is necessary, but every retained export needs executable contract
   evidence.
 - **Examples**: every package example runs under `go test`.
+- **Benchmarks**: the encode, the decode and one whole turn, run for a single
+  iteration in CI. They are a regression guard and not an optimisation target —
+  nothing here has been tuned, and a number one of them produces is not a reason
+  to tune anything. Correctness is the only dimension every other check covers, so
+  a schema bump that made the per-message path several times more expensive would
+  otherwise pass all of them.
 
 ## Version and release policy
 
@@ -572,6 +599,41 @@ The module is pre-1.0 and its Go API is expected to change; the protocol version
 it targets is not. The language floor is Go 1.25, chosen for `testing/synctest`
 and kept as low as it can be justified, because a floor is a cost imposed on
 everyone who imports the module.
+
+### The module major tracks the protocol major
+
+Upstream is publishing `schema-v2.0.0-alpha` releases alongside the stable v1
+line. A protocol major is a different grammar, so the question it raises is not
+when to implement it but where it lives, and answering that after the work has
+started is how a stopgap gets chosen.
+
+The decision: **one package speaks one grammar, and the module major tracks the
+protocol major.** When ACP 2 stabilises, this module becomes `/v2` and speaks
+version 2 only. It does not learn to speak both.
+
+The alternative is one module negotiating either grammar, and it fails on the
+same two facts that shaped everything above. The types are generated from one
+pinned schema into one package, so two grammars would be two definitions of
+`PromptRequest` — either under prefixed names nobody wants to read or in
+subpackages that split an API whose halves call each other. And every operation
+would gain a branch on which grammar this connection settled, which is precisely
+the compatibility layer this repository's rules forbid: not a path being removed,
+but a second one being kept alive inside every method.
+
+The cost is real and belongs in the same paragraph as the decision. An editor
+that must drive both a v1 and a v2 agent imports both modules and finds out which
+it is talking to the way the protocol says — by being refused at `initialize` —
+because a client cannot know an agent's grammar before the handshake it is part
+of. That is two dependency lines and a fallback, against a branch inside every
+operation forever. It is also exactly what Go's major-version rule exists to
+express, and pre-1.0 is the cheapest moment this choice will ever be available.
+
+Until the v2 schema stabilises, the pin stays on the v1 line and the alphas are
+watched rather than implemented. Implementing an alpha would encode a dialect
+that is still changing, which is the local dialect AGENTS.md rules out, arrived at
+by being early rather than by disagreeing. Two entries in the alpha changelog
+decide when the work starts: v2 stabilises elicitation, so the gap recorded above
+stops being optional at the same moment this decision comes due.
 
 `scripts/release.sh` is the only release path. The module proxy and checksum
 database make published tags immutable. The script therefore verifies before it

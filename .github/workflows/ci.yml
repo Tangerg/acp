@@ -63,6 +63,13 @@ jobs:
       - name: Test
         run: go test -race -count=1 ./...
 
+      # One iteration each, which measures nothing and is not meant to. A
+      # benchmark is only a regression guard while it still compiles and runs,
+      # and one that has quietly stopped doing either is worse than none: it
+      # looks like coverage of the per-message path and is not.
+      - name: Benchmarks still run
+        run: go test -run '^$' -bench . -benchtime 1x ./...
+
   compatibility:
     name: public API release contract
     if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
