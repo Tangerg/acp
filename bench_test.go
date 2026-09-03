@@ -8,20 +8,14 @@ import (
 	"github.com/Tangerg/acp"
 )
 
-// These measure the path every message takes, and they exist as a regression
-// guard rather than as an optimisation target.
-//
-// Nothing here has been tuned, and a number produced by one of these is not a
-// reason to tune anything: the correct order is to have a measurement first and
-// then a reason to change it. What they catch is the other direction — a schema
-// bump or a codec change that makes the per-message path several times more
-// expensive, which is invisible to every other check in this repository because
+// A regression guard, not an optimisation target: nothing here has been tuned, and
+// a number one of these produces is not a reason to tune anything. What they catch
+// is a schema bump or codec change that makes the per-message path several times
+// more expensive, which every other check in this repository misses because
 // correctness is unaffected.
 //
-// The message chosen is the one a turn sends most: an agent streaming its answer
-// emits one session/update per chunk, so the notification's encode, its decode and
-// its trip through the ordered delivery stage are what a long turn spends its time
-// in.
+// The message is the one a turn sends most — an agent streaming its answer emits
+// one session/update per chunk — so this is where a long turn spends its time.
 
 func benchmarkNotification() *acp.SessionNotification {
 	return &acp.SessionNotification{
@@ -58,10 +52,8 @@ func BenchmarkDecodeSessionNotification(b *testing.B) {
 	}
 }
 
-// A turn end to end: the prompt call, a stream of updates, and the response that
-// may not overtake them. This is the one that would show a regression in the
-// ordered delivery stage rather than in the codec, because the queue is what keeps
-// the updates ahead of the answer.
+// The one that would show a regression in the ordered delivery stage rather than
+// in the codec: the queue is what keeps a turn's updates ahead of its answer.
 func BenchmarkPromptTurn(b *testing.B) {
 	const updatesPerTurn = 16
 

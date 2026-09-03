@@ -11,34 +11,23 @@ package acp
 // capabilities to know what it may call, and its own to know what it promised;
 // the agent needs exactly the same two facts from the other direction.
 type PeerInfo struct {
-	// ProtocolVersion is the version initialize settled on, which is always
-	// [CurrentProtocolVersion]: a protocol number names a grammar rather than a
-	// feature level, so this package speaks the one it implements or refuses the
-	// connection. See [CurrentProtocolVersion].
+	// Always [CurrentProtocolVersion]: a protocol number names a grammar rather
+	// than a feature level, so this package speaks the one it implements or
+	// refuses the connection.
 	ProtocolVersion ProtocolVersion
 
-	// ClientCapabilities is what the client advertised. It gates the methods an
-	// agent may call.
 	ClientCapabilities ClientCapabilities
-	// ClientInfo identifies the client, when it chose to say.
-	ClientInfo Opt[Implementation]
+	ClientInfo         Opt[Implementation]
 
-	// AgentCapabilities is what the agent advertised. It gates the methods a
-	// client may call.
 	AgentCapabilities AgentCapabilities
-	// AgentInfo identifies the agent, when it chose to say.
-	AgentInfo Opt[Implementation]
+	AgentInfo         Opt[Implementation]
 
-	// AuthMethods is what the agent will accept from a client that must
-	// authenticate, and is what [ClientConn.Authenticate] takes an identifier
-	// from. Without it a client cannot discover a method id and can only guess one
-	// it knew out of band.
+	// Where [ClientConn.Authenticate] takes its identifier from. Without it a
+	// client cannot discover a method id and can only guess one it knew out of band.
 	AuthMethods []AuthMethod
 
-	// ClientMeta and AgentMeta are the _meta the two peers attached to their
-	// halves of the handshake. The protocol reserves them for exactly this, and a
-	// snapshot that dropped them would lose the one place an extension can say
-	// something about the connection itself.
+	// The one place an extension can say something about the connection itself, so
+	// a snapshot that dropped them would lose it.
 	ClientMeta Opt[Meta]
 	AgentMeta  Opt[Meta]
 }

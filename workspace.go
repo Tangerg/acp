@@ -175,10 +175,8 @@ type TerminalHandle struct {
 // a terminal the client has since given the same identifier to.
 var ErrTerminalReleased = errors.New("acp: terminal handle is released")
 
-// ID returns the terminal identifier assigned by the client.
 func (t *TerminalHandle) ID() TerminalID { return t.id }
 
-// Session returns the session that owns this terminal handle.
 func (t *TerminalHandle) Session() *AgentSession { return t.session }
 
 // Output reports what the command has written so far, whether that output was

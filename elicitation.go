@@ -8,89 +8,40 @@ import (
 	"github.com/Tangerg/acp/jsonrpc"
 )
 
-// Elicitation is the agent asking the user for structured input, through the
-// client that owns the user.
-//
-// It is one feature and not two methods. `elicitation/create` carries a mode and
-// a scope, and both are unions the schema flattens into the same JSON object:
-// form mode hands the client a JSON Schema to render, URL mode sends the user to
-// a page and is answered twice — once by the response, and again later by
-// `elicitation/complete` when the page is done with them.
-//
-// # Who names what
-//
-// The mode is the caller's and the scope is the operation's, which is the same
-// division every other handle in this package makes. A [ClientSession] never
-// spells a session identifier and a [TerminalHandle] never spells a terminal
-// identifier; here an agent never spells a scope, because the operation it chose
-// has already decided one. [AgentSession.CreateElicitation] elicits within the
-// session it names. [AgentConn.CreateElicitation] elicits within the request it
-// is being called from, which is what the schema means by a request-scoped
-// elicitation: the phases before any session exists, an agent asking for
-// something from inside its own authenticate handler.
-//
-// That second one is why `ElicitationRequestScope` is not exported. It names a
-// JSON-RPC request identifier, and this API does not surface those — a caller
-// names a method by calling the operation for it, and the same rule applies to
-// the request that operation is answering. The connection already knows which
-// request a handler is serving, so the scope is filled in from the context the
-// handler was given, and the arms that carry it are exported types wrapping an
-// unexported one. A client can tell a request-scoped elicitation from a
-// session-scoped one by its arm; neither side hands a caller the identifier.
-
 // ElicitationHandlers is a client's ability to put an elicitation in front of the
-// user. Setting one advertises the mode it serves.
+// user.
 //
-// The two modes are two independent capabilities — `elicitation.form` and
-// `elicitation.url` — the way the two file-system booleans are, so they are two
-// handler fields and not one. Both arrive through `elicitation/create`, so the
-// dispatcher routes on the mode the request carries and a mode with no handler is
-// refused with invalid-params: the method was advertised, and it is the mode
-// inside it that this client never said it could render.
+// The two modes are two independent capabilities the way the two file-system
+// booleans are, so they are two fields and not one, and each advertises itself.
+// Both arrive through one method, so a mode with no handler is refused with
+// invalid-params rather than method-not-found: the method was advertised, and it
+// is the mode inside it that was not.
 //
-// At least one is required, because a client advertising elicitation and serving
-// neither mode has advertised nothing it can do.
+// The mode is passed to a handler alongside the request it came from. It is that
+// request's own Value, already asserted by the dispatcher that used it to choose
+// the handler.
 type ElicitationHandlers struct {
-	// Form renders the request's JSON Schema and answers with what the user
-	// entered. Setting it advertises clientCapabilities.elicitation.form.
-	//
-	// The mode is passed alongside the request it came from. It is the request's
-	// own Value, already asserted: the dispatcher had to look at it to choose this
-	// handler, and making the handler repeat the assertion would be asking it to
-	// re-derive a decision that has just been made.
 	Form func(
 		ctx context.Context,
 		request *CreateElicitationRequest,
 		mode *ElicitationFormMode,
 	) (*CreateElicitationResponse, error)
 
-	// URL directs the user to the mode's URL. Setting it advertises
-	// clientCapabilities.elicitation.url.
 	URL func(
 		ctx context.Context,
 		request *CreateElicitationRequest,
 		mode *ElicitationURLMode,
 	) (*CreateElicitationResponse, error)
 
-	// Complete says a URL elicitation has been answered where the user went, and
-	// is required when URL is set.
-	//
-	// A URL elicitation is the one exchange in the protocol that outlives its own
-	// response: the client answers `elicitation/create` to say it has shown the
-	// user the page, and the agent sends this later to say the page is finished.
-	// A client that shows a page and is never told to stop showing it has a
-	// dialog nothing will ever close, so the mode is not servable without this
-	// and construction says so rather than leaving the user with it.
-	//
-	// It is refused when URL is not set. Serving the completion of a mode this
-	// client cannot start is not a partial implementation, it is a handler that
-	// can never run.
+	// Complete is required when URL is set and refused otherwise. A URL
+	// elicitation outlives its own response — the response says the page is
+	// shown, this says it is finished — so a client that serves the mode without
+	// this leaves the user in front of a dialog nothing will ever close.
 	Complete func(ctx context.Context, notification *CompleteElicitationNotification)
 }
 
-// check refuses a handler set that could not serve what it advertises. Both rules
-// are about the user rather than about the wire: a client with no mode has
-// advertised nothing, and a URL mode with no completion leaves a page open.
+// check refuses at construction what would otherwise be found by a user: a group
+// that advertises elicitation and serves no mode, and a page nothing will close.
 func (handlers *ElicitationHandlers) check() error {
 	if handlers == nil {
 		return nil
@@ -111,13 +62,9 @@ func (handlers *ElicitationHandlers) check() error {
 	return nil
 }
 
-// completion reads Complete through a possibly nil group.
-//
-// The capability gate has already refused elicitation/complete for a client that
-// advertised no url mode, so this cannot be reached with a nil group — but a
-// dispatcher that would dereference one if it ever were is a panic waiting on an
-// invariant held somewhere else, and the handler it returns is checked for nil by
-// the dispatch helper anyway.
+// The gate has already refused the method for a client with no group, so the nil
+// case is unreachable — and a dispatcher that would dereference it if it ever were
+// is a panic resting on an invariant held in another file.
 func (handlers *ElicitationHandlers) completion() func(context.Context, *CompleteElicitationNotification) {
 	if handlers == nil {
 		return nil
@@ -125,9 +72,8 @@ func (handlers *ElicitationHandlers) completion() func(context.Context, *Complet
 	return handlers.Complete
 }
 
-// capabilities is the advertisement the handlers imply. A mode with no handler is
-// absent rather than present-and-false, because the schema's capability objects
-// use a present `{}` as the only yes.
+// A mode with no handler is left absent rather than set false: the schema's
+// capability objects use a present `{}` as the only yes.
 func (handlers *ElicitationHandlers) capabilities() Opt[ElicitationCapabilities] {
 	if handlers == nil {
 		return Opt[ElicitationCapabilities]{}
@@ -142,34 +88,30 @@ func (handlers *ElicitationHandlers) capabilities() Opt[ElicitationCapabilities]
 	return OptValue(advertised)
 }
 
-// CreateElicitationParams is an elicitation without its scope.
-//
-// The scope is missing because the operation supplies it, and which operation was
-// called is what decides it. See the package documentation on this file's feature
-// for why a caller never names one.
+// CreateElicitationParams is an elicitation without its scope, because the
+// operation supplies that: a session handle elicits within its session and a
+// connection within the request it is serving. This is the division every handle
+// here makes — a caller never spells a session identifier either — and it is what
+// keeps [ElicitationRequestScope] unexported, since the scope it names is a
+// JSON-RPC request identifier this API does not hand out.
 type CreateElicitationParams struct {
-	// Message describes what is being asked for, in the user's language rather
-	// than the schema's. Required.
+	// Required.
 	Message string
 
-	// Mode is *[ElicitationFormMode] or *[ElicitationURLMode]. Required.
-	//
-	// Its own Value — the scope — must be nil. A scope set here would be replaced
-	// by the operation, and replacing a caller's value in silence is worse than
-	// refusing it, so it is refused.
+	// Required: *[ElicitationFormMode] or *[ElicitationURLMode], with its own
+	// Value left nil. A scope set here would be replaced by the operation, and
+	// replacing a caller's value in silence is worse than refusing it.
 	Mode CreateElicitationRequestValue
 
-	// ToolCallID ties a session-scoped elicitation to one tool call, which is what
-	// an agent relaying an elicitation from an MCP server has to say. It is
-	// meaningful only within a session, so [AgentConn.CreateElicitation] refuses
+	// Session scope only, which is what an agent relaying an MCP server's
+	// elicitation during a tool call needs. [AgentConn.CreateElicitation] refuses
 	// it rather than dropping it.
 	ToolCallID Opt[ToolCallID]
 
 	Meta Opt[Meta]
 }
 
-// CreateElicitation asks the user for structured input within this session,
-// optionally tied to a tool call.
+// CreateElicitation asks the user for structured input within this session.
 func (s *AgentSession) CreateElicitation(
 	ctx context.Context,
 	params *CreateElicitationParams,
@@ -188,11 +130,11 @@ func (s *AgentSession) CreateElicitation(
 }
 
 // CreateElicitation asks the user for structured input from inside a request this
-// connection is serving, for the phases where there is no session to belong to.
+// connection is serving, for the phases before any session exists.
 //
-// It must be called from within a handler, on the context that handler was given,
-// because the scope is the request being served and nothing else identifies one.
-// Called anywhere else it fails rather than inventing a scope.
+// It must be called from a handler, on the context that handler was given: the
+// scope is the request being served and nothing else identifies one. Called
+// anywhere else it fails rather than inventing a scope.
 func (c *AgentConn) CreateElicitation(
 	ctx context.Context,
 	params *CreateElicitationParams,
@@ -221,13 +163,9 @@ func (c *AgentConn) CreateElicitation(
 	return createElicitation(ctx, c, params, scope)
 }
 
-// createElicitation is everything the two scopes share, which is everything
-// except the scope.
-//
-// The mode is copied before the scope is written into it. The value belongs to the
-// caller, who may well be holding one prepared schema and eliciting with it more
-// than once, and an operation that reached into it would make the second call
-// carry the first call's scope.
+// The mode is copied before the scope is written into it: the value is the
+// caller's, and an agent holding one prepared schema and eliciting with it twice
+// would otherwise find the second call carrying the first call's scope.
 func createElicitation(
 	ctx context.Context,
 	conn *AgentConn,
@@ -267,11 +205,9 @@ func createElicitation(
 	return response, nil
 }
 
-// checkedMode refuses the two modes a caller can name that cannot be sent.
-//
-// The catch-all arm exists so that a mode this package does not know survives
-// being decoded from a peer. Sending one is the opposite: it would put a mode on
-// the wire under a discriminant this side made up.
+// The catch-all arm exists so a mode this package does not know survives being
+// decoded from a peer. Sending one is the opposite: a discriminant this side made
+// up.
 func checkedMode(mode CreateElicitationRequestValue) (CreateElicitationRequestValue, error) {
 	switch mode := mode.(type) {
 	case nil:
@@ -304,9 +240,8 @@ var errScopeIsTheOperations = errors.New(
 // CompleteElicitation says a URL elicitation is finished and the client may stop
 // showing it.
 //
-// It is on the connection rather than on a session because the notification names
-// only an elicitation, and a URL elicitation started before any session exists has
-// no session to send it under.
+// It is on the connection because the notification names only an elicitation, and
+// one started before any session exists has no session to send it under.
 func (c *AgentConn) CompleteElicitation(
 	ctx context.Context,
 	params *CompleteElicitationNotification,
@@ -324,13 +259,6 @@ func (c *AgentConn) CompleteElicitation(
 }
 
 // createElicitation routes an inbound request to the handler for its mode.
-//
-// The refusal for a mode with no handler is invalid-params and not
-// method-not-found, for the reason the parameter capabilities give: the method is
-// there, this client advertised it, and it is what the agent put inside it that
-// was never advertised. An agent reading the error is told which capability it
-// went past rather than being told the method does not exist, which would be
-// false and would send it looking in the wrong place.
 func (c *ClientConn) createElicitation(ctx context.Context, request *jsonrpc.Request) (any, error) {
 	handlers := c.client.config.Elicitation
 	if handlers == nil {
@@ -356,9 +284,8 @@ func (c *ClientConn) createElicitation(ctx context.Context, request *jsonrpc.Req
 		response, err = handlers.URL(ctx, params, mode)
 
 	default:
-		// Including the catch-all arm, which is how a mode from a later schema
-		// arrives. There is no handler for a mode this package cannot name, and
-		// guessing which of the two it resembles would be worse than saying so.
+		// The catch-all arm included: guessing which known mode a future one
+		// resembles would be worse than saying it is not implemented.
 		return nil, newError(ErrorCodeInvalidParams,
 			"the elicitation names a mode this package does not implement")
 	}
@@ -377,20 +304,15 @@ func unadvertisedMode(mode, capability string) *Error {
 		"a %q elicitation was not advertised because %s is not set", mode, capability)
 }
 
-// permitsElicitationMode is the outbound half, and it is a parameter capability
-// rather than a method one: `elicitation` says the client serves the method and
-// the two modes under it say which shapes it can render, so a mode the client did
-// not advertise is work it cannot do rather than authority it withheld.
-//
-// It is checked on the way out for the reason every parameter capability is: the
-// client is where the specification puts the obligation to look, and an agent that
-// asks anyway learns which capability it went past instead of reading a wire
-// trace.
+// A mode is a parameter capability and not a method one: `elicitation` says the
+// client serves the method, and the modes under it say which shapes it can render,
+// so a mode it did not advertise is work it cannot do rather than authority it
+// withheld. See [PeerInfo.permitsPromptContent] for why that decides the direction.
 func (p PeerInfo) permitsElicitationMode(mode CreateElicitationRequestValue) error {
 	elicitation, advertised := p.ClientCapabilities.Elicitation.Get()
 	if !advertised {
-		// The method gate has already refused this; reaching here would mean the
-		// two disagree.
+		// Unreachable: the method gate refuses this first, and reaching it would
+		// mean the two disagree.
 		return unadvertisedMode("", "clientCapabilities.elicitation")
 	}
 	switch mode.(type) {
@@ -406,13 +328,11 @@ func (p PeerInfo) permitsElicitationMode(mode CreateElicitationRequestValue) err
 	return nil
 }
 
-// The request a handler is serving, carried on the context that handler is given.
-//
-// It is on the context rather than on a handle because there is no handle for it:
-// a request-scoped elicitation belongs to an inbound call, and the only thing that
-// identifies one is an identifier this API does not hand out. The connection knows
-// it already — it has to, to answer — so the context is where a handler can reach
-// it without anybody spelling it.
+// The request a handler is serving travels on the context rather than on a handle
+// because there is no handle for it: the only thing identifying an inbound call is
+// an identifier this API does not hand out. The connection knows it already — it
+// has to, to answer — so the context is where a handler reaches it without anybody
+// spelling it.
 type servingRequestKey struct{}
 
 func withServingRequest(ctx context.Context, id jsonrpc.ID) context.Context {

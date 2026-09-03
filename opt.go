@@ -53,7 +53,6 @@ const (
 	optPresent
 )
 
-// OptValue returns an optional property present with v.
 func OptValue[T any](v T) Opt[T] {
 	return Opt[T]{state: optPresent, value: v}
 }
@@ -76,7 +75,6 @@ func (o Opt[T]) IsZero() bool {
 	return o.state == optAbsent
 }
 
-// IsNull reports whether the property is present as JSON null.
 func (o Opt[T]) IsNull() bool {
 	return o.state == optNull
 }

@@ -257,7 +257,6 @@ func (c *Client) Connect(ctx context.Context, transport Transport) (*ClientConn,
 	return conn, nil
 }
 
-// Conns returns a snapshot iterator over the client's live connections.
 func (c *Client) Conns() iter.Seq[*ClientConn] { return c.conns.all() }
 
 // A ClientConn is one logical connection to an agent, after initialize.

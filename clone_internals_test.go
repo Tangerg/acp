@@ -5,31 +5,19 @@ import (
 	"testing"
 )
 
-// The boundary clone.go depends on: everything reachable from a value this
-// package retains and hands back can be deep-copied.
+// The boundary clone.go depends on: everything deepCopy is applied to can be
+// copied. A union arm may carry unexported state and one deliberately does — the
+// elicitation scope naming a JSON-RPC request identifier — and copying that arm
+// panics, so what keeps this true is that nothing retained holds one.
 //
-// clone.go used to claim a test held this and none did, which is how the claim
-// survived becoming false. It became false when elicitation was generated: a
-// union arm may carry unexported state, and one of them deliberately does — the
-// scope naming a JSON-RPC request identifier, which this API does not hand out.
-// Copying that arm panics. Nothing retained holds one, and this is what says so
-// rather than hoping.
+// It walks types rather than values because the failure is a type appearing in the
+// graph, not a value taking a path. It stops at deepCopier, which is where
+// reflection stops needing to reach, and at interfaces, whose arms cannot be listed
+// from the type; those are covered by the value-based tests in clone_test.go.
 //
-// It walks types rather than a value because the failure it guards is a type
-// appearing in the graph, not a particular value taking a path through it. A
-// configuration that came to hold such a type would panic on the copy, at
-// construction, in a library.
-//
-// The walk stops at two places, both deliberate. A type implementing deepCopier
-// owns its representation, which is where reflection stops needing to reach. An
-// interface's arms cannot be listed from its type, so those are covered by the
-// value-based tests in clone_test.go, which copy real configurations and real
-// snapshots.
-//
-// The roots are what deepCopy is actually applied to, not the configurations that
-// contain them. A configuration is copied field by field on purpose: its Logger is
-// shared because a logger is meant to be, and its handlers are functions, so
-// copying the whole struct would be copying things whose identity is the point.
+// The roots are the copied values, not the configurations holding them: a
+// configuration is copied field by field on purpose, because its Logger is meant to
+// be shared and its handlers are functions whose identity is the point.
 func TestEverythingRetainedCanBeDeepCopied(t *testing.T) {
 	for name, root := range map[string]reflect.Type{
 		"Implementation":      reflect.TypeFor[Implementation](),
@@ -51,15 +39,11 @@ func TestEverythingRetainedCanBeDeepCopied(t *testing.T) {
 	}
 }
 
-// The two elicitation modes are roots because the operation copies one before
-// writing the scope into it. Their Value is an interface, so the walk stops there
-// — and the arm behind it is the one arm in the package that carries unexported
-// state. What keeps it out is not the type graph but checkedMode, which refuses a
-// mode that already has a scope; TestASuppliedScopeIsRefused is that half.
-//
-// This is the other half: a value that does carry unreachable state is refused by
-// the copier rather than silently shared, which is what makes the walk above worth
-// running at all.
+// The modes are roots because the operation copies one before writing the scope
+// into it, and their Value is an interface the walk stops at — so what keeps the
+// unexported arm out there is checkedMode, not the type graph
+// (TestASuppliedScopeIsRefused is that half). This is the other: the copier really
+// does refuse, which is what makes the walk worth running.
 func TestDeepCopyRefusesUnexportedState(t *testing.T) {
 	defer func() {
 		if recover() == nil {
@@ -67,23 +51,18 @@ func TestDeepCopyRefusesUnexportedState(t *testing.T) {
 				"been shared behind the caller's back")
 		}
 	}()
-	// The elicitation request scope, which is exactly the shape the walk exists to
-	// keep out of anything retained.
 	_ = deepCopy(CreateElicitationRequestValue(&ElicitationFormMode{
 		Value: &ElicitationFormModeRequest{},
 	}))
 }
 
-// findUnexported returns the path to a struct field reflection cannot write, or
-// the empty string.
 func findUnexported(typ reflect.Type, seen map[reflect.Type]bool, path string) string {
 	if typ == nil || seen[typ] {
 		return ""
 	}
 	seen[typ] = true
 
-	// Both spellings, because deepCopySelf may be declared on the value or on the
-	// pointer, and reaching a type either way means the same thing here.
+	// Both spellings: deepCopySelf may be declared on the value or on the pointer.
 	copier := reflect.TypeFor[deepCopier]()
 	if typ.Implements(copier) || reflect.PointerTo(typ).Implements(copier) {
 		return ""
@@ -112,8 +91,7 @@ func findUnexported(typ reflect.Type, seen map[reflect.Type]bool, path string) s
 		return ""
 
 	default:
-		// Scalars have nothing to reach, a func is returned as it is, and an
-		// interface cannot name its arms.
+		// An interface cannot name its arms; scalars and funcs have nothing to reach.
 		return ""
 	}
 }

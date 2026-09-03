@@ -13,19 +13,14 @@ import (
 // Every normative sentence the published schema states, and what this package does
 // about it.
 //
-// The schema carries the specification's own prose in its descriptions, and some
-// of that prose is normative. Those sentences are the part of the standard a
-// generator cannot implement: they are not shapes, they are obligations, and the
-// only thing that keeps them satisfied is somebody having read them.
-//
-// So they are read once and written down, the way the capability table quotes the
-// schema beside each row, and the test below holds the list against the schema in
-// both directions. A schema bump that adds an obligation fails here rather than
-// being noticed by whoever happens to reread the descriptions; one that removes an
-// obligation fails here too, so a row cannot outlive the clause it answers.
+// These are the part of the standard a generator cannot implement: not shapes but
+// obligations, kept only by somebody having read them. Written down once, the way
+// the capability table quotes the schema beside each row, and held against the
+// schema in both directions so that a release adding an obligation fails here
+// rather than waiting to be noticed, and a row cannot outlive its clause.
 //
 // Being classified is all this asserts. That a clause is satisfied is asserted by
-// the tests each row names, not by the row.
+// the tests each row names.
 
 type obligationOwner uint8
 
@@ -43,13 +38,12 @@ const (
 
 type obligation struct {
 	owner obligationOwner
-	// how names where the obligation is kept, or why it cannot be kept here.
+	// Where it is kept, or why it cannot be.
 	how string
 }
 
-// The keys are the sentences as normativeClauses extracts them: whitespace
-// normalised, and the schema's own markup left alone. Quoting them in full is the
-// point — a reviewer compares a row against the standard without leaving the file.
+// Keyed by the sentence as normativeClauses extracts it. Quoting in full is the
+// point: a reviewer compares a row against the standard without leaving the file.
 var obligations = map[string]obligation{
 	"Agents MUST advertise this method only when the client enabled its terminal authentication capability.": {
 		ownedHere,
@@ -175,7 +169,6 @@ var obligations = map[string]obligation{
 	},
 }
 
-// The list and the schema, held against each other in both directions.
 func TestEveryNormativeClauseInTheSchemaIsClassified(t *testing.T) {
 	clauses := normativeClauses(t)
 	if len(clauses) == 0 {
@@ -207,12 +200,8 @@ func TestEveryNormativeClauseInTheSchemaIsClassified(t *testing.T) {
 
 var normative = regexp.MustCompile(`\b(MUST NOT|MUST|SHOULD NOT|SHOULD)\b`)
 
-// normativeClauses returns every sentence in the schema's prose that states an
-// obligation, whitespace normalised and deduplicated.
-//
-// It reads the vendored schema rather than a copy, because a copy is a second
-// thing to keep in step with upstream and this exists to notice when upstream
-// moves.
+// Reads the vendored schema rather than a copy: a copy would be a second thing to
+// keep in step with upstream, and noticing upstream move is the point.
 func normativeClauses(t *testing.T) []string {
 	t.Helper()
 
@@ -254,9 +243,8 @@ func normativeClauses(t *testing.T) []string {
 	return clauses
 }
 
-// sentences splits prose on a full stop that ends a word rather than one inside
-// `session/new` or a version number, which is the whole of what this needs: the
-// schema's prose is ordinary sentences and Markdown lists.
+// Splits on a full stop that ends a word rather than one inside `session/new` or a
+// version number, which is the whole of what the schema's prose needs.
 func sentences(text string) []string {
 	text = strings.Join(strings.Fields(text), " ")
 	var out []string

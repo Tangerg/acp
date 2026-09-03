@@ -59,14 +59,13 @@ func (m Meta) Decode(key string, target any) (bool, error) {
 	return true, nil
 }
 
-// Delete removes key. It does nothing when m is nil or key is absent.
+// Delete is safe on a nil Meta, so a caller need not know whether one was set.
 func (m *Meta) Delete(key string) {
 	if m != nil {
 		delete(m.values, key)
 	}
 }
 
-// Len returns the number of stored keys.
 func (m Meta) Len() int { return len(m.values) }
 
 func (m Meta) MarshalJSON() ([]byte, error) {

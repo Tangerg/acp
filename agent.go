@@ -295,7 +295,6 @@ func (a *Agent) Run(ctx context.Context, transport Transport) error {
 	}
 }
 
-// Conns returns a snapshot iterator over the agent's live connections.
 func (a *Agent) Conns() iter.Seq[*AgentConn] { return a.conns.all() }
 
 // An AgentConn is one logical connection to a client.

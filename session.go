@@ -37,10 +37,8 @@ type ClientSession struct {
 	conn *ClientConn
 }
 
-// ID returns the protocol identifier bound to this handle.
 func (s *ClientSession) ID() SessionID { return s.id }
 
-// Conn returns the connection that owns this handle.
 func (s *ClientSession) Conn() *ClientConn { return s.conn }
 
 // Prompt runs one turn and blocks until it ends.
@@ -441,10 +439,8 @@ type AgentSession struct {
 	conn *AgentConn
 }
 
-// ID returns the protocol identifier bound to this handle.
 func (s *AgentSession) ID() SessionID { return s.id }
 
-// Conn returns the connection that owns this handle.
 func (s *AgentSession) Conn() *AgentConn { return s.conn }
 
 // Update sends the client one piece of a turn's output.
