@@ -193,6 +193,9 @@ func (s *ClientSession) SetConfigOption(
 	if params == nil {
 		return nil, paramsRequired("SetConfigOption", "ConfigID and Value")
 	}
+	if err := s.conn.Peer().permitsConfigOptionValue(params.Value); err != nil {
+		return nil, err
+	}
 	request := &SetSessionConfigOptionRequest{
 		SessionID: s.id,
 		ConfigID:  params.ConfigID,

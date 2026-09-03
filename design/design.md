@@ -270,14 +270,25 @@ schema's own words beside each row, and is checked against the generated method
 list in both directions, so a method added by a schema update cannot quietly
 arrive ungated.
 
-Three capabilities gate a request's parameters rather than the request itself,
-and the specification puts all three obligations on the client: prompt content is
+Four capabilities gate a request's parameters rather than the request itself, and
+the specification puts all four obligations on the client: prompt content is
 restricted to the advertised `promptCapabilities`, an `http` or `sse` MCP server
-requires the matching `mcpCapabilities`, and `additionalDirectories` may be sent
-only to an agent that advertised it. These are checked on the way out too, and
-the refusal is invalid-params rather than method-not-found: the method is
-available, and it is what the caller put inside it that the agent never said it
-could take.
+requires the matching `mcpCapabilities`, `additionalDirectories` may be sent only
+to an agent that advertised it, and a boolean session configuration option may be
+set only by a client that advertised `session.configOptions.boolean`. These are
+checked on the way out too, and the refusal is invalid-params rather than
+method-not-found: the method is available, and it is what the caller put inside it
+that the agent never said it could take.
+
+The fourth is the only one a side reads about itself, because the schema grants
+the boolean option type through the client's advertisement rather than the
+agent's. It was also the one nothing read at all: a capability decoded, carried in
+`PeerInfo` and never consulted. What found it was asking the question the method
+table already answers — every method has a gate — in the other direction: every
+capability is read by something. That check is now a test, listing each capability
+leaf with what reads it and holding the list against the gate table, so a
+capability added upstream cannot arrive as a grant this package accepts and never
+acts on.
 
 They are deliberately not enforced inbound, and the difference is what a
 capability means in each case. A method capability is authority — whether an

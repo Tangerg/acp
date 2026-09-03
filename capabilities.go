@@ -330,6 +330,39 @@ func (p PeerInfo) permitsPromptContent(blocks []ContentBlock) error {
 	return nil
 }
 
+// permitsConfigOptionValue is the fourth parameter capability, and the only one a
+// side reads about itself.
+//
+// The schema grants the boolean option type through the client rather than the
+// agent: supplying `session.configOptions.boolean` "means agents may include
+// `type: "boolean"` entries in `configOptions`, and the client may send
+// `session/set_config_option` requests with `type: "boolean"` and a boolean
+// `value`". So the permission to send one is the client's own advertisement, and
+// this is the client checking what it said.
+//
+// That is worth checking rather than assuming. A client sending a boolean value
+// for an option type it told the agent it does not support is describing an option
+// the agent could not have offered, and the mistake is easier to read here than in
+// whatever the agent answers.
+//
+// The select type has no capability. The schema gates only the boolean one, which
+// is what a later addition to an already-shipped grammar looks like.
+func (p PeerInfo) permitsConfigOptionValue(value SetSessionConfigOptionRequestValue) error {
+	if _, boolean := value.(*SetSessionConfigOptionRequestBoolean); !boolean {
+		return nil
+	}
+	session, hasSession := p.ClientCapabilities.Session.Get()
+	if hasSession {
+		if options, hasOptions := session.ConfigOptions.Get(); hasOptions &&
+			hasCapability(options.Boolean) {
+			return nil
+		}
+	}
+	return newError(ErrorCodeInvalidParams,
+		"a boolean session configuration option was not advertised because "+
+			"clientCapabilities.session.configOptions.boolean is not set")
+}
+
 // permitsSessionSetup checks the two gated parameters that session/new,
 // session/load and session/resume all carry.
 func (p PeerInfo) permitsSessionSetup(servers []McpServer, directories []string) error {

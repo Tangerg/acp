@@ -49,6 +49,13 @@ migration instructions.
 
 ### Fixed
 
+- **A boolean session configuration option could be set without the capability
+  that grants it.** The schema gates the boolean option type through
+  `clientCapabilities.session.configOptions.boolean`, and nothing read it:
+  `ClientSession.SetConfigOption` sent a boolean value whatever the client had
+  advertised. It is now refused before the write with invalid-params, naming the
+  capability, like the three other parameter capabilities.
+
 - **A custom elicitation mode was accepted without a scope.** Each mode carries a
   scope union — a session or a request — and the catch-all arm carries it too. The
   generator read a catch-all arm's declared properties and ignored the arm's own

@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -359,4 +360,110 @@ func newSessionStub(context.Context, *AgentConn, *NewSessionRequest) (*NewSessio
 
 func promptStub(context.Context, *AgentSession, *PromptRequest) (*PromptResponse, error) {
 	return &PromptResponse{StopReason: StopReasonEndTurn}, nil
+}
+
+// The boolean session configuration option, which the schema gates through the
+// client's own advertisement rather than the agent's.
+func TestABooleanConfigOptionNeedsTheClientToHaveAdvertisedIt(t *testing.T) {
+	boolean := &SetSessionConfigOptionRequestBoolean{}
+	selected := &SetSessionConfigOptionRequestValueID{}
+
+	var silent PeerInfo
+	if err := silent.permitsConfigOptionValue(selected); err != nil {
+		t.Errorf("a select value was refused, and the schema gates only the boolean type: %v", err)
+	}
+	err := silent.permitsConfigOptionValue(boolean)
+	if err == nil {
+		t.Fatal("a boolean value was allowed although the client advertised no support for one")
+	}
+	var refusal *Error
+	if !errors.As(err, &refusal) || refusal.Code != ErrorCodeInvalidParams {
+		t.Fatalf("refused with %v, want invalid params: the method is there and it is the value "+
+			"inside it that was never advertised", err)
+	}
+	if !strings.Contains(refusal.Message, "clientCapabilities.session.configOptions.boolean") {
+		t.Errorf("the refusal says %q, which does not name the capability", refusal.Message)
+	}
+
+	// Every level of the nesting has to be present, because each is an Opt whose
+	// absent state means the capability was not advertised.
+	partial := PeerInfo{ClientCapabilities: ClientCapabilities{
+		Session: OptValue(ClientSessionCapabilities{}),
+	}}
+	if partial.permitsConfigOptionValue(boolean) == nil {
+		t.Error("session capabilities with no configOptions advertised a boolean option")
+	}
+
+	advertised := PeerInfo{ClientCapabilities: ClientCapabilities{
+		Session: OptValue(ClientSessionCapabilities{
+			ConfigOptions: OptValue(SessionConfigOptionsCapabilities{
+				Boolean: OptValue(BooleanConfigOptionCapabilities{}),
+			}),
+		}),
+	}}
+	if err := advertised.permitsConfigOptionValue(boolean); err != nil {
+		t.Errorf("a boolean value was refused although the client advertised it: %v", err)
+	}
+}
+
+// The dual of TestEveryMethodHasAGate: every capability the schema defines is
+// read by something.
+//
+// The method table says which capability gates which method, and a test holds it
+// against the generated method list in both directions. Nothing said the same
+// about capabilities, and the gap that left was real: the boolean configuration
+// option capability was defined, decoded, carried in PeerInfo, and read by
+// nothing at all.
+//
+// A capability that gates a method is read by the table. One that gates a
+// parameter is read by a permits* function. One that carries no permission is
+// listed here with what it does instead. A capability in none of the three is a
+// grant this package accepted and never acted on.
+func TestEveryCapabilityIsRead(t *testing.T) {
+	gated := map[string]bool{}
+	for _, gate := range gates {
+		if gate.capability != "" {
+			gated[gate.capability] = true
+		}
+	}
+
+	// The leaves the schema defines, each with what reads it.
+	leaves := map[string]string{
+		"agentCapabilities.loadSession":                               "gates session/load",
+		"agentCapabilities.auth.logout":                               "gates logout",
+		"agentCapabilities.sessionCapabilities.list":                  "gates session/list",
+		"agentCapabilities.sessionCapabilities.delete":                "gates session/delete",
+		"agentCapabilities.sessionCapabilities.resume":                "gates session/resume",
+		"agentCapabilities.sessionCapabilities.close":                 "gates session/close",
+		"clientCapabilities.fs.readTextFile":                          "gates fs/read_text_file",
+		"clientCapabilities.fs.writeTextFile":                         "gates fs/write_text_file",
+		"clientCapabilities.terminal":                                 "gates all five terminal methods",
+		"clientCapabilities.elicitation":                              "gates elicitation/create",
+		"clientCapabilities.elicitation.url":                          "gates elicitation/complete",
+		"agentCapabilities.promptCapabilities.image":                  "PeerInfo.permitsPromptContent",
+		"agentCapabilities.promptCapabilities.audio":                  "PeerInfo.permitsPromptContent",
+		"agentCapabilities.promptCapabilities.embeddedContext":        "PeerInfo.permitsPromptContent",
+		"agentCapabilities.mcpCapabilities.http":                      "PeerInfo.permitsSessionSetup",
+		"agentCapabilities.mcpCapabilities.sse":                       "PeerInfo.permitsSessionSetup",
+		"agentCapabilities.sessionCapabilities.additionalDirectories": "PeerInfo.permitsSessionSetup",
+		"clientCapabilities.elicitation.form":                         "PeerInfo.permitsElicitationMode",
+		"clientCapabilities.session.configOptions.boolean":            "PeerInfo.permitsConfigOptionValue",
+		"clientCapabilities.auth.terminal":                            "authenticationMethods.offered and validateOffer",
+	}
+
+	// Held against the gate table, so a row whose capability path is misspelled
+	// cannot pass by being listed here as gating something.
+	for path, how := range leaves {
+		if strings.HasPrefix(how, "gates ") && !gated[path] {
+			t.Errorf("%s is listed as gating a method, and no gate row names it", path)
+		}
+		if !strings.HasPrefix(how, "gates ") && gated[path] {
+			t.Errorf("%s gates a method and is listed as read by %s instead", path, how)
+		}
+	}
+	for path := range gated {
+		if _, listed := leaves[path]; !listed {
+			t.Errorf("the gate table reads %s, which this list does not name", path)
+		}
+	}
 }
