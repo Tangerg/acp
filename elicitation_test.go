@@ -180,10 +180,10 @@ func TestAURLElicitationIsFinishedByItsCompletion(t *testing.T) {
 // The request scope names the call the agent is answering, and the agent never
 // spells the identifier: it comes from the context the handler was given.
 //
-// The prompt handler is where this is driven from because it is the handler that
-// can reach the connection. See design.md on the handlers that cannot, which is
-// what stands between this and the case the schema describes — an agent eliciting
-// during authentication, before any session exists.
+// This is the case the schema describes — an agent eliciting during
+// authentication, before any session exists — so it is driven from an
+// authenticate handler, which has no session and reaches the client through the
+// connection it is given.
 func TestARequestScopedElicitationNamesTheRequestBeingServed(t *testing.T) {
 	scopes := make(chan acp.ElicitationFormModeValue, 1)
 
@@ -208,21 +208,47 @@ func TestARequestScopedElicitationNamesTheRequestBeingServed(t *testing.T) {
 	}
 
 	var elicitErr error
-	agent := testAgent(t, func(
-		ctx context.Context,
-		session *acp.AgentSession,
-		_ *acp.PromptRequest,
-	) (*acp.PromptResponse, error) {
-		_, elicitErr = session.Conn().CreateElicitation(ctx, &acp.CreateElicitationParams{
-			Message: "paste your token",
-			Mode:    &acp.ElicitationFormMode{RequestedSchema: formSchema()},
-		})
-		return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
-	})
+	agent, err := acp.NewAgent(&acp.AgentConfig{
+		NewSession: func(
+			context.Context,
+			*acp.AgentConn,
+			*acp.NewSessionRequest,
+		) (*acp.NewSessionResponse, error) {
+			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
+		},
+		Prompt: func(
+			context.Context,
+			*acp.AgentSession,
+			*acp.PromptRequest,
+		) (*acp.PromptResponse, error) {
+			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+		},
+		Cancel:      func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
+		AuthMethods: []acp.AuthMethod{&acp.AuthMethodAgent{ID: "token", Name: "Token"}},
 
-	session := connectAndOpen(t, client, agent)
-	if _, err := session.Prompt(context.Background(), &acp.PromptParams{}); err != nil {
-		t.Fatalf("Prompt: %v", err)
+		// No session exists here, and none will until the client is authenticated.
+		// The connection is the handle, and the request being answered is the scope.
+		Authenticate: func(
+			ctx context.Context,
+			conn *acp.AgentConn,
+			_ *acp.AuthenticateRequest,
+		) (*acp.AuthenticateResponse, error) {
+			_, elicitErr = conn.CreateElicitation(ctx, &acp.CreateElicitationParams{
+				Message: "paste your token",
+				Mode:    &acp.ElicitationFormMode{RequestedSchema: formSchema()},
+			})
+			return &acp.AuthenticateResponse{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+
+	conn := connectPeers(t, client, agent)
+	if _, err := conn.Authenticate(context.Background(), &acp.AuthenticateRequest{
+		MethodID: "token",
+	}); err != nil {
+		t.Fatalf("Authenticate: %v", err)
 	}
 	if elicitErr != nil {
 		t.Fatalf("CreateElicitation: %v", elicitErr)

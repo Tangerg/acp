@@ -20,7 +20,7 @@ func TestAuthenticationIsControlFlow(t *testing.T) {
 	authenticated := false
 	agent, err := acp.NewAgent(&acp.AgentConfig{
 		AuthMethods: []acp.AuthMethod{&acp.AuthMethodAgent{ID: "oauth", Name: "Sign in"}},
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			if !authenticated {
 				return nil, &acp.Error{
 					Code:    acp.ErrorCodeAuthenticationRequired,
@@ -31,6 +31,7 @@ func TestAuthenticationIsControlFlow(t *testing.T) {
 		},
 		Authenticate: func(
 			_ context.Context,
+			_ *acp.AgentConn,
 			request *acp.AuthenticateRequest,
 		) (*acp.AuthenticateResponse, error) {
 			if request.MethodID != "oauth" {
@@ -90,7 +91,7 @@ func TestAuthenticationIsControlFlow(t *testing.T) {
 // agent offers modes by returning them.
 func TestLoadSessionAndSetMode(t *testing.T) {
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{
 				SessionID: "sess-1",
 				Modes: acp.OptValue(acp.SessionModeState{
@@ -188,7 +189,7 @@ func TestExtensionNotifications(t *testing.T) {
 
 	agentHeard := make(chan string, 1)
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
 		},
 		NotifyFallback: func(_ context.Context, notification *acp.ExtNotification) {

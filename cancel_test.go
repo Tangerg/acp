@@ -283,7 +283,7 @@ func TestCancellingOneTurnLeavesAnotherAlone(t *testing.T) {
 		release := make(chan struct{})
 
 		agent, err := acp.NewAgent(&acp.AgentConfig{
-			NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+			NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 				return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
 			},
 			Prompt: func(ctx context.Context, session *acp.AgentSession, _ *acp.PromptRequest) (*acp.PromptResponse, error) {

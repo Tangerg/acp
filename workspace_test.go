@@ -458,7 +458,7 @@ func TestAnEmptyIdentifierIsAcceptedBecauseTheSchemaDeclaresNoMinimum(t *testing
 
 	created := make(chan error, 1)
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: ""}, nil
 		},
 		Prompt: func(ctx context.Context, session *acp.AgentSession, _ *acp.PromptRequest) (*acp.PromptResponse, error) {

@@ -32,6 +32,34 @@ func dispatchCall[Request, Response any](
 	return response, nil
 }
 
+// dispatchConnCall is [dispatchCall] for an agent method scoped to the connection
+// rather than to a session, which is the difference between the two dispatchers
+// on this side: one hands the handler an [AgentSession] and the other an
+// [AgentConn]. Both hand it the handle its method belongs to, so that a handler
+// can act within its own scope without re-deriving it.
+func dispatchConnCall[Request, Response any](
+	ctx context.Context,
+	conn *AgentConn,
+	request *jsonrpc.Request,
+	handle func(context.Context, *AgentConn, *Request) (*Response, error),
+) (any, error) {
+	if handle == nil {
+		return nil, methodNotImplemented(request.Method)
+	}
+	params, err := decodeParams[Request](request)
+	if err != nil {
+		return nil, err
+	}
+	response, err := handle(ctx, conn, params)
+	if err != nil {
+		return nil, err
+	}
+	if response == nil {
+		return nil, nilHandlerResponse(request.Method)
+	}
+	return response, nil
+}
+
 func dispatchNotificationContext[Params any](
 	ctx context.Context,
 	request *jsonrpc.Request,

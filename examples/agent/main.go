@@ -75,7 +75,11 @@ type sessions struct {
 	directories map[acp.SessionID]string
 }
 
-func (s *sessions) newSession(_ context.Context, request *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+func (s *sessions) newSession(
+	_ context.Context,
+	_ *acp.AgentConn,
+	request *acp.NewSessionRequest,
+) (*acp.NewSessionResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

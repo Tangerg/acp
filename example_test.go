@@ -28,7 +28,7 @@ func Example() {
 	agent, err := acp.NewAgent(&acp.AgentConfig{
 		Info: &acp.Implementation{Name: "example-agent", Version: "0.1.0"},
 
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "session-1"}, nil
 		},
 
@@ -170,7 +170,7 @@ func ExampleClientSession_Cancel() {
 	started := make(chan struct{})
 
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "session-1"}, nil
 		},
 
@@ -275,12 +275,12 @@ func ExampleClientConn_Authenticate() {
 		AuthMethods: []acp.AuthMethod{
 			&acp.AuthMethodAgent{ID: "api-key", Name: "API key"},
 		},
-		Authenticate: func(context.Context, *acp.AuthenticateRequest) (*acp.AuthenticateResponse, error) {
+		Authenticate: func(context.Context, *acp.AgentConn, *acp.AuthenticateRequest) (*acp.AuthenticateResponse, error) {
 			authenticated.Store(true)
 			return &acp.AuthenticateResponse{}, nil
 		},
 
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			if !authenticated.Load() {
 				return nil, &acp.Error{
 					Code:    acp.ErrorCodeAuthenticationRequired,
@@ -350,7 +350,7 @@ func ExampleAgentSession_CreateTerminal() {
 	ctx := context.Background()
 
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "session-1"}, nil
 		},
 		Prompt: func(
@@ -467,7 +467,7 @@ func ExampleClientConn_Call() {
 	ctx := context.Background()
 
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "session-1"}, nil
 		},
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
@@ -628,7 +628,7 @@ func ExampleAgentSession_CreateElicitation() {
 	}
 
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "session-1"}, nil
 		},
 		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},

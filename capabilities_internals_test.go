@@ -353,7 +353,7 @@ func TestTheMethodTableIsTheSizeTheSchemaSays(t *testing.T) {
 
 // Handlers for the tests above, which are about what construction refuses rather
 // than about what a handler answers.
-func newSessionStub(context.Context, *NewSessionRequest) (*NewSessionResponse, error) {
+func newSessionStub(context.Context, *AgentConn, *NewSessionRequest) (*NewSessionResponse, error) {
 	return &NewSessionResponse{SessionID: "sess-1"}, nil
 }
 

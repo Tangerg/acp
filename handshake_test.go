@@ -104,10 +104,10 @@ func TestTheInitializeAnswerIsBuiltForTheClientInFrontOfIt(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			agent, err := acp.NewAgent(&acp.AgentConfig{
 				AuthMethods: test.methods,
-				Authenticate: func(context.Context, *acp.AuthenticateRequest) (*acp.AuthenticateResponse, error) {
+				Authenticate: func(context.Context, *acp.AgentConn, *acp.AuthenticateRequest) (*acp.AuthenticateResponse, error) {
 					return &acp.AuthenticateResponse{}, nil
 				},
-				NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+				NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 					return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
 				},
 				Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
@@ -153,7 +153,7 @@ func TestTheInitializeAnswerIsBuiltForTheClientInFrontOfIt(t *testing.T) {
 func TestTerminalAuthenticationNeedsNoHandlerAndCannotBeCalled(t *testing.T) {
 	agent, err := acp.NewAgent(&acp.AgentConfig{
 		AuthMethods: []acp.AuthMethod{&acp.AuthMethodTerminal{ID: "tui", Name: "Sign in with a terminal"}},
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
 		},
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
@@ -409,12 +409,13 @@ func TestAuthenticateIsHeldToTheAdvertisedMethods(t *testing.T) {
 				AuthMethods: advertised,
 				Authenticate: func(
 					_ context.Context,
+					_ *acp.AgentConn,
 					request *acp.AuthenticateRequest,
 				) (*acp.AuthenticateResponse, error) {
 					served <- request.MethodID
 					return &acp.AuthenticateResponse{}, nil
 				},
-				NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+				NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 					return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
 				},
 				Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
@@ -466,11 +467,11 @@ func TestAnAgentRefusesAnUnadvertisedAuthenticationMethod(t *testing.T) {
 	served := make(chan acp.AuthMethodID, 1)
 	agent, err := acp.NewAgent(&acp.AgentConfig{
 		AuthMethods: []acp.AuthMethod{&acp.AuthMethodAgent{ID: "oauth", Name: "Sign in"}},
-		Authenticate: func(_ context.Context, request *acp.AuthenticateRequest) (*acp.AuthenticateResponse, error) {
+		Authenticate: func(_ context.Context, _ *acp.AgentConn, request *acp.AuthenticateRequest) (*acp.AuthenticateResponse, error) {
 			served <- request.MethodID
 			return &acp.AuthenticateResponse{}, nil
 		},
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
 		},
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
@@ -510,10 +511,10 @@ func TestDuplicateAuthenticationIdentifiersAreRefused(t *testing.T) {
 			&acp.AuthMethodTerminal{ID: "same", Name: "Sign in with a terminal"},
 			&acp.AuthMethodAgent{ID: "same", Name: "Sign in"},
 		},
-		Authenticate: func(context.Context, *acp.AuthenticateRequest) (*acp.AuthenticateResponse, error) {
+		Authenticate: func(context.Context, *acp.AgentConn, *acp.AuthenticateRequest) (*acp.AuthenticateResponse, error) {
 			return &acp.AuthenticateResponse{}, nil
 		},
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
 		},
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
@@ -534,10 +535,10 @@ func TestANilAuthenticationMethodIsRefusedAtConstruction(t *testing.T) {
 	var method *acp.AuthMethodAgent
 	_, err := acp.NewAgent(&acp.AgentConfig{
 		AuthMethods: []acp.AuthMethod{method},
-		Authenticate: func(context.Context, *acp.AuthenticateRequest) (*acp.AuthenticateResponse, error) {
+		Authenticate: func(context.Context, *acp.AgentConn, *acp.AuthenticateRequest) (*acp.AuthenticateResponse, error) {
 			return &acp.AuthenticateResponse{}, nil
 		},
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
 		},
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {

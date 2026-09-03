@@ -28,7 +28,7 @@ import (
 func TestANotificationMethodSentAsACallIsRefused(t *testing.T) {
 	cancelled := make(chan acp.SessionID, 1)
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
 		},
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
@@ -462,7 +462,7 @@ func TestErrorDataKeepsItsThreeStatesOutbound(t *testing.T) {
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			agent, err := acp.NewAgent(&acp.AgentConfig{
-				NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+				NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 					return nil, &acp.Error{Code: -32000, Message: "no", Data: test.data}
 				},
 				Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {

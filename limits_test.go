@@ -175,7 +175,7 @@ func TestANegativeLimitIsRefusedAtConstruction(t *testing.T) {
 	}
 
 	_, agentErr := NewAgent(&AgentConfig{
-		NewSession: func(context.Context, *NewSessionRequest) (*NewSessionResponse, error) {
+		NewSession: func(context.Context, *AgentConn, *NewSessionRequest) (*NewSessionResponse, error) {
 			return &NewSessionResponse{}, nil
 		},
 		Prompt: func(context.Context, *AgentSession, *PromptRequest) (*PromptResponse, error) {
@@ -203,7 +203,7 @@ func blockingAgent(t *testing.T, limits Limits, reached chan<- struct{}, held <-
 	}
 	agent, err := NewAgent(&AgentConfig{
 		Limits: limits,
-		NewSession: func(context.Context, *NewSessionRequest) (*NewSessionResponse, error) {
+		NewSession: func(context.Context, *AgentConn, *NewSessionRequest) (*NewSessionResponse, error) {
 			arrive()
 			return &NewSessionResponse{SessionID: "sess-1"}, nil
 		},

@@ -504,7 +504,7 @@ func (c *AgentConn) session(id SessionID) *AgentSession {
 
 // The handler receives no handle because this is the call that creates one.
 func (c *AgentConn) newSession(ctx context.Context, request *jsonrpc.Request) (any, error) {
-	result, err := dispatchCall(ctx, request, c.agent.config.NewSession)
+	result, err := dispatchConnCall(ctx, c, request, c.agent.config.NewSession)
 	if err != nil {
 		return nil, err
 	}

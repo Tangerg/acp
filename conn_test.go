@@ -49,7 +49,7 @@ func TestATurnEndToEnd(t *testing.T) {
 
 	agent, err := acp.NewAgent(&acp.AgentConfig{
 		Info: &acp.Implementation{Name: "an agent", Version: "0.1.0"},
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
 		},
 		Prompt: func(
@@ -247,7 +247,7 @@ func TestParametersTheAgentNeverAdvertisedAreRefused(t *testing.T) {
 func TestPromptContentTheAgentAdvertisedIsSent(t *testing.T) {
 	var blocks int
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
 		},
 		Prompt: func(_ context.Context, _ *acp.AgentSession, request *acp.PromptRequest) (*acp.PromptResponse, error) {
@@ -402,7 +402,7 @@ func testAgent(
 		}
 	}
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
 		},
 		Prompt: prompt,
@@ -414,8 +414,9 @@ func testAgent(
 	return agent
 }
 
-// connectAndOpen wires a client and an agent together and opens one session.
-func connectAndOpen(t *testing.T, client *acp.Client, agent *acp.Agent) *acp.ClientSession {
+// connectPeers wires a client and an agent together over one in-memory pair and
+// returns the client's end, before any session exists.
+func connectPeers(t *testing.T, client *acp.Client, agent *acp.Agent) *acp.ClientConn {
 	t.Helper()
 	clientSide, agentSide := acp.NewInMemoryTransports()
 	ctx := context.Background()
@@ -432,8 +433,15 @@ func connectAndOpen(t *testing.T, client *acp.Client, agent *acp.Agent) *acp.Cli
 		_ = conn.Close()
 		_ = agentConn.Close()
 	})
+	return conn
+}
 
-	session, _, err := conn.NewSession(ctx, &acp.NewSessionRequest{Cwd: "/w"})
+// connectAndOpen wires a client and an agent together and opens one session.
+func connectAndOpen(t *testing.T, client *acp.Client, agent *acp.Agent) *acp.ClientSession {
+	t.Helper()
+	conn := connectPeers(t, client, agent)
+
+	session, _, err := conn.NewSession(context.Background(), &acp.NewSessionRequest{Cwd: "/w"})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

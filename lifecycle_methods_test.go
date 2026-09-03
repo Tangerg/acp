@@ -141,7 +141,7 @@ func TestClosingASessionCancelsItsTurn(t *testing.T) {
 	closed := make(chan acp.SessionID, 1)
 	running := make(chan struct{})
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
 		},
 		Prompt: func(ctx context.Context, _ *acp.AgentSession, _ *acp.PromptRequest) (*acp.PromptResponse, error) {
@@ -233,19 +233,20 @@ func lifecycleAgent(t *testing.T, served chan<- string) *acp.Agent {
 		}
 	}
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
 		},
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
 		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
-		Logout: func(context.Context, *acp.LogoutRequest) (*acp.LogoutResponse, error) {
+		Logout: func(context.Context, *acp.AgentConn, *acp.LogoutRequest) (*acp.LogoutResponse, error) {
 			record("logout")
 			return &acp.LogoutResponse{}, nil
 		},
 		ListSessions: func(
 			_ context.Context,
+			_ *acp.AgentConn,
 			request *acp.ListSessionsRequest,
 		) (*acp.ListSessionsResponse, error) {
 			record("list")
@@ -260,7 +261,7 @@ func lifecycleAgent(t *testing.T, served chan<- string) *acp.Agent {
 				NextCursor: acp.OptValue("page-2"),
 			}, nil
 		},
-		DeleteSession: func(context.Context, *acp.DeleteSessionRequest) (*acp.DeleteSessionResponse, error) {
+		DeleteSession: func(context.Context, *acp.AgentConn, *acp.DeleteSessionRequest) (*acp.DeleteSessionResponse, error) {
 			record("delete")
 			return &acp.DeleteSessionResponse{}, nil
 		},

@@ -246,7 +246,7 @@ func newTestClientConn() *ClientConn {
 // than silently taking over the session.
 func TestASecondPromptOverTheWireIsRefused(t *testing.T) {
 	agent, err := NewAgent(&AgentConfig{
-		NewSession: func(context.Context, *NewSessionRequest) (*NewSessionResponse, error) {
+		NewSession: func(context.Context, *AgentConn, *NewSessionRequest) (*NewSessionResponse, error) {
 			return &NewSessionResponse{SessionID: "sess-1"}, nil
 		},
 		Prompt: func(ctx context.Context, _ *AgentSession, _ *PromptRequest) (*PromptResponse, error) {

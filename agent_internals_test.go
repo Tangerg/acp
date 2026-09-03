@@ -264,7 +264,7 @@ func TestAnUnimplementedMethodIsNotFound(t *testing.T) {
 func TestAReservedFutureMethodDoesNotReachTheExtensionFallback(t *testing.T) {
 	reached := false
 	agent, err := NewAgent(&AgentConfig{
-		NewSession: func(context.Context, *NewSessionRequest) (*NewSessionResponse, error) {
+		NewSession: func(context.Context, *AgentConn, *NewSessionRequest) (*NewSessionResponse, error) {
 			return &NewSessionResponse{SessionID: "sess-1"}, nil
 		},
 		Prompt: func(context.Context, *AgentSession, *PromptRequest) (*PromptResponse, error) {
@@ -305,7 +305,7 @@ func TestAReservedFutureMethodDoesNotReachTheExtensionFallback(t *testing.T) {
 // exposed as the generic -32603 response.
 func TestACancelledHandlerIsAnsweredWithRequestCancelled(t *testing.T) {
 	agent, err := NewAgent(&AgentConfig{
-		NewSession: func(context.Context, *NewSessionRequest) (*NewSessionResponse, error) {
+		NewSession: func(context.Context, *AgentConn, *NewSessionRequest) (*NewSessionResponse, error) {
 			return &NewSessionResponse{SessionID: "sess-1"}, nil
 		},
 		Prompt: func(ctx context.Context, _ *AgentSession, _ *PromptRequest) (*PromptResponse, error) {
@@ -343,7 +343,7 @@ func TestACancelledHandlerIsAnsweredWithRequestCancelled(t *testing.T) {
 
 func TestReusingAnActiveRequestIDEndsTheConnection(t *testing.T) {
 	agent, err := NewAgent(&AgentConfig{
-		NewSession: func(context.Context, *NewSessionRequest) (*NewSessionResponse, error) {
+		NewSession: func(context.Context, *AgentConn, *NewSessionRequest) (*NewSessionResponse, error) {
 			return &NewSessionResponse{SessionID: "sess-1"}, nil
 		},
 		Prompt: func(ctx context.Context, _ *AgentSession, _ *PromptRequest) (*PromptResponse, error) {
@@ -380,7 +380,7 @@ func TestReusingAnActiveRequestIDEndsTheConnection(t *testing.T) {
 func rawAgentConnection(t *testing.T) (Connection, *AgentConn) {
 	t.Helper()
 	agent, err := NewAgent(&AgentConfig{
-		NewSession: func(context.Context, *NewSessionRequest) (*NewSessionResponse, error) {
+		NewSession: func(context.Context, *AgentConn, *NewSessionRequest) (*NewSessionResponse, error) {
 			return &NewSessionResponse{SessionID: "sess-1"}, nil
 		},
 		Prompt: func(context.Context, *AgentSession, *PromptRequest) (*PromptResponse, error) {

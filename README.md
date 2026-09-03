@@ -97,8 +97,13 @@ if err != nil {
 return agent.Run(ctx, acp.NewStdioTransport())
 ```
 
-The `Prompt` handler receives an `*acp.AgentSession`. Use that handle to stream
-`session/update`, request permission, access files, and run terminal commands.
+Every handler is given the handle its method is scoped to. `Prompt` and the other
+session-scoped handlers receive an `*acp.AgentSession`, which streams
+`session/update`, requests permission, accesses files, and runs terminal commands.
+`NewSession`, `Authenticate`, `Logout`, `ListSessions` and `DeleteSession` receive
+an `*acp.AgentConn`, which is how a handler with no session — one answering
+`authenticate`, say — can still elicit input from the user.
+
 Keep diagnostics on stderr because stdout carries the protocol stream.
 
 ## Run the examples

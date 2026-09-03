@@ -48,6 +48,27 @@ migration instructions.
 
 ### Changed
 
+- **Breaking: five `AgentConfig` handlers take the connection.** `NewSession`,
+  `Authenticate`, `Logout`, `ListSessions` and `DeleteSession` now take an
+  `*AgentConn` between the context and the request, matching `Prompt` and `Cancel`,
+  which have always taken an `*AgentSession`.
+
+  A handler is given the handle its method is scoped to. Without it a
+  connection-scoped handler could make no outbound call at all, which put the
+  specification's own example of a request-scoped elicitation — an agent asking
+  the user for something during authentication — out of reach.
+
+  Migration is mechanical: add a parameter.
+
+  ```go
+  // before
+  NewSession: func(ctx context.Context, request *acp.NewSessionRequest) (*acp.NewSessionResponse, error)
+  // after
+  NewSession: func(ctx context.Context, conn *acp.AgentConn, request *acp.NewSessionRequest) (*acp.NewSessionResponse, error)
+  ```
+
+  The extension fallbacks and every `ClientConfig` handler are unchanged.
+
 - `Opt` documents that two codecs decode it and how they differ. A generated field
   goes through the schema-directed codec, which leaves an unreadable optional
   property absent so the rest of a peer's message still arrives; an `Opt` in a
