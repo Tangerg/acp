@@ -274,6 +274,35 @@ throughout. An option function is a closure whose effect is discoverable only by
 reading its implementation; a struct field is visible in the type, in the
 documentation and in an IDE, and it composes with the language's zero values.
 
+### A handler is given the handle its method is scoped to
+
+`Prompt` and `Cancel` take an `*AgentSession` because their methods are
+session-scoped. The connection-scoped ones took nothing, which meant a handler
+with no session could make no outbound call at all — and the case the schema
+describes for a request-scoped elicitation is exactly one of those: an agent
+asking for something from inside its own `authenticate` handler, before a session
+exists.
+
+`NewSession`, `Authenticate`, `Logout`, `ListSessions` and `DeleteSession`
+therefore take an `*AgentConn`. It completes a rule the agent side already half
+kept, and it is what makes request-scoped elicitation reachable where the
+specification puts it rather than only from handlers that happen to hold a
+session.
+
+Two things stayed as they were, and the reasons are not the same reason.
+
+The extension fallbacks take no connection, on either side. What an extension
+carries is between the two implementations that agreed on it, which is why this
+package hands them their params undecoded; deciding that they need a connection
+would be this package shaping an extension it does not own.
+
+The client's handlers take no handle at all, and that is not an oversight to
+correct later. The two sides are not symmetric here: an agent serves, so the
+library is the only thing that can hand it a handle, while a client drives and
+already holds every handle it uses — it created the session it is being told
+about. Adding a parameter to nine client handlers would be churn for a need
+nothing has demonstrated.
+
 ### Capabilities are an authority boundary
 
 Capabilities are not a feature list. They decide whether an agent may read a
@@ -630,35 +659,6 @@ advertise. A group serving neither mode has advertised nothing. A URL mode witho
 a completion leaves the user in front of a page nothing will ever close, so the
 mode is not servable without one — and a completion without a URL mode is a
 handler that can never run.
-
-### A handler is given the handle its method is scoped to
-
-`Prompt` and `Cancel` take an `*AgentSession` because their methods are
-session-scoped. The connection-scoped ones took nothing, which meant a handler
-with no session could make no outbound call at all — and the case the schema
-describes for a request-scoped elicitation is exactly one of those: an agent
-asking for something from inside its own `authenticate` handler, before a session
-exists.
-
-`NewSession`, `Authenticate`, `Logout`, `ListSessions` and `DeleteSession`
-therefore take an `*AgentConn`. It completes a rule the agent side already half
-kept, and it is what makes request-scoped elicitation reachable where the
-specification puts it rather than only from handlers that happen to hold a
-session.
-
-Two things stayed as they were, and the reasons are not the same reason.
-
-The extension fallbacks take no connection, on either side. What an extension
-carries is between the two implementations that agreed on it, which is why this
-package hands them their params undecoded; deciding that they need a connection
-would be this package shaping an extension it does not own.
-
-The client's handlers take no handle at all, and that is not an oversight to
-correct later. The two sides are not symmetric here: an agent serves, so the
-library is the only thing that can hand it a handle, while a client drives and
-already holds every handle it uses — it created the session it is being told
-about. Adding a parameter to nine client handlers would be churn for a need
-nothing has demonstrated.
 
 The recorded Zed transcript advertises both modes, so the gap this used to be
 affected an observed client. That the gap is closed is now asserted against the

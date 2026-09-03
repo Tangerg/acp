@@ -6,6 +6,9 @@ migration instructions.
 
 ## Unreleased
 
+One breaking change, in the agent's handler signatures; see **Changed**. Every
+other entry is additive or a fix.
+
 ### Added
 
 - **Elicitation**: `elicitation/create` and `elicitation/complete` are served, so
@@ -47,42 +50,6 @@ migration instructions.
   by a `SessionUpdate` handler that may render it, and because a breach ends the
   connection, an application whose handler is slow now has somewhere to say so.
 
-### Documentation
-
-- **Three more runnable examples**: session configuration options, the session
-  lifecycle (list, resume, delete, and the refusal for an unadvertised
-  `session/load`), and a custom `Transport` — the extension point whose
-  concurrency contract had prose but no demonstration.
-
-- **The v2 draft**: README.md says what this module does when it meets a
-  v2-capable peer, why there is no flag for it, and what the migration will be.
-  The answer is measured rather than guessed: against the pinned v1.21.0,
-  `schema-v2.0.0-alpha.3` keeps 14 of the 25 methods, dropping all five
-  `terminal/*` and both `fs/*` among them.
-
-### Fixed
-
-- **A boolean session configuration option could be set without the capability
-  that grants it.** The schema gates the boolean option type through
-  `clientCapabilities.session.configOptions.boolean`, and nothing read it:
-  `ClientSession.SetConfigOption` sent a boolean value whatever the client had
-  advertised. It is now refused before the write with invalid-params, naming the
-  capability, like the three other parameter capabilities.
-
-- **A custom elicitation mode was accepted without a scope.** Each mode carries a
-  scope union — a session or a request — and the catch-all arm carries it too. The
-  generator read a catch-all arm's declared properties and ignored the arm's own
-  alternatives, so this package accepted a message the published schema rejects
-  and handed an application an elicitation belonging to nothing. The alternatives
-  are now enforced by the same `validate` that already checks the arm's `not`
-  clause, in both directions.
-
-- **A map whose values are a union did not survive the wire.** The discriminant
-  belongs to the union rather than to the arm, and such a map was going to
-  `encoding/json`: it encoded without the discriminant and could not be decoded at
-  all. The schema's only such property is `ElicitationSchema.properties`, so
-  nothing reached it until elicitation was served.
-
 ### Changed
 
 - **Breaking: five `AgentConfig` handlers take the connection.** `NewSession`,
@@ -112,6 +79,51 @@ migration instructions.
   caller's own type goes through `Opt.UnmarshalJSON`, which reports the failure the
   way `encoding/json` does. Behaviour is unchanged; only the difference was
   previously unstated.
+
+### Fixed
+
+- **A boolean session configuration option could be set without the capability
+  that grants it.** The schema gates the boolean option type through
+  `clientCapabilities.session.configOptions.boolean`, and nothing read it:
+  `ClientSession.SetConfigOption` sent a boolean value whatever the client had
+  advertised. It is now refused before the write with invalid-params, naming the
+  capability, like the three other parameter capabilities.
+
+- **A custom elicitation mode was accepted without a scope.** Each mode carries a
+  scope union — a session or a request — and the catch-all arm carries it too. The
+  generator read a catch-all arm's declared properties and ignored the arm's own
+  alternatives, so this package accepted a message the published schema rejects
+  and handed an application an elicitation belonging to nothing. The alternatives
+  are now enforced by the same `validate` that already checks the arm's `not`
+  clause, in both directions.
+
+- **A map whose values are a union did not survive the wire.** The discriminant
+  belongs to the union rather than to the arm, and such a map was going to
+  `encoding/json`: it encoded without the discriminant and could not be decoded at
+  all. The schema's only such property is `ElicitationSchema.properties`, so
+  nothing reached it until elicitation was served.
+
+### Documentation
+
+- **Three more runnable examples**: session configuration options, the session
+  lifecycle (list, resume, delete, and the refusal for an unadvertised
+  `session/load`), and a custom `Transport` — the extension point whose
+  concurrency contract had prose but no demonstration.
+
+- **The v2 draft**: README.md says what this module does when it meets a
+  v2-capable peer, why there is no flag for it, and what the migration will be.
+  The answer is measured rather than guessed: against the pinned v1.21.0,
+  `schema-v2.0.0-alpha.3` keeps 14 of the 25 methods, dropping all five
+  `terminal/*` and both `fs/*` among them.
+
+- **The unstable channel**: upstream also publishes `schema.unstable.json`, which
+  at v1.21.0 adds 95 definitions and 17 methods — `session/fork`, `nes/*`,
+  `providers/*`, `document/did*`, `mcp/connect`. This module generates from the
+  stable asset alone, so those are not reachable through it, not even by hand:
+  none of the 17 names begins with `_`, and the extension API carries only names
+  the protocol reserves for implementations. README.md says so where somebody
+  choosing a library would look, and `design/design.md` says why the obvious
+  middle course does not exist.
 
 ## v0.1.0 — 2026-09-02
 
