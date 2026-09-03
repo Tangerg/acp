@@ -666,6 +666,14 @@ catch-all whose alternatives cannot be read that way stops generation.
 A design document is a claim about code. These are the checks that keep the two
 in agreement:
 
+- **The specification's own obligations**: the schema carries the standard's prose
+  in its descriptions, and 24 of those sentences are normative. They are the part
+  of the standard a generator cannot implement — not shapes but obligations — so
+  each one is quoted and classified as this package's to keep or an application's,
+  with where. The list is held against the schema in both directions: a release
+  that adds an obligation fails rather than waiting to be noticed, and a row
+  cannot outlive the clause it answers. Being classified is all it asserts; that a
+  clause is satisfied is asserted by the tests each row names.
 - **Cross-SDK fixtures**: 147 expected outcomes come from the reference
   TypeScript SDK's own deserialisation machinery, regenerated from the pinned
   schema and replayed by `go test` with no network. Re-running the oracle

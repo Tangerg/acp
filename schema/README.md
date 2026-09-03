@@ -46,6 +46,13 @@ Update the provenance table with the new hashes. Commit the downloaded assets an
 generated output together. If the release adds or removes a method, also update
 the capability table that continuous integration (CI) compares with `meta.json`.
 
+Two tests fail on a release that changes more than shapes, and both are meant to.
+`TestEveryNormativeClauseInTheSchemaIsClassified` fails when the prose states an
+obligation nothing has answered, or when a row answers one upstream has dropped;
+the fixture corpus fails where the reference implementation and this package now
+disagree. Neither is satisfied by editing the expectation — the first wants a
+reading of the new clause, and the second wants `scripts/update-fixtures.sh`.
+
 ## Choose generation roots
 
 Generation scope is the transitive `$ref` closure of a committed root set, so
