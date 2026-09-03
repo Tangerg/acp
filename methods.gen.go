@@ -67,8 +67,9 @@ const (
 )
 
 type methodDescriptor struct {
-	side  methodSide
-	shape methodShape
+	side              methodSide
+	shape             methodShape
+	requiresSessionID bool
 }
 
 // standardMethods is every method the specification defines, and the set the
@@ -80,31 +81,31 @@ type methodDescriptor struct {
 // capability gate. A standard method has exactly one path through the typed codec,
 // and this is what says which names those are.
 var standardMethods = map[string]methodDescriptor{
-	methodCancelRequest:            {sideProtocol, shapeNotification},
-	methodAuthenticate:             {sideAgent, shapeRequest},
-	methodElicitationComplete:      {sideClient, shapeNotification},
-	methodElicitationCreate:        {sideClient, shapeRequest},
-	methodFsReadTextFile:           {sideClient, shapeRequest},
-	methodFsWriteTextFile:          {sideClient, shapeRequest},
-	methodInitialize:               {sideAgent, shapeRequest},
-	methodLogout:                   {sideAgent, shapeRequest},
-	methodSessionCancel:            {sideAgent, shapeNotification},
-	methodSessionClose:             {sideAgent, shapeRequest},
-	methodSessionDelete:            {sideAgent, shapeRequest},
-	methodSessionList:              {sideAgent, shapeRequest},
-	methodSessionLoad:              {sideAgent, shapeRequest},
-	methodSessionNew:               {sideAgent, shapeRequest},
-	methodSessionPrompt:            {sideAgent, shapeRequest},
-	methodSessionRequestPermission: {sideClient, shapeRequest},
-	methodSessionResume:            {sideAgent, shapeRequest},
-	methodSessionSetConfigOption:   {sideAgent, shapeRequest},
-	methodSessionSetMode:           {sideAgent, shapeRequest},
-	methodSessionUpdate:            {sideClient, shapeNotification},
-	methodTerminalCreate:           {sideClient, shapeRequest},
-	methodTerminalKill:             {sideClient, shapeRequest},
-	methodTerminalOutput:           {sideClient, shapeRequest},
-	methodTerminalRelease:          {sideClient, shapeRequest},
-	methodTerminalWaitForExit:      {sideClient, shapeRequest},
+	methodCancelRequest:            {side: sideProtocol, shape: shapeNotification},
+	methodAuthenticate:             {side: sideAgent, shape: shapeRequest},
+	methodElicitationComplete:      {side: sideClient, shape: shapeNotification},
+	methodElicitationCreate:        {side: sideClient, shape: shapeRequest},
+	methodFsReadTextFile:           {side: sideClient, shape: shapeRequest, requiresSessionID: true},
+	methodFsWriteTextFile:          {side: sideClient, shape: shapeRequest, requiresSessionID: true},
+	methodInitialize:               {side: sideAgent, shape: shapeRequest},
+	methodLogout:                   {side: sideAgent, shape: shapeRequest},
+	methodSessionCancel:            {side: sideAgent, shape: shapeNotification, requiresSessionID: true},
+	methodSessionClose:             {side: sideAgent, shape: shapeRequest, requiresSessionID: true},
+	methodSessionDelete:            {side: sideAgent, shape: shapeRequest, requiresSessionID: true},
+	methodSessionList:              {side: sideAgent, shape: shapeRequest},
+	methodSessionLoad:              {side: sideAgent, shape: shapeRequest, requiresSessionID: true},
+	methodSessionNew:               {side: sideAgent, shape: shapeRequest},
+	methodSessionPrompt:            {side: sideAgent, shape: shapeRequest, requiresSessionID: true},
+	methodSessionRequestPermission: {side: sideClient, shape: shapeRequest, requiresSessionID: true},
+	methodSessionResume:            {side: sideAgent, shape: shapeRequest, requiresSessionID: true},
+	methodSessionSetConfigOption:   {side: sideAgent, shape: shapeRequest, requiresSessionID: true},
+	methodSessionSetMode:           {side: sideAgent, shape: shapeRequest, requiresSessionID: true},
+	methodSessionUpdate:            {side: sideClient, shape: shapeNotification, requiresSessionID: true},
+	methodTerminalCreate:           {side: sideClient, shape: shapeRequest, requiresSessionID: true},
+	methodTerminalKill:             {side: sideClient, shape: shapeRequest, requiresSessionID: true},
+	methodTerminalOutput:           {side: sideClient, shape: shapeRequest, requiresSessionID: true},
+	methodTerminalRelease:          {side: sideClient, shape: shapeRequest, requiresSessionID: true},
+	methodTerminalWaitForExit:      {side: sideClient, shape: shapeRequest, requiresSessionID: true},
 }
 
 // isStandardMethod reports whether the specification defines name, which is what

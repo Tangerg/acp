@@ -100,9 +100,10 @@ return agent.Run(ctx, acp.NewStdioTransport())
 Every handler is given the handle its method is scoped to. `Prompt` and the other
 session-scoped handlers receive an `*acp.AgentSession`, which streams
 `session/update`, requests permission, accesses files, and runs terminal commands.
-`NewSession`, `Authenticate`, `Logout`, `ListSessions` and `DeleteSession` receive
-an `*acp.AgentConn`, which is how a handler with no session — one answering
-`authenticate`, say — can still elicit input from the user.
+`DeleteSession` receives the `*acp.AgentSession` named by its required
+`sessionId`. `NewSession`, `Authenticate`, `Logout`, and `ListSessions` have no
+session in their wire params and receive an `*acp.AgentConn`, which is how a
+handler answering `authenticate`, say, can still elicit input from the user.
 
 Keep diagnostics on stderr because stdout carries the protocol stream.
 
@@ -187,6 +188,11 @@ advertises the mode it serves; a mode with no handler is refused with
 invalid-params. An agent names the mode and never the scope:
 `AgentSession.CreateElicitation` elicits within its session, and
 `AgentConn.CreateElicitation` elicits within the request being served.
+
+For URL mode, `accept` is consent to start the out-of-band interaction; it does
+not say the page has finished. Decline, cancellation, and failure release the ID
+immediately. An accepted ID remains unique on that connection until the agent
+sends `elicitation/complete`.
 
 ## Project status
 

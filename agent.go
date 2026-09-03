@@ -68,13 +68,16 @@ type AgentConfig struct {
 	// The session lifecycle, each gated on its own property of
 	// agentCapabilities.sessionCapabilities and each advertised by being set.
 	//
-	// ListSessions and DeleteSession take no session handle: the schema describes
-	// deletion as removing a session "from session/list", so both name sessions
-	// this connection may never have opened, and minting a handle for one would
-	// spend the connection's session budget on a session nobody is in. They are
-	// connection-scoped for that reason, and take the connection.
+	// ListSessions has no session and therefore takes the connection. DeleteSession
+	// names the session it removes and takes that session, including when this
+	// connection had not opened it before: scope comes from the wire request, not
+	// from whether a handle happened to be cached already.
 	ListSessions  func(ctx context.Context, conn *AgentConn, request *ListSessionsRequest) (*ListSessionsResponse, error)
-	DeleteSession func(ctx context.Context, conn *AgentConn, request *DeleteSessionRequest) (*DeleteSessionResponse, error)
+	DeleteSession func(
+		ctx context.Context,
+		session *AgentSession,
+		request *DeleteSessionRequest,
+	) (*DeleteSessionResponse, error)
 
 	// ResumeSession reopens a session without replaying it, which is what the
 	// schema says distinguishes it from session/load.
@@ -103,8 +106,8 @@ type AgentConfig struct {
 	// an agent advertises is what it implements. See [ClientConfig.Capabilities].
 	Capabilities *AgentCapabilities
 
-	// Limits bounds what each of this agent's connections will hold on a client's
-	// behalf. The zero value takes every default; see [Limits].
+	// Limits bounds the protocol state each of this agent's connections will hold.
+	// The zero value takes every default; see [Limits].
 	Limits Limits
 }
 
@@ -430,7 +433,7 @@ func (c *AgentConn) serve(ctx context.Context, request *jsonrpc.Request) (any, e
 	case methodSessionList:
 		return dispatchConnCall(ctx, c, request, config.ListSessions)
 	case methodSessionDelete:
-		return dispatchConnCall(ctx, c, request, config.DeleteSession)
+		return c.deleteSession(ctx, request)
 	case methodSessionResume:
 		return dispatchSessionCall(ctx, c, request, config.ResumeSession)
 	case methodSessionClose:

@@ -277,41 +277,32 @@ func SatisfiesOneAlternative(
 //
 // A scheme is what separates a URI from a string that looks like one: net/url
 // parses "not a url" and "/sign-in" without complaint, and both would send a user
-// nowhere. Requiring one matches the reference implementation on every value the
-// fixture corpus asks it about, including the two that are URIs without being web
-// addresses — mailto: and urn:.
-// ValidateURI enforces `format: "uri"`, which the schema states once — on the URL
-// a client sends a user to.
-//
-// A scheme is what separates a URI from a string that looks like one: net/url
-// parses "not a url" and "/sign-in" without complaint, and both would send a user
-// nowhere. Requiring one matches the reference implementation on every value the
-// fixture corpus asks it about, including the two that are URIs without being web
-// addresses — mailto: and urn:.
-func ValidateURI(property, value string) error {
+// nowhere. The schema says URI rather than web URL, so mailto:, urn:, and an empty
+// scheme-specific path remain valid even where a WHATWG URL parser disagrees.
+func ValidateURI(value string) error {
 	parsed, err := url.Parse(value)
 	if err != nil {
-		return At(property, fmt.Errorf("acp: %q is not a URI: %w", value, err))
+		return fmt.Errorf("acp: %q is not a URI: %w", value, err)
 	}
 	if !parsed.IsAbs() {
-		return At(property, fmt.Errorf("acp: %q is not a URI: it names no scheme", value))
+		return fmt.Errorf("acp: %q is not a URI: it names no scheme", value)
 	}
 	return nil
 }
 
 // UnmarshalURI is the reading half of [ValidateURI]: a value this side would
 // refuse to send is one it refuses to accept.
-func UnmarshalURI(property string, data []byte) (string, error) {
+func UnmarshalURI(data []byte) (string, error) {
 	value, err := UnmarshalValue[string](data)
 	if err != nil {
 		return "", err
 	}
-	return value, ValidateURI(property, value)
+	return value, ValidateURI(value)
 }
 
 // MarshalURI is the writing half.
-func MarshalURI(property, value string) ([]byte, error) {
-	if err := ValidateURI(property, value); err != nil {
+func MarshalURI(value string) ([]byte, error) {
+	if err := ValidateURI(value); err != nil {
 		return nil, err
 	}
 	return json.Marshal(value)

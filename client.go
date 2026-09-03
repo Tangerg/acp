@@ -72,9 +72,9 @@ type ClientConfig struct {
 	// no third state to express that.
 	Capabilities *ClientCapabilities
 
-	// Limits bounds what each of this client's connections will hold on an agent's
-	// behalf. The zero value takes every default; see [Limits] for which bound a
-	// slow SessionUpdate handler is the one to raise.
+	// Limits bounds the protocol state each of this client's connections will hold.
+	// The zero value takes every default; see [Limits] for which bound a slow
+	// SessionUpdate handler is the one to raise.
 	Limits Limits
 }
 

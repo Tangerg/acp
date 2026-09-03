@@ -261,8 +261,15 @@ func lifecycleAgent(t *testing.T, served chan<- string) *acp.Agent {
 				NextCursor: acp.OptValue("page-2"),
 			}, nil
 		},
-		DeleteSession: func(context.Context, *acp.AgentConn, *acp.DeleteSessionRequest) (*acp.DeleteSessionResponse, error) {
+		DeleteSession: func(
+			_ context.Context,
+			session *acp.AgentSession,
+			request *acp.DeleteSessionRequest,
+		) (*acp.DeleteSessionResponse, error) {
 			record("delete")
+			if session.ID() != request.SessionID {
+				t.Errorf("the delete handle names %q, request names %q", session.ID(), request.SessionID)
+			}
 			return &acp.DeleteSessionResponse{}, nil
 		},
 		ResumeSession: func(

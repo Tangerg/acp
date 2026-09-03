@@ -13,8 +13,10 @@ import (
 //
 // A call is registered before it is written, because a peer fast enough to answer
 // during the write would otherwise be answering something nobody was waiting for.
-// It is retired when its caller stops waiting, which is what makes a late answer
-// discardable rather than the revival of a call that has already returned.
+// Most calls are retired when their caller stops waiting, which makes a late
+// answer discardable rather than the revival of a call that already returned.
+// A call whose answer settles connection-owned state stays registered instead;
+// that state outlives the caller and the peer may already have the request.
 type calls struct {
 	next atomic.Int64
 
@@ -30,8 +32,9 @@ type calls struct {
 // response is interpreted before completed is signalled, so state derived from a
 // response changes in the same ordered delivery step that observed it.
 type outboundCall struct {
-	id        jsonrpc.ID
-	completed <-chan error
+	id                  jsonrpc.ID
+	completed           <-chan error
+	observeLateResponse bool
 }
 
 type pendingCall struct {
@@ -57,7 +60,11 @@ func (c *calls) begin(
 		return outboundCall{id: id}, false
 	}
 	c.waiting[id] = &pendingCall{completed: completed, accept: accept, abandon: abandon}
-	return outboundCall{id: id, completed: completed}, true
+	return outboundCall{
+		id:                  id,
+		completed:           completed,
+		observeLateResponse: abandon != nil,
+	}, true
 }
 
 // Runs on the delivery loop, so accepting a response finishes before any later

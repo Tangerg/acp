@@ -4,10 +4,15 @@ This file records caller-visible changes, newest first. The module is pre-1.0, s
 a minor release may change its public API. Each released entry will include
 migration instructions.
 
-## Unreleased
+## v0.2.0 — 2026-09-03
 
-One breaking change, in the agent's handler signatures; see **Changed**. Every
-other entry is additive or a fix.
+This release serves every method in the pinned schema. It is the first to cover
+elicitation, and the first with a breaking change: the agent's handler signatures,
+under **Changed**. Every other entry is additive or a fix.
+
+The protocol target has not moved. This module still speaks ACP version 1 against
+`schema-v1.21.0`; see README.md on what it does when it meets a peer that also
+speaks the v2 draft.
 
 ### Added
 
@@ -18,15 +23,14 @@ other entry is additive or a fix.
   `Form` and `URL` fields each advertise the mode they serve. Both modes arrive
   through one method, so a mode with no handler is refused with invalid-params
   rather than method-not-found. `Complete` is optional even alongside `URL`,
-  because the protocol makes sending a completion optional, and refused without
-  it, because nothing could reach it.
+  because the protocol makes sending a completion optional. Setting `Complete`
+  without `URL` is refused because no accepted URL interaction could reach it.
 
-  The connection owns a URL elicitation's identifier for as long as it is
-  outstanding, which is longer than the request that created it. That is what
-  keeps the two rules neither application can keep for itself: an agent's
-  identifier is unique among the URL elicitations one connection has open, and a
-  client ignores a completion for an identifier it does not recognise or has
-  already closed.
+  The connection reserves a URL elicitation's identifier while its create request
+  is unresolved and keeps it only when the response accepts the out-of-band
+  interaction. Decline, cancellation, and failure release it. An accepted ID
+  remains outstanding until `elicitation/complete`; clients ignore a completion
+  for an ID they do not recognise or have already closed.
 
   An agent calls `AgentSession.CreateElicitation` to elicit within a session, or
   `AgentConn.CreateElicitation` to elicit within the request it is serving.
@@ -47,36 +51,48 @@ other entry is additive or a fix.
   elicitation from a session-scoped one without being handed the identifier.
 
 - **`Limits`**: `ClientConfig.Limits` and `AgentConfig.Limits` bound what one
-  connection will hold on a peer's behalf — the delivery backlog, the inbound
-  calls in flight, and the cached session handles. A zero field takes the default
-  it had as a constant (1024), so existing configurations are unchanged. A
-  negative one is refused by `NewClient` and `NewAgent` rather than by the message
-  that would breach it.
+  connection will hold for protocol work — the delivery backlog, the inbound
+  calls in flight, the cached session handles, and URL elicitations being created,
+  accepted, or completed. A zero field takes the default it had as a constant
+  (1024), so existing configurations are unchanged. A negative one is refused by
+  `NewClient` and `NewAgent` rather than by the message that would breach it.
 
-  The bound worth setting is `QueuedDeliveries`. It is the only one an honest peer
-  reaches: a turn's `session/update` stream is produced by an agent and consumed
-  by a `SessionUpdate` handler that may render it, and because a breach ends the
+  Breaching one of the first three ends the connection: the peer drives those
+  populations, so a breach means it is hostile or has run away from an application
+  that cannot keep up. The elicitation bound is different — either peer may
+  originate one, and a reservation can be refused before any interaction exists —
+  so it fails that operation and leaves an otherwise healthy connection alone.
+
+  The bound most applications may need to tune is `QueuedDeliveries`: a turn's
+  `session/update` stream is produced by an agent and consumed by a
+  `SessionUpdate` handler that may render it, and because a breach ends the
   connection, an application whose handler is slow now has somewhere to say so.
 
 ### Changed
 
-- **Breaking: five `AgentConfig` handlers take the connection.** `NewSession`,
-  `Authenticate`, `Logout`, `ListSessions` and `DeleteSession` now take an
-  `*AgentConn` between the context and the request, matching `Prompt` and `Cancel`,
-  which have always taken an `*AgentSession`.
+- **Breaking: agent handlers take the handle their wire scope names.**
+  `NewSession`, `Authenticate`, `Logout`, and `ListSessions` now take an
+  `*AgentConn` between the context and the request. `DeleteSession` takes an
+  `*AgentSession`, matching the `sessionId` required by its published request
+  schema; `Prompt` and `Cancel` already took that session handle.
 
   A handler is given the handle its method is scoped to. Without it a
   connection-scoped handler could make no outbound call at all, which put the
   specification's own example of a request-scoped elicitation — an agent asking
   the user for something during authentication — out of reach.
 
-  Migration is mechanical: add a parameter.
+  Migration is mechanical: add the corresponding handle parameter.
 
   ```go
   // before
   NewSession: func(ctx context.Context, request *acp.NewSessionRequest) (*acp.NewSessionResponse, error)
   // after
   NewSession: func(ctx context.Context, conn *acp.AgentConn, request *acp.NewSessionRequest) (*acp.NewSessionResponse, error)
+
+  // before
+  DeleteSession: func(ctx context.Context, request *acp.DeleteSessionRequest) (*acp.DeleteSessionResponse, error)
+  // after
+  DeleteSession: func(ctx context.Context, session *acp.AgentSession, request *acp.DeleteSessionRequest) (*acp.DeleteSessionResponse, error)
   ```
 
   The extension fallbacks and every `ClientConfig` handler are unchanged.
@@ -90,12 +106,22 @@ other entry is additive or a fix.
 
 ### Fixed
 
-- **A URL elicitation had no lifetime.** The identifier could name an elicitation
-  that was never opened, or one already finished, and a client passed every
-  completion to the application including ones for pages it never showed. The
-  connection now owns the set on both sides: an agent's identifier is unique among
-  the URL elicitations one connection has open, and a client ignores a completion
-  for an identifier it does not recognise or has already closed.
+- **A URL elicitation had no transactional lifetime.** IDs leaked after decline
+  and cancellation, a completion removed its ID before the notification was known
+  to be committed, and abandoning a caller could discard a late response that
+  alone decided whether the interaction started. The connection now owns an
+  explicit reserve → accepted → completing lifecycle: non-accept responses roll
+  back, a confirmed-unsent completion is retryable, and stale rollbacks cannot
+  touch a later reuse of the same wire ID.
+
+- **Session scope was a handwritten method list.** It omitted `session/delete`,
+  even though the published request requires `sessionId`. The generated method
+  descriptor now derives scope from the schema, and the delete handler receives
+  the `AgentSession` named by that request.
+
+- **A typed nil could bypass generated union invariants.** An interface holding a
+  nil arm is now rejected by every generated union encoder instead of becoming
+  `null` or reaching an arm encoder that dereferences it.
 
 - **An elicitation capability was only checked to the method.** An explicit
   `Capabilities` could advertise `form` while only a URL handler existed, and a
@@ -149,11 +175,11 @@ other entry is additive or a fix.
 ### Documentation
 
 - **Form answers are checked against the form that asked for them**, on both
-  sides: a client checks what its own handler produced before sending it, and an
-  agent checks what came back before the caller sees it. `pattern` and `format` are
-  deliberately not checked — a JSON Schema pattern is an ECMA-262 regular
-  expression and Go's regexp is RE2, so refusing an answer this package could not
-  read the pattern for would be worse than not reading it.
+  sides, using `github.com/google/jsonschema-go/jsonschema`, the maintained
+  validator used by the official MCP Go SDK. Supported `pattern` constraints are
+  enforced. A valid ECMA-262 pattern that Go's regexp dialect cannot compile is
+  left uninterpreted rather than making a valid ACP schema unusable; `format`
+  remains an annotation because the validator does not assert it.
 
 - **Three more runnable examples**: session configuration options, the session
   lifecycle (list, resume, delete, and the refusal for an unadvertised

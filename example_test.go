@@ -871,10 +871,10 @@ func ExampleClientConn_ResumeSession() {
 		},
 		DeleteSession: func(
 			_ context.Context,
-			_ *acp.AgentConn,
-			request *acp.DeleteSessionRequest,
+			session *acp.AgentSession,
+			_ *acp.DeleteSessionRequest,
 		) (*acp.DeleteSessionResponse, error) {
-			delete(stored, request.SessionID)
+			delete(stored, session.ID())
 			return &acp.DeleteSessionResponse{}, nil
 		},
 	})

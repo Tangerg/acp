@@ -6,20 +6,18 @@ import (
 )
 
 // A message's size and the time this side will wait were already bounded; its
-// count was not, and count is what a peer controls for free. These are the four
-// places one connection could grow without limit on nothing but inbound messages.
+// count was not. These are the four connection-owned populations that can grow
+// without an application deliberately retaining each member.
 //
 // They are not memory proofs — a count times maxMessageBytes is still a large
 // number. What they remove is the two realistic ways a well-formed peer exhausts
 // this process: a backlog that never drains and a population that never shrinks.
 //
-// Breaching one ends the connection rather than shedding load, and the
-// alternatives fail specifically rather than merely being uglier. Refusing to read
-// until the backlog drains turns the documented rule that a notification handler
-// must not wait on its own connection into a deadlock, because the response that
-// would release it arrives on the read loop that is no longer reading. Dropping
-// messages loses protocol state silently. Answering "too busy" invents a code the
-// schema does not define.
+// The peer drives the delivery, request, and session populations, so breaching
+// those ends the connection rather than silently dropping protocol state. URL
+// elicitation reservations are different: either peer may originate one, and its
+// creation can be refused before a new interaction exists, so that breach fails
+// the operation without killing an otherwise healthy connection.
 const (
 	defaultQueuedDeliveries = 1024
 
@@ -27,32 +25,30 @@ const (
 	// this is the bound on work a peer can start and never finish.
 	defaultInflightRequests = 1024
 
-	// The population shrinks unevenly: a ClientConn reclaims an entry when Close or
-	// DeleteSession succeeds, but an AgentConn only when it serves session/close,
-	// because its session/delete handler takes no handle and never names the cache.
-	// So a peer opening a session per prompt and closing none grows this until the
-	// connection ends.
+	// Successful session/close and session/delete reclaim the named handle on both
+	// sides. A peer that names new sessions and closes neither can otherwise grow
+	// this population until the connection ends.
 	defaultSessionHandles = 1024
 
-	// A URL elicitation stays outstanding until a completion clears it, and the
-	// protocol makes sending one optional — so a peer that opens pages and
-	// completes none grows this set for as long as the connection lives.
+	// A URL elicitation stays outstanding after its create response accepts it and
+	// until a completion clears it. Reservations and completion writes count too,
+	// so concurrent work cannot step around the bound between stable states.
 	defaultOutstandingElicitations = 1024
 )
 
-// Limits bounds what one connection will hold on a peer's behalf. The zero value
-// takes every default, as does any field left zero.
+// Limits bounds the protocol state one connection will hold. The zero value takes
+// every default, as does any field left zero.
 //
-// QueuedDeliveries is almost always the one worth raising: it is the only bound an
-// honest peer reaches, because a turn's session/update stream is produced by an
-// agent and consumed by a handler that may render it. Since a breach ends the
-// connection, a bound too low for the application that chose it is a self-inflicted
-// disconnection — which is why this is a field and not a constant. The package
-// cannot know how fast a caller's handler returns.
+// QueuedDeliveries is usually the one worth raising: a turn's session/update
+// stream is produced by an agent and consumed by a handler that may render it.
+// Since that breach ends the connection, a bound too low for the application is a
+// self-inflicted disconnection; the package cannot know how fast its handler runs.
 type Limits struct {
-	QueuedDeliveries        int
-	InflightRequests        int
-	SessionHandles          int
+	QueuedDeliveries int
+	InflightRequests int
+	SessionHandles   int
+	// OutstandingElicitations bounds URL interactions in provisional, accepted,
+	// and completing states. Reaching it refuses the new elicitation only.
 	OutstandingElicitations int
 }
 
@@ -96,5 +92,5 @@ var (
 	errTooManyQueued       = errors.New("acp: inbound delivery queue limit exceeded")
 	errTooManyInflight     = errors.New("acp: inbound request limit exceeded")
 	errTooManySessions     = errors.New("acp: session handle limit exceeded")
-	errTooManyElicitations = errors.New("acp: outstanding URL elicitation limit exceeded")
+	errTooManyElicitations = errors.New("acp: URL elicitation limit exceeded")
 )

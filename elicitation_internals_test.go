@@ -3,11 +3,13 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/Tangerg/acp/internal/wire"
 	"github.com/Tangerg/acp/jsonrpc"
 )
 
@@ -96,6 +98,32 @@ func TestElicitationIsMethodNotFoundWithoutHandlers(t *testing.T) {
 	}
 	if code := readRawErrorCode(t, stream); code != ErrorCodeMethodNotFound {
 		t.Errorf("an unadvertised method was answered %v, want method not found", code)
+	}
+}
+
+func TestAURIErrorKeepsItsGeneratedPropertyPath(t *testing.T) {
+	var decoded ElicitationURLMode
+	err := json.Unmarshal([]byte(`{"elicitationId":"e-1","url":"/sign-in","sessionId":"s-1"}`), &decoded)
+	assertPathError(t, err, "/url")
+
+	_, err = json.Marshal(ElicitationURLMode{
+		ElicitationID: "e-1",
+		URL:           "/sign-in",
+		Value: &ElicitationURLModeSession{ElicitationSessionScope: ElicitationSessionScope{
+			SessionID: "s-1",
+		}},
+	})
+	assertPathError(t, err, "/url")
+}
+
+func assertPathError(t *testing.T, err error, want string) {
+	t.Helper()
+	var pathErr *wire.PathError
+	if !errors.As(err, &pathErr) {
+		t.Fatalf("error %v is not a PathError", err)
+	}
+	if pathErr.Path != want {
+		t.Fatalf("path = %q, want %q", pathErr.Path, want)
 	}
 }
 
@@ -285,8 +313,107 @@ func TestACompletionForAnUnknownElicitationIsIgnored(t *testing.T) {
 	}
 }
 
-// A client that renders pages and does not want to hear they finished still
-// tracks them, because the tracking is what the ignore rule is made of.
+func TestAReusedOutstandingURLIDIsRefusedBeforeTheHandler(t *testing.T) {
+	var served int
+	client, err := NewClient(&ClientConfig{
+		SessionUpdate:     func(context.Context, *SessionNotification) {},
+		RequestPermission: denyingPermissionInternal,
+		Elicitation: &ElicitationHandlers{
+			URL: func(
+				context.Context,
+				*CreateElicitationRequest,
+				*ElicitationURLMode,
+			) (*CreateElicitationResponse, error) {
+				served++
+				return &CreateElicitationResponse{Value: &ElicitationAcceptAction{}}, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	stream, conn := connectRawClient(t, client)
+	defer conn.Close() //nolint:errcheck // idempotent.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	url := `{"message":"sign in","mode":"url","elicitationId":"same",` +
+		`"url":"https://example.invalid/","sessionId":"sess-1"}`
+	if err := stream.Write(ctx, rawCall(7, methodElicitationCreate, url)); err != nil {
+		t.Fatalf("write first elicitation: %v", err)
+	}
+	if _, err := stream.Read(ctx); err != nil {
+		t.Fatalf("read first answer: %v", err)
+	}
+	if err := stream.Write(ctx, rawCall(8, methodElicitationCreate, url)); err != nil {
+		t.Fatalf("write duplicate elicitation: %v", err)
+	}
+	if code := readRawErrorCode(t, stream); code != ErrorCodeInvalidParams {
+		t.Errorf("the duplicate was answered %v, want invalid params", code)
+	}
+	if served != 1 {
+		t.Errorf("the duplicate reached the URL handler; it ran %d times", served)
+	}
+}
+
+func TestAnUnencodableURLAcceptDoesNotKeepItsID(t *testing.T) {
+	var served int
+	client, err := NewClient(&ClientConfig{
+		SessionUpdate:     func(context.Context, *SessionNotification) {},
+		RequestPermission: denyingPermissionInternal,
+		Elicitation: &ElicitationHandlers{
+			URL: func(
+				context.Context,
+				*CreateElicitationRequest,
+				*ElicitationURLMode,
+			) (*CreateElicitationResponse, error) {
+				served++
+				if served == 1 {
+					var value *ElicitationContentValueString
+					return &CreateElicitationResponse{Value: &ElicitationAcceptAction{
+						Content: OptValue(map[string]ElicitationContentValue{"broken": value}),
+					}}, nil
+				}
+				return &CreateElicitationResponse{Value: &ElicitationAcceptAction{}}, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	stream, conn := connectRawClient(t, client)
+	defer conn.Close() //nolint:errcheck // idempotent.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	url := `{"message":"sign in","mode":"url","elicitationId":"same",` +
+		`"url":"https://example.invalid/","sessionId":"sess-1"}`
+	if writeErr := stream.Write(ctx, rawCall(7, methodElicitationCreate, url)); writeErr != nil {
+		t.Fatalf("write malformed answer's request: %v", writeErr)
+	}
+	if code := readRawErrorCode(t, stream); code != ErrorCodeInternalError {
+		t.Fatalf("the malformed handler answer returned %v, want internal error", code)
+	}
+	if writeErr := stream.Write(ctx, rawCall(8, methodElicitationCreate, url)); writeErr != nil {
+		t.Fatalf("write retry: %v", writeErr)
+	}
+	message, err := stream.Read(ctx)
+	if err != nil {
+		t.Fatalf("read retry: %v", err)
+	}
+	response, ok := message.(*jsonrpc.Response)
+	if !ok || response.Error != nil {
+		t.Fatalf("retry returned %#v, want a successful response", message)
+	}
+	if served != 2 {
+		t.Errorf("the released ID reached the handler %d times, want 2", served)
+	}
+}
+
+// A client that accepts URL interactions and does not want to hear they finished
+// still tracks them, because the tracking is what the ignore rule is made of.
 func TestACompletionIsClosedEvenWithNoHandler(t *testing.T) {
 	client, err := NewClient(&ClientConfig{
 		SessionUpdate:     func(context.Context, *SessionNotification) {},
@@ -319,7 +446,7 @@ func TestACompletionIsClosedEvenWithNoHandler(t *testing.T) {
 	if _, err := stream.Read(ctx); err != nil {
 		t.Fatalf("read the answer: %v", err)
 	}
-	if !conn.elicitations.close("e-1") {
+	if !conn.elicitations.receiveCompletion("e-1") {
 		t.Fatal("the elicitation was not recorded, so a completion for it would have been ignored")
 	}
 }

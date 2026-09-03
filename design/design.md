@@ -276,18 +276,18 @@ documentation and in an IDE, and it composes with the language's zero values.
 
 ### A handler is given the handle its method is scoped to
 
-`Prompt` and `Cancel` take an `*AgentSession` because their methods are
-session-scoped. The connection-scoped ones took nothing, which meant a handler
-with no session could make no outbound call at all — and the case the schema
-describes for a request-scoped elicitation is exactly one of those: an agent
-asking for something from inside its own `authenticate` handler, before a session
-exists.
+`Prompt`, `Cancel`, and `DeleteSession` take an `*AgentSession` because their
+published params require `sessionId`. The connection-scoped handlers once took
+nothing, which meant a handler with no session could make no outbound call at all
+— and the case the schema describes for a request-scoped elicitation is exactly
+one of those: an agent asking for something from inside its own `authenticate`
+handler, before a session exists.
 
-`NewSession`, `Authenticate`, `Logout`, `ListSessions` and `DeleteSession`
-therefore take an `*AgentConn`. It completes a rule the agent side already half
-kept, and it is what makes request-scoped elicitation reachable where the
-specification puts it rather than only from handlers that happen to hold a
-session.
+`NewSession`, `Authenticate`, `Logout`, and `ListSessions` therefore take an
+`*AgentConn`. The division is generated from whether each method's params require
+`sessionId`, rather than mirrored in a handwritten list that can omit the next
+method. It also makes request-scoped elicitation reachable where the specification
+puts it rather than only from handlers that happen to hold a session.
 
 Two things stayed as they were, and the reasons are not the same reason.
 
@@ -547,35 +547,32 @@ between the two implementations that agreed on it.
 
 ## Resource limits
 
-A message's size and the time this side will wait were already bounded. Its count
-was not, and count is what a peer controls for free. A connection holds at most
-1024 messages read but not yet delivered, 1024 inbound calls at once, and 1024
-cached session handles. Serving `session/close` reclaims an agent's cache
-entry, and a client also reclaims one when `DeleteSession` succeeds; the agent
-side of `session/delete` takes no handle and so never names the cache. Until an
-entry is reclaimed, the handle preserves caller-visible identity while the
-connection separately enforces one active prompt per session identifier.
+A connection holds at most 1024 messages read but not yet delivered, 1024 inbound
+calls at once, 1024 cached session handles, and 1024 URL elicitations in
+provisional, accepted, or completing states. Successful `session/close` and
+`session/delete` reclaim the named handle on both sides. Until then, a handle
+preserves caller-visible identity while the connection separately enforces one
+active prompt per session identifier.
 
-Breaching one ends the connection with an error saying which. That is a
-deliberate choice over backpressure: refusing to read until the backlog drains
-would turn the documented rule that a notification handler must not wait on its
-own connection into a deadlock, because the response that would release it
-arrives on the read loop that is no longer reading.
+Breaching the delivery, request, or session bound ends the connection with an
+error saying which. Refusing to read until the backlog drains would turn the
+documented rule that a notification handler must not wait on its own connection
+into a deadlock, because the response that would release it arrives on the read
+loop that is no longer reading. A URL reservation is different: creation can be
+refused before a new interaction exists, so exhausting that bound fails only the
+new elicitation and leaves the connection healthy.
 
 These counts bound how much state a peer can create. They are not memory proofs
 because one legal message can still be large.
 
-The three are `Limits` on both configurations, with a zero field taking the
-default and a negative one refused at construction. They were constants first,
-and the reason they are not any more is the interaction between two of the
-decisions above. Two of the bounds are only reached by a peer that is hostile or
-broken, but the delivery backlog is reached by an honest one: a turn's
-`session/update` stream is produced by an agent and consumed by a handler that
-may render it, so how deep the backlog gets is a fact about the application, not
-about the protocol. Since a breach ends the connection rather than slowing the
-peer down, a constant chosen here decides on every caller's behalf how slow their
-handler is allowed to be before their user loses a session. The package cannot
-know that, and the field is where a caller who does says so.
+The four are `Limits` on both configurations, with a zero field taking the
+default and a negative one refused at construction. The delivery backlog is the
+one an honest connection most readily reaches: a turn's `session/update` stream
+is produced by an agent and consumed by a handler that may render it, so its depth
+is a fact about the application rather than the protocol. A constant chosen here
+would decide on every caller's behalf how slow that handler may be before the user
+loses a session. The package cannot know that, and the field is where a caller who
+does says so.
 
 ## Error model and privacy
 
@@ -610,9 +607,9 @@ Elicitation is the agent asking the user for structured input through the client
 that owns the user, and it is one feature rather than two methods.
 `elicitation/create` carries a mode and a scope, both unions the schema flattens
 into the same JSON object. Form mode hands the client a JSON Schema to render.
-URL mode sends the user to a page and is answered twice: once by the response,
-which says the client has shown it, and again later by `elicitation/complete`,
-which says the page is finished.
+URL mode gives the client a URL. An `accept` response is the user's consent to
+start that out-of-band interaction; it is not a completion. The agent may later
+send `elicitation/complete` when the accepted interaction has finished.
 
 ### The mode is the caller's and the scope is the operation's
 
@@ -654,11 +651,32 @@ false and would send it looking in the wrong place.
 `elicitation/complete` is the exception that gates a method on a mode. It exists
 only to finish a URL elicitation, so `elicitation.url` gates the method itself.
 
-Construction refuses two shapes a group can take that could not serve what they
-advertise. A group serving neither mode has advertised nothing. A URL mode without
-a completion leaves the user in front of a page nothing will ever close, so the
-mode is not servable without one — and a completion without a URL mode is a
-handler that can never run.
+Construction refuses two shapes that cannot do what they claim. A group serving
+neither mode advertises nothing, and a completion handler without a URL handler
+can never run. The inverse is valid: the protocol makes the completion optional,
+so a URL handler does not require a completion handler.
+
+### A URL identifier is a transaction
+
+The identifier is reserved before create work starts, so concurrent requests
+cannot reuse it. The response commits that reservation only for the known
+`accept` action; decline, cancellation, a custom future action, and failure roll
+it back. Once accepted, the ID remains unique until a completion is successfully
+written.
+
+Completion has its own in-flight state. Removing the ID before the write would
+make a context deadline lose an interaction even when the transport proved it
+committed no bytes; leaving it generally reusable would let two concurrent
+completions race. The state machine therefore moves accepted → completing,
+commits deletion after a successful write, and rolls back only for the transport's
+exact no-commit signal. Each state record has identity in addition to its wire ID,
+so a delayed rollback cannot alter a newer reuse of that ID.
+
+The create response is also observed after its original caller stops waiting.
+Once the request may be on the wire, that late response alone decides whether the
+connection owns an outstanding interaction. This is the same lifetime distinction
+as a prompt: cancelling one waiter does not erase protocol state already shared
+with the peer.
 
 The recorded Zed transcript advertises both modes, so the gap this used to be
 affected an observed client. That the gap is closed is now asserted against the
@@ -678,6 +696,21 @@ Nothing had caught it because no generated type had such a map. The codec proper
 could not reach it either: a zero value's map is nil. `wire` now has
 `MarshalMapFunc` and `UnmarshalMapFunc` beside the slice pair, and the generator
 emits them when a map's values are a union.
+
+Form-answer semantics are delegated to
+`github.com/google/jsonschema-go/jsonschema`, the maintained validator used by
+the official MCP Go SDK, rather than mirrored in a second handwritten validator.
+The adapter keeps two ACP-specific forward-compatibility rules: a catch-all schema
+arm is not partially interpreted, and an ECMA-262 pattern that Go's regexp dialect
+cannot compile is left uninterpreted. Patterns the validator can represent are
+enforced; `format` remains an annotation in that library.
+
+The URL field itself follows the published `format: "uri"` grammar. That is not
+the same language as the TypeScript reference's WHATWG-style URL helper: values
+such as `mailto:`, `urn:`, and `https:` are absolute URIs even where that helper
+would reject them. This package deliberately follows the schema, keeps the URI
+error at the generated `/url` property path, and records the divergence in a unit
+test rather than changing the wire grammar to match one implementation.
 
 Writing the fixtures found the second one, and it is the same shape of mistake:
 the generator was reading a catch-all arm's declared properties and silently

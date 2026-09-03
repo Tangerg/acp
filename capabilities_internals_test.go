@@ -369,6 +369,12 @@ func TestTheMethodTableIsTheSizeTheSchemaSays(t *testing.T) {
 	if standardMethods[methodSessionPrompt].shape != shapeRequest {
 		t.Error("session/prompt is a request, and the turn ends when it is answered")
 	}
+	if !standardMethods[methodSessionDelete].requiresSessionID {
+		t.Error("session/delete lost the session scope required by its schema params")
+	}
+	if standardMethods[methodSessionList].requiresSessionID {
+		t.Error("session/list was given a session scope its schema params do not carry")
+	}
 }
 
 // Handlers for the tests above, which are about what construction refuses rather

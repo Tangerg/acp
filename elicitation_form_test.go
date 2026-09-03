@@ -1,15 +1,15 @@
 package acp
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
 
 // The form answer, checked against the form that asked for it.
 //
-// The cases worth naming are the ones where a validator gets it wrong in a way
-// that breaks a working exchange: a whole number answering a form that asked for
-// a number, and a constraint this package deliberately does not read.
+// The cases worth naming are the ones where a representation adapter or regex
+// dialect mismatch can make a validator reject a working exchange.
 func TestAFormAnswerIsCheckedAgainstItsSchema(t *testing.T) {
 	text := func(s string) ElicitationContentValue {
 		value := ElicitationContentValueString(s)
@@ -47,13 +47,13 @@ func TestAFormAnswerIsCheckedAgainstItsSchema(t *testing.T) {
 			name:    "a required property left out",
 			schema:  schema(map[string]ElicitationPropertySchema{"branch": &StringPropertySchema{}}, "branch"),
 			content: map[string]ElicitationContentValue{},
-			wants:   "requires",
+			wants:   "required",
 		},
 		{
 			name:    "a string where a number was asked for",
 			schema:  schema(map[string]ElicitationPropertySchema{"count": &IntegerPropertySchema{}}),
 			content: map[string]ElicitationContentValue{"count": text("three")},
-			wants:   "asks for integer",
+			wants:   "type",
 		},
 		{
 			name: "a whole number answering a form that asked for a number",
@@ -70,7 +70,7 @@ func TestAFormAnswerIsCheckedAgainstItsSchema(t *testing.T) {
 				"count": &IntegerPropertySchema{},
 			}),
 			content: map[string]ElicitationContentValue{"count": fractional(3.5)},
-			wants:   "asks for integer",
+			wants:   "type",
 		},
 		{
 			name: "a number below the form's minimum",
@@ -78,7 +78,7 @@ func TestAFormAnswerIsCheckedAgainstItsSchema(t *testing.T) {
 				"count": &IntegerPropertySchema{Minimum: OptValue(int64(1))},
 			}),
 			content: map[string]ElicitationContentValue{"count": whole(0)},
-			wants:   "below the form's minimum",
+			wants:   "minimum",
 		},
 		{
 			name: "a string outside the choices offered",
@@ -86,7 +86,7 @@ func TestAFormAnswerIsCheckedAgainstItsSchema(t *testing.T) {
 				"branch": &StringPropertySchema{Enum: OptValue([]string{"main", "next"})},
 			}),
 			content: map[string]ElicitationContentValue{"branch": text("other")},
-			wants:   "not one of the choices",
+			wants:   "enum",
 		},
 		{
 			name: "a string longer than the form allows, counted in characters",
@@ -104,16 +104,24 @@ func TestAFormAnswerIsCheckedAgainstItsSchema(t *testing.T) {
 				},
 			}),
 			content: map[string]ElicitationContentValue{"tags": list("a", "c")},
-			wants:   "not one of the choices",
+			wants:   "enum",
 		},
 		{
-			name: "a pattern this package does not read",
+			name: "an ECMA pattern the Go validator cannot read",
 			schema: schema(map[string]ElicitationPropertySchema{
 				"branch": &StringPropertySchema{Pattern: OptValue(`^(?=.*x)`)},
 			}),
 			content: map[string]ElicitationContentValue{"branch": text("anything")},
 			why: "an ECMA-262 lookahead does not compile as RE2, and refusing an answer " +
 				"because this package could not read the pattern would be worse than not reading it",
+		},
+		{
+			name: "a supported pattern that does not match",
+			schema: schema(map[string]ElicitationPropertySchema{
+				"branch": &StringPropertySchema{Pattern: OptValue(`^release/`)},
+			}),
+			content: map[string]ElicitationContentValue{"branch": text("main")},
+			wants:   "pattern",
 		},
 		{
 			name: "a property the form does not declare",
@@ -135,7 +143,7 @@ func TestAFormAnswerIsCheckedAgainstItsSchema(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := validateElicitationContent(test.schema, test.content)
+			err := test.schema.validate(test.content)
 			if test.wants == "" {
 				if err != nil {
 					t.Fatalf("refused a valid answer: %v (%s)", err, test.why)
@@ -149,5 +157,27 @@ func TestAFormAnswerIsCheckedAgainstItsSchema(t *testing.T) {
 				t.Fatalf("refused with %q, which does not mention %q", err, test.wants)
 			}
 		})
+	}
+}
+
+func TestAFormAnswerCannotHideANilUnionArm(t *testing.T) {
+	var text *ElicitationContentValueString
+	schema := ElicitationSchema{
+		Type: ElicitationSchemaTypeObject,
+		Properties: map[string]ElicitationPropertySchema{
+			"branch": &StringPropertySchema{},
+		},
+	}
+	err := schema.validate(map[string]ElicitationContentValue{"branch": text})
+	if err == nil || !strings.Contains(err.Error(), "nil *ElicitationContentValueString arm") {
+		t.Fatalf("validation returned %v, want the typed-nil union error", err)
+	}
+}
+
+func TestAnObjectUnionCannotHideANilArm(t *testing.T) {
+	var accepted *ElicitationAcceptAction
+	_, err := json.Marshal(CreateElicitationResponse{Value: accepted})
+	if err == nil || !strings.Contains(err.Error(), "nil *ElicitationAcceptAction arm") {
+		t.Fatalf("Marshal returned %v, want the typed-nil union error", err)
 	}
 }

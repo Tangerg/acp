@@ -37,9 +37,10 @@ type Method struct {
 	// GoName is the unexported constant, from meta.json's identifier for the
 	// method rather than from the wire name, because that identifier is what
 	// upstream chose to call it.
-	GoName string
-	Side   string
-	Shape  string
+	GoName            string
+	Side              string
+	Shape             string
+	RequiresSessionID bool
 	// Payloads are the definitions annotated with this method, which is what the
 	// cross-check against meta.json is made of.
 	Payloads []string
@@ -107,7 +108,7 @@ func planMethods(doc *Document, table *MethodTable) ([]*Method, error) {
 	methods := make([]*Method, 0, len(byName))
 	for _, name := range sortedKeys(byName) {
 		method := byName[name]
-		if err := finishMethod(method, sides); err != nil {
+		if err := finishMethod(doc, method, sides); err != nil {
 			return nil, err
 		}
 		methods = append(methods, method)
@@ -115,7 +116,7 @@ func planMethods(doc *Document, table *MethodTable) ([]*Method, error) {
 	return methods, nil
 }
 
-func finishMethod(method *Method, sides map[string][]string) error {
+func finishMethod(doc *Document, method *Method, sides map[string][]string) error {
 	if len(method.Payloads) == 0 {
 		return fmt.Errorf("meta.json lists %q, which no payload in the schema is annotated with", method.Name)
 	}
@@ -150,6 +151,10 @@ func finishMethod(method *Method, sides map[string][]string) error {
 			notification = true
 		case strings.HasSuffix(payload, "Response"):
 			request = true
+		}
+		if !strings.HasSuffix(payload, "Response") &&
+			slices.Contains(doc.Defs[payload].Required, "sessionId") {
+			method.RequiresSessionID = true
 		}
 	}
 	switch {
@@ -214,7 +219,7 @@ func emitMethods(methods []*Method, table *MethodTable) ([]byte, error) {
 	out.WriteString("\t// shapeNotification has none.\n\tshapeNotification\n")
 	out.WriteString("\t// shapeEither is defined both ways, so neither form contradicts the schema.\n\tshapeEither\n)\n\n")
 
-	out.WriteString("type methodDescriptor struct {\n\tside  methodSide\n\tshape methodShape\n}\n\n")
+	out.WriteString("type methodDescriptor struct {\n\tside              methodSide\n\tshape             methodShape\n\trequiresSessionID bool\n}\n\n")
 
 	out.WriteString(comment("", []string{
 		"standardMethods is every method the specification defines, and the set the",
@@ -228,7 +233,11 @@ func emitMethods(methods []*Method, table *MethodTable) ([]byte, error) {
 	}))
 	out.WriteString("var standardMethods = map[string]methodDescriptor{\n")
 	for _, method := range methods {
-		fmt.Fprintf(&out, "\t%s: {%s, %s},\n", method.GoName, sideConstant(method.Side), method.Shape)
+		fmt.Fprintf(&out, "\t%s: {side: %s, shape: %s", method.GoName, sideConstant(method.Side), method.Shape)
+		if method.RequiresSessionID {
+			out.WriteString(", requiresSessionID: true")
+		}
+		out.WriteString("},\n")
 	}
 	out.WriteString("}\n\n")
 

@@ -107,11 +107,11 @@ func TestAFormElicitationReachesTheUserAndAnswers(t *testing.T) {
 	}
 }
 
-// A URL elicitation is the one exchange that outlives its own response: the
-// client says it has shown the page, and the agent says later that the page is
-// finished.
+// A URL elicitation is the one exchange that can outlive its own response: an
+// accept consents to start the out-of-band interaction, and the agent says later
+// that the accepted interaction is finished.
 func TestAURLElicitationIsFinishedByItsCompletion(t *testing.T) {
-	showing := make(chan acp.ElicitationID, 1)
+	accepted := make(chan acp.ElicitationID, 1)
 	finished := make(chan acp.ElicitationID, 1)
 
 	client, err := acp.NewClient(&acp.ClientConfig{
@@ -123,7 +123,7 @@ func TestAURLElicitationIsFinishedByItsCompletion(t *testing.T) {
 				_ *acp.CreateElicitationRequest,
 				mode *acp.ElicitationURLMode,
 			) (*acp.CreateElicitationResponse, error) {
-				showing <- mode.ElicitationID
+				accepted <- mode.ElicitationID
 				return &acp.CreateElicitationResponse{
 					Value: &acp.ElicitationAcceptAction{},
 				}, nil
@@ -169,11 +169,95 @@ func TestAURLElicitationIsFinishedByItsCompletion(t *testing.T) {
 	if completeErr != nil {
 		t.Fatalf("CompleteElicitation: %v", completeErr)
 	}
-	if shown := <-showing; shown != "elicit-1" {
-		t.Errorf("the client was shown %q, want elicit-1", shown)
+	if id := <-accepted; id != "elicit-1" {
+		t.Errorf("the client accepted %q, want elicit-1", id)
 	}
 	if done := <-finished; done != "elicit-1" {
 		t.Errorf("the client was told %q finished, want elicit-1", done)
+	}
+}
+
+func TestOnlyAnAcceptedURLElicitationBecomesOutstanding(t *testing.T) {
+	var handled int
+	client, err := acp.NewClient(&acp.ClientConfig{
+		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		RequestPermission: denyingPermission,
+		Elicitation: &acp.ElicitationHandlers{
+			URL: func(
+				context.Context,
+				*acp.CreateElicitationRequest,
+				*acp.ElicitationURLMode,
+			) (*acp.CreateElicitationResponse, error) {
+				handled++
+				var action acp.CreateElicitationResponseValue
+				switch handled {
+				case 1:
+					action = &acp.CreateElicitationResponseDecline{}
+				case 2:
+					action = &acp.CreateElicitationResponseCancel{}
+				default:
+					action = &acp.ElicitationAcceptAction{}
+				}
+				return &acp.CreateElicitationResponse{Value: action}, nil
+			},
+			Complete: func(context.Context, *acp.CompleteElicitationNotification) {},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	var createErrors, completionErrors []error
+	agent := testAgent(t, func(
+		ctx context.Context,
+		session *acp.AgentSession,
+		_ *acp.PromptRequest,
+	) (*acp.PromptResponse, error) {
+		params := &acp.CreateElicitationParams{
+			Message: "sign in",
+			Mode: &acp.ElicitationURLMode{
+				ElicitationID: "reusable",
+				URL:           "https://example.invalid/sign-in",
+			},
+		}
+		for range 3 {
+			_, createErr := session.CreateElicitation(ctx, params)
+			createErrors = append(createErrors, createErr)
+			completionCtx := ctx
+			if len(createErrors) == 3 {
+				var cancel context.CancelFunc
+				completionCtx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			completionErrors = append(completionErrors, session.Conn().CompleteElicitation(
+				completionCtx,
+				&acp.CompleteElicitationNotification{ElicitationID: "reusable"},
+			))
+		}
+		completionErrors = append(completionErrors, session.Conn().CompleteElicitation(
+			ctx,
+			&acp.CompleteElicitationNotification{ElicitationID: "reusable"},
+		))
+		return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+	})
+
+	session := connectAndOpen(t, client, agent)
+	if _, err := session.Prompt(context.Background(), &acp.PromptParams{}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	for i, err := range createErrors {
+		if err != nil {
+			t.Errorf("CreateElicitation %d: %v", i+1, err)
+		}
+	}
+	if completionErrors[0] == nil || completionErrors[1] == nil {
+		t.Error("a declined or cancelled URL elicitation was treated as outstanding")
+	}
+	if !errors.Is(completionErrors[2], context.Canceled) {
+		t.Errorf("the unsent completion returned %v, want context cancellation", completionErrors[2])
+	}
+	if completionErrors[3] != nil {
+		t.Errorf("the accepted URL elicitation could not be retried: %v", completionErrors[3])
 	}
 }
 
@@ -601,10 +685,10 @@ func TestElicitationRefusesWhatACallerGetsWrong(t *testing.T) {
 //
 // An agent "MUST keep each elicitationId unique among outstanding URL
 // elicitations on that Agent-Client connection", and a URL elicitation stays
-// outstanding past its own response — the response says the page was shown, the
-// completion says it is finished.
+// outstanding past its own response — an accept consents to start it and the
+// completion says that accepted interaction is finished.
 func TestAURLElicitationIdentifierIsUniqueWhileItIsOutstanding(t *testing.T) {
-	shown := make(chan struct{}, 4)
+	accepted := make(chan struct{}, 4)
 	client, err := acp.NewClient(&acp.ClientConfig{
 		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
@@ -614,7 +698,7 @@ func TestAURLElicitationIdentifierIsUniqueWhileItIsOutstanding(t *testing.T) {
 				*acp.CreateElicitationRequest,
 				*acp.ElicitationURLMode,
 			) (*acp.CreateElicitationResponse, error) {
-				shown <- struct{}{}
+				accepted <- struct{}{}
 				return &acp.CreateElicitationResponse{Value: &acp.ElicitationAcceptAction{}}, nil
 			},
 			Complete: func(context.Context, *acp.CompleteElicitationNotification) {},
@@ -667,7 +751,7 @@ func TestAURLElicitationIdentifierIsUniqueWhileItIsOutstanding(t *testing.T) {
 		t.Fatalf("Prompt: %v", err)
 	}
 
-	if reused == nil || !strings.Contains(reused.Error(), "already outstanding") {
+	if reused == nil || !strings.Contains(reused.Error(), "already in use") {
 		t.Errorf("a second elicitation under a live identifier was answered %v, want a refusal", reused)
 	}
 	if unopened == nil || !strings.Contains(unopened.Error(), "not outstanding") {
@@ -679,8 +763,8 @@ func TestAURLElicitationIdentifierIsUniqueWhileItIsOutstanding(t *testing.T) {
 	if afterCompleting != nil {
 		t.Errorf("the identifier was not free again after its completion: %v", afterCompleting)
 	}
-	if len(shown) != 2 {
-		t.Errorf("the client was shown %d pages, want 2: the first and the one reopened after it closed", len(shown))
+	if len(accepted) != 2 {
+		t.Errorf("the client accepted %d URL interactions, want 2: the first and the reuse after completion", len(accepted))
 	}
 }
 

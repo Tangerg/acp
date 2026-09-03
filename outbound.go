@@ -80,7 +80,13 @@ func (l *link) await(ctx context.Context, call outboundCall) error {
 			return err
 		default:
 		}
-		l.calls.retire(call.id)
+		// Some responses settle connection-owned state that outlives this
+		// caller. Keep those calls registered after the caller leaves: the peer
+		// may already have received the request, and only its eventual answer can
+		// decide whether that state became live.
+		if !call.observeLateResponse {
+			l.calls.retire(call.id)
+		}
 		//nolint:contextcheck // the caller is done; cancellation needs its own budget.
 		l.cancelRemotely(call.id)
 		return ctx.Err()

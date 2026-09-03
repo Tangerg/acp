@@ -12,8 +12,8 @@ import (
 	"github.com/Tangerg/acp/jsonrpc"
 )
 
-// What a connection will hold on a peer's behalf, and what it does when the peer
-// asks for more.
+// What a connection will hold for protocol work, and what it does when either
+// side asks for more.
 //
 // These are internal tests because a bound is reached by feeding the read loop
 // faster than anything drains it, which is a shape the public API exists to make
@@ -134,7 +134,7 @@ func TestRepeatingASessionDoesNotConsumeTheBound(t *testing.T) {
 }
 
 // A zero field takes the default for that field, so raising one bound does not
-// silently drop the other two to nothing.
+// silently drop the other three to nothing.
 func TestAZeroLimitTakesItsDefault(t *testing.T) {
 	resolved := Limits{QueuedDeliveries: 7}.resolve()
 
@@ -148,6 +148,10 @@ func TestAZeroLimitTakesItsDefault(t *testing.T) {
 	if resolved.SessionHandles != defaultSessionHandles {
 		t.Fatalf("SessionHandles resolved to %d, want the default %d",
 			resolved.SessionHandles, defaultSessionHandles)
+	}
+	if resolved.OutstandingElicitations != defaultOutstandingElicitations {
+		t.Fatalf("OutstandingElicitations resolved to %d, want the default %d",
+			resolved.OutstandingElicitations, defaultOutstandingElicitations)
 	}
 
 	// And the connection reads the resolved value, so the bound in an error message

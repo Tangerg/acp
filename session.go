@@ -550,6 +550,30 @@ func (c *AgentConn) closeSession(ctx context.Context, request *jsonrpc.Request) 
 	return response, nil
 }
 
+// deleteSession binds the session named by the request before handing it to the
+// application. The session need not have been cached already: its identifier is
+// nevertheless the protocol scope, and the successful deletion is what releases
+// the handle again.
+func (c *AgentConn) deleteSession(ctx context.Context, request *jsonrpc.Request) (any, error) {
+	handle := c.agent.config.DeleteSession
+	if handle == nil {
+		return nil, methodNotImplemented(request.Method)
+	}
+	params, err := decodeParams[DeleteSessionRequest](request)
+	if err != nil {
+		return nil, err
+	}
+	response, err := handle(ctx, c.session(params.SessionID), params)
+	if err != nil {
+		return nil, err
+	}
+	if response == nil {
+		return nil, nilHandlerResponse(request.Method)
+	}
+	c.sessions.forget(params.SessionID)
+	return response, nil
+}
+
 // A sessionRequest is a request that names the session it belongs to, which is
 // what lets one dispatch path hand a handle to every handler that needs one.
 type sessionRequest interface {

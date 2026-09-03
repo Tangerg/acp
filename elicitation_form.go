@@ -1,200 +1,113 @@
 package acp
 
 import (
+	"encoding/json"
 	"fmt"
-	"maps"
-	"slices"
-	"unicode/utf8"
+	"regexp"
+
+	"github.com/Tangerg/acp/internal/wire"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
-// A form elicitation names the shape of its answer, and both sides are told to
-// check it: "Clients SHOULD validate user input against the provided JSON Schema
-// before sending" and "Agents SHOULD also validate received data matches the
-// requested schema, as defense-in-depth".
-//
-// Neither is a MUST, and this package keeps both anyway because neither costs a
-// round trip. A client that would send an answer its own form does not describe
-// learns so from its own handler's return; an agent that receives one learns
-// before the value reaches the code that asked for it.
-//
-// # What it does not check
-//
-// `pattern` and `format` are skipped, and skipped on purpose. A JSON Schema
-// pattern is an ECMA-262 regular expression, Go's regexp is RE2, and the two
-// disagree on constructs a real form might use — a lookahead compiles in one and
-// not the other. Rejecting an answer because this package could not read the
-// pattern would be worse than not checking it. `format` has the same shape of
-// problem with less to gain.
-//
-// A property whose schema is the catch-all arm is skipped for the reason the arm
-// exists: it is a kind of property this package cannot name, so it cannot say what
-// a valid value for one looks like.
-//
-// A property the schema does not declare is left alone. The schema has no
-// `additionalProperties`, and JSON Schema's default is to permit them.
-func validateElicitationContent(
-	schema ElicitationSchema,
-	content map[string]ElicitationContentValue,
-) error {
-	if required, stated := schema.Required.Get(); stated {
-		for _, name := range required {
-			if _, answered := content[name]; !answered {
-				return fmt.Errorf("acp: the form requires %q and the answer does not carry it", name)
+// validate keeps the ACP-specific representation at the boundary and delegates
+// JSON Schema semantics to the same maintained validator used by the official
+// MCP Go SDK. Both peers call it: clients check the answer they are about to send,
+// and agents check the answer they received as defense in depth.
+func (schema ElicitationSchema) validate(content map[string]ElicitationContentValue) error {
+	compiled, err := schema.validationSchema()
+	if err != nil {
+		return fmt.Errorf("acp: invalid elicitation schema: %w", err)
+	}
+	resolved, err := compiled.Resolve(nil)
+	if err != nil {
+		return fmt.Errorf("acp: invalid elicitation schema: %w", err)
+	}
+	instance, err := elicitationContentInstance(content)
+	if err != nil {
+		return fmt.Errorf("acp: invalid form answer: %w", err)
+	}
+	if err := resolved.Validate(instance); err != nil {
+		return fmt.Errorf("acp: form answer does not match requested schema: %w", err)
+	}
+	return nil
+}
+
+func (schema ElicitationSchema) validationSchema() (*jsonschema.Schema, error) {
+	data, err := json.Marshal(schema)
+	if err != nil {
+		return nil, err
+	}
+	var compiled jsonschema.Schema
+	if err := json.Unmarshal(data, &compiled); err != nil {
+		return nil, err
+	}
+
+	for name, property := range schema.Properties {
+		compiledProperty := compiled.Properties[name]
+		switch property := property.(type) {
+		case *ElicitationPropertySchemaOther:
+			// The catch-all exists to preserve a future grammar arm, not to let this
+			// version partially interpret that arm using whichever keywords happen
+			// to look familiar.
+			compiled.Properties[name] = &jsonschema.Schema{}
+		case *StringPropertySchema:
+			if pattern, ok := property.Pattern.Get(); ok {
+				if _, err := regexp.Compile(pattern); err != nil {
+					// JSON Schema patterns use the ECMA-262 dialect. The validator uses
+					// Go regular expressions, so a valid upstream pattern such as a
+					// lookahead must not make the entire elicitation schema invalid.
+					compiledProperty.Pattern = ""
+				}
+			}
+		case *MultiSelectPropertySchema:
+			if _, unknown := property.Items.(*MultiSelectItemsOther); unknown {
+				// Keep array and cardinality checks, but do not guess the value
+				// grammar of a future items arm.
+				compiledProperty.Items = &jsonschema.Schema{}
 			}
 		}
 	}
-
-	// Sorted, so that an answer wrong in two places names the same one every run.
-	for _, name := range slices.Sorted(maps.Keys(content)) {
-		declared, known := schema.Properties[name]
-		if !known {
-			continue
-		}
-		if err := validateElicitationValue(declared, content[name]); err != nil {
-			return fmt.Errorf("acp: %q in the form answer: %w", name, err)
-		}
-	}
-	return nil
+	return &compiled, nil
 }
 
-func validateElicitationValue(declared ElicitationPropertySchema, value ElicitationContentValue) error {
-	switch declared := declared.(type) {
-	case *StringPropertySchema:
-		return validateElicitationString(declared, value)
-	case *IntegerPropertySchema:
-		return validateElicitationInteger(declared, value)
-	case *NumberPropertySchema:
-		return validateElicitationNumber(declared, value)
-	case *BooleanPropertySchema:
-		if _, ok := value.(*ElicitationContentValueBoolean); !ok {
-			return wrongElicitationType("boolean", value)
-		}
-		return nil
-	case *MultiSelectPropertySchema:
-		return validateElicitationMultiSelect(declared, value)
-	default:
-		return nil
+// MarshalMapFunc is important here: marshaling the interface-valued map directly
+// would encode a typed nil pointer as JSON null, bypassing the generated union's
+// invariant that every selected arm contains a value. Decoding the result also
+// gives the validator ordinary JSON values instead of the wire union wrappers.
+func elicitationContentInstance(content map[string]ElicitationContentValue) (any, error) {
+	data, err := wire.MarshalMapFunc(content, marshalElicitationContentValue)
+	if err != nil {
+		return nil, err
 	}
+	var instance any
+	if err := json.Unmarshal(data, &instance); err != nil {
+		return nil, err
+	}
+	return instance, nil
 }
 
-func validateElicitationString(declared *StringPropertySchema, value ElicitationContentValue) error {
-	text, ok := value.(*ElicitationContentValueString)
-	if !ok {
-		return wrongElicitationType("string", value)
-	}
-	answer := string(*text)
-
-	// Code points rather than bytes: JSON Schema counts characters, and a form
-	// asking for at most eight is not asking for at most eight bytes.
-	length := uint32(utf8.RuneCountInString(answer)) //nolint:gosec // a form's answer is bounded by the message size.
-	if minimum, stated := declared.MinLength.Get(); stated && length < minimum {
-		return fmt.Errorf("%q is %d characters and the form asks for at least %d", answer, length, minimum)
-	}
-	if maximum, stated := declared.MaxLength.Get(); stated && length > maximum {
-		return fmt.Errorf("%q is %d characters and the form allows at most %d", answer, length, maximum)
-	}
-	if choices, stated := declared.Enum.Get(); stated && !slices.Contains(choices, answer) {
-		return fmt.Errorf("%q is not one of the choices the form offered: %v", answer, choices)
-	}
-	if titled, stated := declared.OneOf.Get(); stated {
-		if !slices.ContainsFunc(titled, func(option EnumOption) bool { return option.Const == answer }) {
-			return fmt.Errorf("%q is not one of the titled choices the form offered", answer)
-		}
-	}
-	return nil
+func (response *CreateElicitationResponse) accepted() bool {
+	_, accepted := response.acceptedAction()
+	return accepted
 }
 
-func validateElicitationInteger(declared *IntegerPropertySchema, value ElicitationContentValue) error {
-	// A number that is not whole decodes as the number arm, so reaching here with
-	// one is the answer disagreeing with the form rather than an arm being unlucky.
-	number, ok := value.(*ElicitationContentValueInteger)
-	if !ok {
-		return wrongElicitationType("integer", value)
+// acceptedContent distinguishes an accepted form with no content from responses
+// whose action does not claim that the user answered the form.
+func (response *CreateElicitationResponse) acceptedContent() (
+	map[string]ElicitationContentValue,
+	bool,
+) {
+	action, accepted := response.acceptedAction()
+	if !accepted {
+		return nil, false
 	}
-	answer := int64(*number)
-	if minimum, stated := declared.Minimum.Get(); stated && answer < minimum {
-		return fmt.Errorf("%d is below the form's minimum of %d", answer, minimum)
-	}
-	if maximum, stated := declared.Maximum.Get(); stated && answer > maximum {
-		return fmt.Errorf("%d is above the form's maximum of %d", answer, maximum)
-	}
-	return nil
+	return action.Content.Get()
 }
 
-func validateElicitationNumber(declared *NumberPropertySchema, value ElicitationContentValue) error {
-	// JSON has one number type, so a whole number is a valid answer to a form
-	// asking for a number — and it decodes as the integer arm, which tries first.
-	var answer float64
-	switch value := value.(type) {
-	case *ElicitationContentValueNumber:
-		answer = float64(*value)
-	case *ElicitationContentValueInteger:
-		answer = float64(*value)
-	default:
-		return wrongElicitationType("number", value)
-	}
-	if minimum, stated := declared.Minimum.Get(); stated && answer < minimum {
-		return fmt.Errorf("%v is below the form's minimum of %v", answer, minimum)
-	}
-	if maximum, stated := declared.Maximum.Get(); stated && answer > maximum {
-		return fmt.Errorf("%v is above the form's maximum of %v", answer, maximum)
-	}
-	return nil
-}
-
-func validateElicitationMultiSelect(
-	declared *MultiSelectPropertySchema,
-	value ElicitationContentValue,
-) error {
-	list, ok := value.(*ElicitationContentValueStringArray)
-	if !ok {
-		return wrongElicitationType("array of strings", value)
-	}
-	chosen := []string(*list)
-
-	count := uint64(len(chosen))
-	if minimum, stated := declared.MinItems.Get(); stated && count < minimum {
-		return fmt.Errorf("%d chosen and the form asks for at least %d", count, minimum)
-	}
-	if maximum, stated := declared.MaxItems.Get(); stated && count > maximum {
-		return fmt.Errorf("%d chosen and the form allows at most %d", count, maximum)
-	}
-
-	// The catch-all arm is skipped for the reason it exists: a set of items this
-	// package cannot name has no membership it can check.
-	switch items := declared.Items.(type) {
-	case *StringMultiSelectItems:
-		for _, choice := range chosen {
-			if !slices.Contains(items.Enum, choice) {
-				return fmt.Errorf("%q is not one of the choices the form offered: %v", choice, items.Enum)
-			}
-		}
-	case *TitledMultiSelectItems:
-		for _, choice := range chosen {
-			if !slices.ContainsFunc(items.AnyOf, func(o EnumOption) bool { return o.Const == choice }) {
-				return fmt.Errorf("%q is not one of the titled choices the form offered", choice)
-			}
-		}
-	}
-	return nil
-}
-
-func wrongElicitationType(wanted string, got ElicitationContentValue) error {
-	return fmt.Errorf("the form asks for %s and the answer is %T", wanted, got)
-}
-
-// acceptedFormContent returns the content of an accepted answer, and whether
-// there is any to check. A declined or cancelled elicitation carries no answer,
-// and an accepted one need not: a form may ask for nothing.
-func acceptedFormContent(
-	response *CreateElicitationResponse,
-) (map[string]ElicitationContentValue, bool) {
+func (response *CreateElicitationResponse) acceptedAction() (*ElicitationAcceptAction, bool) {
 	if response == nil {
 		return nil, false
 	}
-	accepted, ok := response.Value.(*ElicitationAcceptAction)
-	if !ok {
-		return nil, false
-	}
-	return accepted.Content.Get()
+	action, accepted := response.Value.(*ElicitationAcceptAction)
+	return action, accepted && action != nil
 }

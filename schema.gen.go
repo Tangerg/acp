@@ -486,8 +486,14 @@ func (*AuthMethodAgent) isAuthMethod()    {}
 func marshalAuthMethod(value AuthMethod) ([]byte, error) {
 	switch value := value.(type) {
 	case *AuthMethodTerminal:
+		if value == nil {
+			return nil, errors.New("acp: AuthMethod holds a nil *AuthMethodTerminal arm")
+		}
 		return wire.TagObject("type", "terminal", value)
 	case *AuthMethodAgent:
+		if value == nil {
+			return nil, errors.New("acp: AuthMethod holds a nil *AuthMethodAgent arm")
+		}
 		return json.Marshal(value)
 	case nil:
 		return nil, errors.New("acp: AuthMethod is required and none was set")
@@ -933,6 +939,9 @@ func (*UnstructuredCommandInput) isAvailableCommandInput() {}
 func marshalAvailableCommandInput(value AvailableCommandInput) ([]byte, error) {
 	switch value := value.(type) {
 	case *UnstructuredCommandInput:
+		if value == nil {
+			return nil, errors.New("acp: AvailableCommandInput holds a nil *UnstructuredCommandInput arm")
+		}
 		return json.Marshal(value)
 	case nil:
 		return nil, errors.New("acp: AvailableCommandInput is required and none was set")
@@ -1857,14 +1866,29 @@ func (*EmbeddedResource) isContentBlock() {}
 func marshalContentBlock(value ContentBlock) ([]byte, error) {
 	switch value := value.(type) {
 	case *TextContent:
+		if value == nil {
+			return nil, errors.New("acp: ContentBlock holds a nil *TextContent arm")
+		}
 		return wire.TagObject("type", "text", value)
 	case *ImageContent:
+		if value == nil {
+			return nil, errors.New("acp: ContentBlock holds a nil *ImageContent arm")
+		}
 		return wire.TagObject("type", "image", value)
 	case *AudioContent:
+		if value == nil {
+			return nil, errors.New("acp: ContentBlock holds a nil *AudioContent arm")
+		}
 		return wire.TagObject("type", "audio", value)
 	case *ResourceLink:
+		if value == nil {
+			return nil, errors.New("acp: ContentBlock holds a nil *ResourceLink arm")
+		}
 		return wire.TagObject("type", "resource_link", value)
 	case *EmbeddedResource:
+		if value == nil {
+			return nil, errors.New("acp: ContentBlock holds a nil *EmbeddedResource arm")
+		}
 		return wire.TagObject("type", "resource", value)
 	case nil:
 		return nil, errors.New("acp: ContentBlock is required and none was set")
@@ -2262,10 +2286,19 @@ func (*CreateElicitationRequestOther) isCreateElicitationRequestValue() {}
 func marshalCreateElicitationRequestValue(value CreateElicitationRequestValue) ([]byte, error) {
 	switch value := value.(type) {
 	case *ElicitationFormMode:
+		if value == nil {
+			return nil, errors.New("acp: CreateElicitationRequestValue holds a nil *ElicitationFormMode arm")
+		}
 		return wire.TagObject("mode", "form", value)
 	case *ElicitationURLMode:
+		if value == nil {
+			return nil, errors.New("acp: CreateElicitationRequestValue holds a nil *ElicitationURLMode arm")
+		}
 		return wire.TagObject("mode", "url", value)
 	case *CreateElicitationRequestOther:
+		if value == nil {
+			return nil, errors.New("acp: CreateElicitationRequestValue holds a nil *CreateElicitationRequestOther arm")
+		}
 		return json.Marshal(value)
 	case nil:
 		return nil, errors.New("acp: CreateElicitationRequestValue is required and none was set")
@@ -2513,12 +2546,24 @@ func (*CreateElicitationResponseOther) isCreateElicitationResponseValue()   {}
 func marshalCreateElicitationResponseValue(value CreateElicitationResponseValue) ([]byte, error) {
 	switch value := value.(type) {
 	case *ElicitationAcceptAction:
+		if value == nil {
+			return nil, errors.New("acp: CreateElicitationResponseValue holds a nil *ElicitationAcceptAction arm")
+		}
 		return wire.TagObject("action", "accept", value)
 	case *CreateElicitationResponseDecline:
+		if value == nil {
+			return nil, errors.New("acp: CreateElicitationResponseValue holds a nil *CreateElicitationResponseDecline arm")
+		}
 		return wire.TagObject("action", "decline", value)
 	case *CreateElicitationResponseCancel:
+		if value == nil {
+			return nil, errors.New("acp: CreateElicitationResponseValue holds a nil *CreateElicitationResponseCancel arm")
+		}
 		return wire.TagObject("action", "cancel", value)
 	case *CreateElicitationResponseOther:
+		if value == nil {
+			return nil, errors.New("acp: CreateElicitationResponseValue holds a nil *CreateElicitationResponseOther arm")
+		}
 		return json.Marshal(value)
 	case nil:
 		return nil, errors.New("acp: CreateElicitationResponseValue is required and none was set")
@@ -3273,14 +3318,29 @@ func (*ElicitationContentValueStringArray) isElicitationContentValue() {}
 func marshalElicitationContentValue(value ElicitationContentValue) ([]byte, error) {
 	switch value := value.(type) {
 	case *ElicitationContentValueString:
+		if value == nil {
+			return nil, errors.New("acp: ElicitationContentValue holds a nil *ElicitationContentValueString arm")
+		}
 		return json.Marshal(value)
 	case *ElicitationContentValueInteger:
+		if value == nil {
+			return nil, errors.New("acp: ElicitationContentValue holds a nil *ElicitationContentValueInteger arm")
+		}
 		return json.Marshal(value)
 	case *ElicitationContentValueNumber:
+		if value == nil {
+			return nil, errors.New("acp: ElicitationContentValue holds a nil *ElicitationContentValueNumber arm")
+		}
 		return json.Marshal(value)
 	case *ElicitationContentValueBoolean:
+		if value == nil {
+			return nil, errors.New("acp: ElicitationContentValue holds a nil *ElicitationContentValueBoolean arm")
+		}
 		return json.Marshal(value)
 	case *ElicitationContentValueStringArray:
+		if value == nil {
+			return nil, errors.New("acp: ElicitationContentValue holds a nil *ElicitationContentValueStringArray arm")
+		}
 		return json.Marshal(value)
 	case nil:
 		return nil, errors.New("acp: ElicitationContentValue is required and none was set")
@@ -3489,8 +3549,14 @@ func (*ElicitationFormModeRequest) isElicitationFormModeValue() {}
 func marshalElicitationFormModeValue(value ElicitationFormModeValue) ([]byte, error) {
 	switch value := value.(type) {
 	case *ElicitationFormModeSession:
+		if value == nil {
+			return nil, errors.New("acp: ElicitationFormModeValue holds a nil *ElicitationFormModeSession arm")
+		}
 		return json.Marshal(value)
 	case *ElicitationFormModeRequest:
+		if value == nil {
+			return nil, errors.New("acp: ElicitationFormModeValue holds a nil *ElicitationFormModeRequest arm")
+		}
 		return json.Marshal(value)
 	case nil:
 		return nil, errors.New("acp: ElicitationFormModeValue is required and none was set")
@@ -3546,16 +3612,34 @@ func (*ElicitationPropertySchemaOther) isElicitationPropertySchema() {}
 func marshalElicitationPropertySchema(value ElicitationPropertySchema) ([]byte, error) {
 	switch value := value.(type) {
 	case *StringPropertySchema:
+		if value == nil {
+			return nil, errors.New("acp: ElicitationPropertySchema holds a nil *StringPropertySchema arm")
+		}
 		return wire.TagObject("type", "string", value)
 	case *NumberPropertySchema:
+		if value == nil {
+			return nil, errors.New("acp: ElicitationPropertySchema holds a nil *NumberPropertySchema arm")
+		}
 		return wire.TagObject("type", "number", value)
 	case *IntegerPropertySchema:
+		if value == nil {
+			return nil, errors.New("acp: ElicitationPropertySchema holds a nil *IntegerPropertySchema arm")
+		}
 		return wire.TagObject("type", "integer", value)
 	case *BooleanPropertySchema:
+		if value == nil {
+			return nil, errors.New("acp: ElicitationPropertySchema holds a nil *BooleanPropertySchema arm")
+		}
 		return wire.TagObject("type", "boolean", value)
 	case *MultiSelectPropertySchema:
+		if value == nil {
+			return nil, errors.New("acp: ElicitationPropertySchema holds a nil *MultiSelectPropertySchema arm")
+		}
 		return wire.TagObject("type", "array", value)
 	case *ElicitationPropertySchemaOther:
+		if value == nil {
+			return nil, errors.New("acp: ElicitationPropertySchema holds a nil *ElicitationPropertySchemaOther arm")
+		}
 		return json.Marshal(value)
 	case nil:
 		return nil, errors.New("acp: ElicitationPropertySchema is required and none was set")
@@ -4011,7 +4095,7 @@ func (x *ElicitationURLMode) UnmarshalJSON(data []byte) error {
 	}
 
 	if raw, ok := object["url"]; ok {
-		value, err := wire.UnmarshalURI("url", raw)
+		value, err := wire.UnmarshalURI(raw)
 		if err == nil {
 			x.URL = value
 		} else {
@@ -4036,7 +4120,7 @@ func (x ElicitationURLMode) MarshalJSON() ([]byte, error) {
 	var writer wire.ObjectWriter
 	writer.Set("elicitationId", x.ElicitationID)
 	{
-		raw, err := wire.MarshalURI("url", x.URL)
+		raw, err := wire.MarshalURI(x.URL)
 		if err != nil {
 			return nil, wire.At("url", err)
 		}
@@ -4110,8 +4194,14 @@ func (*ElicitationURLModeRequest) isElicitationURLModeValue() {}
 func marshalElicitationURLModeValue(value ElicitationURLModeValue) ([]byte, error) {
 	switch value := value.(type) {
 	case *ElicitationURLModeSession:
+		if value == nil {
+			return nil, errors.New("acp: ElicitationURLModeValue holds a nil *ElicitationURLModeSession arm")
+		}
 		return json.Marshal(value)
 	case *ElicitationURLModeRequest:
+		if value == nil {
+			return nil, errors.New("acp: ElicitationURLModeValue holds a nil *ElicitationURLModeRequest arm")
+		}
 		return json.Marshal(value)
 	case nil:
 		return nil, errors.New("acp: ElicitationURLModeValue is required and none was set")
@@ -4230,8 +4320,14 @@ func (*BlobResourceContents) isEmbeddedResourceResource() {}
 func marshalEmbeddedResourceResource(value EmbeddedResourceResource) ([]byte, error) {
 	switch value := value.(type) {
 	case *TextResourceContents:
+		if value == nil {
+			return nil, errors.New("acp: EmbeddedResourceResource holds a nil *TextResourceContents arm")
+		}
 		return json.Marshal(value)
 	case *BlobResourceContents:
+		if value == nil {
+			return nil, errors.New("acp: EmbeddedResourceResource holds a nil *BlobResourceContents arm")
+		}
 		return json.Marshal(value)
 	case nil:
 		return nil, errors.New("acp: EmbeddedResourceResource is required and none was set")
@@ -5884,10 +5980,19 @@ func (*McpServerStdio) isMcpServer() {}
 func marshalMcpServer(value McpServer) ([]byte, error) {
 	switch value := value.(type) {
 	case *McpServerHTTP:
+		if value == nil {
+			return nil, errors.New("acp: McpServer holds a nil *McpServerHTTP arm")
+		}
 		return wire.TagObject("type", "http", value)
 	case *McpServerSse:
+		if value == nil {
+			return nil, errors.New("acp: McpServer holds a nil *McpServerSse arm")
+		}
 		return wire.TagObject("type", "sse", value)
 	case *McpServerStdio:
+		if value == nil {
+			return nil, errors.New("acp: McpServer holds a nil *McpServerStdio arm")
+		}
 		return json.Marshal(value)
 	case nil:
 		return nil, errors.New("acp: McpServer is required and none was set")
@@ -6240,10 +6345,19 @@ func (*TitledMultiSelectItems) isMultiSelectItems() {}
 func marshalMultiSelectItems(value MultiSelectItems) ([]byte, error) {
 	switch value := value.(type) {
 	case *StringMultiSelectItems:
+		if value == nil {
+			return nil, errors.New("acp: MultiSelectItems holds a nil *StringMultiSelectItems arm")
+		}
 		return wire.TagObject("type", "string", value)
 	case *MultiSelectItemsOther:
+		if value == nil {
+			return nil, errors.New("acp: MultiSelectItems holds a nil *MultiSelectItemsOther arm")
+		}
 		return json.Marshal(value)
 	case *TitledMultiSelectItems:
+		if value == nil {
+			return nil, errors.New("acp: MultiSelectItems holds a nil *TitledMultiSelectItems arm")
+		}
 		return json.Marshal(value)
 	case nil:
 		return nil, errors.New("acp: MultiSelectItems is required and none was set")
@@ -7963,8 +8077,14 @@ func (*SelectedPermissionOutcome) isRequestPermissionOutcome()         {}
 func marshalRequestPermissionOutcome(value RequestPermissionOutcome) ([]byte, error) {
 	switch value := value.(type) {
 	case *RequestPermissionOutcomeCancelled:
+		if value == nil {
+			return nil, errors.New("acp: RequestPermissionOutcome holds a nil *RequestPermissionOutcomeCancelled arm")
+		}
 		return wire.TagObject("outcome", "cancelled", value)
 	case *SelectedPermissionOutcome:
+		if value == nil {
+			return nil, errors.New("acp: RequestPermissionOutcome holds a nil *SelectedPermissionOutcome arm")
+		}
 		return wire.TagObject("outcome", "selected", value)
 	case nil:
 		return nil, errors.New("acp: RequestPermissionOutcome is required and none was set")
@@ -9122,8 +9242,14 @@ func (*SessionConfigBoolean) isSessionConfigOptionValue() {}
 func marshalSessionConfigOptionValue(value SessionConfigOptionValue) ([]byte, error) {
 	switch value := value.(type) {
 	case *SessionConfigSelect:
+		if value == nil {
+			return nil, errors.New("acp: SessionConfigOptionValue holds a nil *SessionConfigSelect arm")
+		}
 		return wire.TagObject("type", "select", value)
 	case *SessionConfigBoolean:
+		if value == nil {
+			return nil, errors.New("acp: SessionConfigOptionValue holds a nil *SessionConfigBoolean arm")
+		}
 		return wire.TagObject("type", "boolean", value)
 	case nil:
 		return nil, errors.New("acp: SessionConfigOptionValue is required and none was set")
@@ -9464,8 +9590,14 @@ func (*SessionConfigSelectOptionsGrouped) isSessionConfigSelectOptions()   {}
 func marshalSessionConfigSelectOptions(value SessionConfigSelectOptions) ([]byte, error) {
 	switch value := value.(type) {
 	case *SessionConfigSelectOptionsUngrouped:
+		if value == nil {
+			return nil, errors.New("acp: SessionConfigSelectOptions holds a nil *SessionConfigSelectOptionsUngrouped arm")
+		}
 		return json.Marshal(value)
 	case *SessionConfigSelectOptionsGrouped:
+		if value == nil {
+			return nil, errors.New("acp: SessionConfigSelectOptions holds a nil *SessionConfigSelectOptionsGrouped arm")
+		}
 		return json.Marshal(value)
 	case nil:
 		return nil, errors.New("acp: SessionConfigSelectOptions is required and none was set")
@@ -10090,26 +10222,59 @@ func (*UsageUpdate) isSessionUpdate()             {}
 func marshalSessionUpdate(value SessionUpdate) ([]byte, error) {
 	switch value := value.(type) {
 	case *UserMessageChunk:
+		if value == nil {
+			return nil, errors.New("acp: SessionUpdate holds a nil *UserMessageChunk arm")
+		}
 		return wire.TagObject("sessionUpdate", "user_message_chunk", value)
 	case *AgentMessageChunk:
+		if value == nil {
+			return nil, errors.New("acp: SessionUpdate holds a nil *AgentMessageChunk arm")
+		}
 		return wire.TagObject("sessionUpdate", "agent_message_chunk", value)
 	case *AgentThoughtChunk:
+		if value == nil {
+			return nil, errors.New("acp: SessionUpdate holds a nil *AgentThoughtChunk arm")
+		}
 		return wire.TagObject("sessionUpdate", "agent_thought_chunk", value)
 	case *ToolCall:
+		if value == nil {
+			return nil, errors.New("acp: SessionUpdate holds a nil *ToolCall arm")
+		}
 		return wire.TagObject("sessionUpdate", "tool_call", value)
 	case *ToolCallUpdate:
+		if value == nil {
+			return nil, errors.New("acp: SessionUpdate holds a nil *ToolCallUpdate arm")
+		}
 		return wire.TagObject("sessionUpdate", "tool_call_update", value)
 	case *Plan:
+		if value == nil {
+			return nil, errors.New("acp: SessionUpdate holds a nil *Plan arm")
+		}
 		return wire.TagObject("sessionUpdate", "plan", value)
 	case *AvailableCommandsUpdate:
+		if value == nil {
+			return nil, errors.New("acp: SessionUpdate holds a nil *AvailableCommandsUpdate arm")
+		}
 		return wire.TagObject("sessionUpdate", "available_commands_update", value)
 	case *CurrentModeUpdate:
+		if value == nil {
+			return nil, errors.New("acp: SessionUpdate holds a nil *CurrentModeUpdate arm")
+		}
 		return wire.TagObject("sessionUpdate", "current_mode_update", value)
 	case *ConfigOptionUpdate:
+		if value == nil {
+			return nil, errors.New("acp: SessionUpdate holds a nil *ConfigOptionUpdate arm")
+		}
 		return wire.TagObject("sessionUpdate", "config_option_update", value)
 	case *SessionInfoUpdate:
+		if value == nil {
+			return nil, errors.New("acp: SessionUpdate holds a nil *SessionInfoUpdate arm")
+		}
 		return wire.TagObject("sessionUpdate", "session_info_update", value)
 	case *UsageUpdate:
+		if value == nil {
+			return nil, errors.New("acp: SessionUpdate holds a nil *UsageUpdate arm")
+		}
 		return wire.TagObject("sessionUpdate", "usage_update", value)
 	case nil:
 		return nil, errors.New("acp: SessionUpdate is required and none was set")
@@ -10542,8 +10707,14 @@ func (*SetSessionConfigOptionRequestValueID) isSetSessionConfigOptionRequestValu
 func marshalSetSessionConfigOptionRequestValue(value SetSessionConfigOptionRequestValue) ([]byte, error) {
 	switch value := value.(type) {
 	case *SetSessionConfigOptionRequestBoolean:
+		if value == nil {
+			return nil, errors.New("acp: SetSessionConfigOptionRequestValue holds a nil *SetSessionConfigOptionRequestBoolean arm")
+		}
 		return wire.TagObject("type", "boolean", value)
 	case *SetSessionConfigOptionRequestValueID:
+		if value == nil {
+			return nil, errors.New("acp: SetSessionConfigOptionRequestValue holds a nil *SetSessionConfigOptionRequestValueID arm")
+		}
 		return json.Marshal(value)
 	case nil:
 		return nil, errors.New("acp: SetSessionConfigOptionRequestValue is required and none was set")
@@ -11904,10 +12075,19 @@ func (*Terminal) isToolCallContent() {}
 func marshalToolCallContent(value ToolCallContent) ([]byte, error) {
 	switch value := value.(type) {
 	case *Content:
+		if value == nil {
+			return nil, errors.New("acp: ToolCallContent holds a nil *Content arm")
+		}
 		return wire.TagObject("type", "content", value)
 	case *Diff:
+		if value == nil {
+			return nil, errors.New("acp: ToolCallContent holds a nil *Diff arm")
+		}
 		return wire.TagObject("type", "diff", value)
 	case *Terminal:
+		if value == nil {
+			return nil, errors.New("acp: ToolCallContent holds a nil *Terminal arm")
+		}
 		return wire.TagObject("type", "terminal", value)
 	case nil:
 		return nil, errors.New("acp: ToolCallContent is required and none was set")
@@ -12991,10 +13171,19 @@ func (*requestIDStr) isRequestID()    {}
 func marshalRequestID(value requestID) ([]byte, error) {
 	switch value := value.(type) {
 	case *requestIDNull:
+		if value == nil {
+			return nil, errors.New("acp: requestID holds a nil *requestIDNull arm")
+		}
 		return json.Marshal(value)
 	case *requestIDNumber:
+		if value == nil {
+			return nil, errors.New("acp: requestID holds a nil *requestIDNumber arm")
+		}
 		return json.Marshal(value)
 	case *requestIDStr:
+		if value == nil {
+			return nil, errors.New("acp: requestID holds a nil *requestIDStr arm")
+		}
 		return json.Marshal(value)
 	case nil:
 		return nil, errors.New("acp: requestID is required and none was set")

@@ -190,6 +190,7 @@ func (e *emitter) valueUnion(def *Def) {
 	e.printf("\tswitch value := value.(type) {\n")
 	for _, arm := range def.Arms {
 		e.printf("\tcase *%s:\n", arm.GoType)
+		e.rejectNilUnionArm(def, arm)
 		e.printf("\t\treturn json.Marshal(value)\n")
 	}
 	e.printf("\tcase nil:\n\t\treturn nil, errors.New(\"acp: %s is required and none was set\")\n", def.GoName)
@@ -315,6 +316,7 @@ func (e *emitter) unionMarshal(def *Def) {
 	e.printf("\tswitch value := value.(type) {\n")
 	for _, arm := range def.Arms {
 		e.printf("\tcase *%s:\n", arm.GoType)
+		e.rejectNilUnionArm(def, arm)
 		switch {
 		case arm.Tag != "":
 			e.printf("\t\treturn wire.TagObject(%q, %q, value)\n", def.Discriminant, arm.Tag)
@@ -325,6 +327,16 @@ func (e *emitter) unionMarshal(def *Def) {
 	e.printf("\tcase nil:\n\t\treturn nil, errors.New(\"acp: %s is required and none was set\")\n", def.GoName)
 	e.printf("\tdefault:\n\t\treturn nil, fmt.Errorf(\"acp: %%T is not an arm of %s\", value)\n", def.GoName)
 	e.printf("\t}\n}\n\n")
+}
+
+// An interface holding a nil arm is not nil in Go, but it is still no value on
+// the wire. Reject it before an arm encoder can turn it into null or dereference
+// it; doing this at generation makes the invariant true for every union rather
+// than for the handful a handwritten caller happens to inspect.
+func (e *emitter) rejectNilUnionArm(union *Def, arm *Arm) {
+	e.printf("\t\tif value == nil {\n")
+	e.printf("\t\t\treturn nil, errors.New(\"acp: %s holds a nil *%s arm\")\n", union.GoName, arm.GoType)
+	e.printf("\t\t}\n")
 }
 
 func (e *emitter) unionUnmarshal(def *Def) {
@@ -580,7 +592,7 @@ func (e *emitter) decodeExpr(field *Field) string {
 	// property's own fallback is: a malformed URI recovers exactly as a malformed
 	// anything else does.
 	if value.Format == formatURI {
-		return fmt.Sprintf("wire.UnmarshalURI(%q, raw)", field.JSONName)
+		return "wire.UnmarshalURI(raw)"
 	}
 	return fmt.Sprintf("wire.UnmarshalValue[%s](raw)", value.Go)
 }
@@ -711,7 +723,7 @@ func (e *emitter) encodeExpr(field *Field) string {
 		return fmt.Sprintf("marshal%s($)", value.Ident)
 	}
 	if value.Format == formatURI {
-		return fmt.Sprintf("wire.MarshalURI(%q, $)", field.JSONName)
+		return "wire.MarshalURI($)"
 	}
 	return ""
 }
