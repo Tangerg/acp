@@ -209,6 +209,25 @@ The repository vendors `schema/schema.json` from the published release. The
 generator commits 153 of its 170 definitions to `schema.gen.go`, so schema updates
 produce reviewable source diffs and `go get` needs no generator.
 
+### The stable grammar only
+
+Upstream publishes two schemas per release: `schema.json` and
+`schema.unstable.json`, the second being the first plus whatever is being tried.
+At `schema-v1.21.0` the unstable one adds 95 definitions and 17 methods —
+`session/fork`, `nes/*`, `providers/*`, `document/did*`, `mcp/connect`.
+
+This module generates from the stable asset alone, pinned by tag and SHA-256. That
+is what lets its exported surface be a published grammar and `gorelease` mean
+something. The cost is real and worth knowing before you choose: **experimental
+features are not reachable through this module**, not even by hand, because none of
+those 17 method names begins with `_` and the extension API only carries names the
+protocol reserves for implementations.
+
+If you need them, use a library generated from the unstable channel — the other
+Go implementations are. What you can do here is what a real editor does: the
+recorded Zed handshake advertises its own experiments through `_meta`, and `_meta`
+plus `_`-prefixed extension methods are fully supported.
+
 ### The v2 draft
 
 Upstream is drafting protocol version 2 and publishing it as

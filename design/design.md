@@ -43,6 +43,28 @@ This package diverges in three load-bearing areas:
   from a vendored release asset and committed, so that a schema change is a
   reviewable source diff.
 
+The last of those is the one that separates this package from all four rather
+than from some of them, and it was re-checked against them rather than assumed.
+Upstream publishes two schemas per release: `schema.json`, the stable grammar, and
+`schema.unstable.json`, which is that plus whatever is being tried. At
+`schema-v1.21.0` the unstable one is a superset — 265 definitions against 170, and
+17 methods the stable grammar does not have, among them `session/fork`, `nes/*`,
+`providers/*`, `document/did*` and `mcp/connect`.
+
+All four generate from the unstable channel. `spachava753/acp-sdk` and
+`eino-contrib/acp` generate from it alone, so their entire public API is the
+moving one; `eino-contrib/acp` reads it from an unpinned `main` URL, so two builds
+a week apart need not agree. `coder/acp-go-sdk` merges the two into one type set,
+and `ironpark/go-acp` keeps them in separate files inside one package, each
+experimental type carrying an `**UNSTABLE**` doc line and nothing a compiler
+checks.
+
+This package generates from the stable release asset alone, pinned by tag and
+SHA-256. What that buys is the thing every other guarantee here rests on: an
+exported surface that is a published grammar, so `gorelease` comparing this
+module against its last tag is comparing something upstream also promised not to
+move. What it costs is stated below.
+
 Two things were taken from other libraries deliberately. The `Transport` and
 `Connection` abstraction is the one the [official MCP Go
 SDK](https://github.com/modelcontextprotocol/go-sdk) arrived at, and the argument
@@ -729,6 +751,40 @@ The module is pre-1.0 and its Go API is expected to change; the protocol version
 it targets is not. The language floor is Go 1.25, chosen for `testing/synctest`
 and kept as low as it can be justified, because a floor is a cost imposed on
 everyone who imports the module.
+
+### The experimental channel is not generated, and cannot be half-opened
+
+`schema.unstable.json` is where features are tried before they are grammar, and
+where the ones that survive go to become v2: `PlanUpdate` and `PlanItems` appear
+in the unstable v1 channel and again in the v2 draft. Generating from it is what
+the other four Go libraries do. This one does not, and the reason is what the
+channel says about itself — its contents "may be removed or changed at any point".
+
+An exported Go type generated from a moving input is a promise this module cannot
+keep. `gorelease` compares each release against the last tag, and every upstream
+churn would surface as a breaking change in a module whose whole claim is that its
+surface is a published grammar. The evidence that things really do leave is in this
+repository's own history: `mcp/message` was in the unstable channel, this
+generator carried a comment naming it, and by v1.21.0 it was gone — the comment
+outlived the method.
+
+The obvious middle course does not exist, which is worth stating because it looks
+like it should. Opening the extension API to unstable method names would let a
+caller send `session/fork` with types of their own — none of the 17 begins with
+`_`, so today they are refused — but it would stop there. Those methods are gated
+by capabilities that are named properties of `ClientCapabilities`, and this
+package's generated capability types drop properties they do not know, so a caller
+could send the method and never advertise it. Making capabilities retain unknown
+properties would not fix it either: the reference implementation strips them too,
+so the fixture corpus would start failing the moment this package kept what the
+oracle discards. A half-feature whose completion requires diverging from the
+oracle is not a feature.
+
+What is reachable is what a real editor actually uses. The recorded Zed handshake
+advertises its own experiments through `_meta` — `terminal_output`,
+`terminal-auth` — not through unstable schema properties, and `_meta` plus
+`_`-prefixed extension methods are fully supported here. An application that needs
+the unstable grammar itself needs a library generated from it, and this is not one.
 
 ### The module major tracks the protocol major
 
