@@ -22,6 +22,24 @@ import (
 //
 // An absent Opt asked for JSON anyway encodes as null, because there is nothing
 // else honest to answer: omitting it is the encoder's job, not this type's.
+//
+// # Two decoders, and the one difference between them
+//
+// A generated field is decoded by this package's schema-directed codec, which
+// never reaches [Opt.UnmarshalJSON]. A value that cannot be read there leaves the
+// property absent and the surrounding message intact, because a peer's optional
+// property this package cannot parse is not a reason to drop everything the peer
+// also sent.
+//
+// An Opt in a type of the caller's own — extension method parameters, or
+// something decoded out of a [Meta] key — has no schema behind it, so
+// [Opt.UnmarshalJSON] decodes it and reports the failure, which is what
+// encoding/json does everywhere else and what a caller who owns that grammar
+// should get.
+//
+// The three states behave identically on both paths. Only a value that fails to
+// decode is answered differently, and only because on one path the grammar is the
+// protocol's and on the other it is the caller's.
 type Opt[T any] struct {
 	state optState
 	value T

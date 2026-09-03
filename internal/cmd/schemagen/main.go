@@ -88,9 +88,15 @@ func run(root string, check bool) error {
 		return emitErr
 	}
 
+	roundTripSource, roundTripErr := emitRoundTrip(plan)
+	if roundTripErr != nil {
+		return roundTripErr
+	}
+
 	outputs := map[string][]byte{
 		filepath.Join(root, "schema.gen.go"):          source,
 		filepath.Join(root, "methods.gen.go"):         methodSource,
+		filepath.Join(root, "roundtrip.gen_test.go"):  roundTripSource,
 		filepath.Join(root, "schema", "exported.txt"): exportedList(plan),
 	}
 	if check {
