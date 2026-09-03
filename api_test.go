@@ -359,11 +359,3 @@ func TestATransportIsConnectedOnce(t *testing.T) {
 		t.Fatal("a transport was connected twice")
 	}
 }
-
-func count[T any](seq func(func(T) bool)) int {
-	total := 0
-	for range seq {
-		total++
-	}
-	return total
-}

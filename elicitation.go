@@ -81,8 +81,8 @@ func (handlers *ElicitationHandlers) capabilities() Opt[ElicitationCapabilities]
 // operation supplies that: a session handle elicits within its session and a
 // connection within the request it is serving. This is the division every handle
 // here makes — a caller never spells a session identifier either — and it is what
-// keeps [ElicitationRequestScope] unexported, since the scope it names is a
-// JSON-RPC request identifier this API does not hand out.
+// keeps the request scope unexported, since the scope it names is a JSON-RPC
+// request identifier this API does not hand out.
 type CreateElicitationParams struct {
 	// Required.
 	Message string

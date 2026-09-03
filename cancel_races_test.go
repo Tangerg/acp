@@ -230,12 +230,6 @@ const promptParams = `{"sessionId":"sess-1","prompt":[]}`
 // is enough for registration and turn state and nothing that would need a peer.
 func newTestAgentConn() *AgentConn { return newTestAgentConnWith(Limits{}) }
 
-func newTestAgentConnWith(limits Limits) *AgentConn {
-	conn := &AgentConn{connection: newConnection()}
-	conn.link = newLink(nil, conn, nil, limits)
-	return conn
-}
-
 func newTestClientConn() *ClientConn {
 	conn := &ClientConn{connection: newConnection()}
 	conn.link = newLink(nil, conn, nil, Limits{})
@@ -301,8 +295,4 @@ func TestASecondPromptOverTheWireIsRefused(t *testing.T) {
 
 func rawRequest(id jsonrpc.ID, method, params string) *jsonrpc.Request {
 	return &jsonrpc.Request{ID: id, Method: method, Params: json.RawMessage(params)}
-}
-
-func rawNotification(method, params string) *jsonrpc.Request {
-	return &jsonrpc.Request{Method: method, Params: json.RawMessage(params)}
 }

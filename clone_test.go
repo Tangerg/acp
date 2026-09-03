@@ -3,7 +3,6 @@ package acp_test
 import (
 	"context"
 	"encoding/json"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -199,18 +198,6 @@ func mutateEverything(t *testing.T, config *acp.AgentConfig) {
 			env["MODE"] = "tampered"
 		}
 	}
-}
-
-// text encodes a value the way it would go on the wire, so that a test can ask
-// one question of a whole tree.
-func text(t *testing.T, value any) string {
-	t.Helper()
-
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		t.Fatalf("encoding %v: %v", reflect.TypeOf(value), err)
-	}
-	return string(encoded)
 }
 
 // Encoding at insertion time prevents a later mutation of a Go object from
