@@ -47,6 +47,19 @@ migration instructions.
   by a `SessionUpdate` handler that may render it, and because a breach ends the
   connection, an application whose handler is slow now has somewhere to say so.
 
+### Documentation
+
+- **Three more runnable examples**: session configuration options, the session
+  lifecycle (list, resume, delete, and the refusal for an unadvertised
+  `session/load`), and a custom `Transport` — the extension point whose
+  concurrency contract had prose but no demonstration.
+
+- **The v2 draft**: README.md says what this module does when it meets a
+  v2-capable peer, why there is no flag for it, and what the migration will be.
+  The answer is measured rather than guessed: against the pinned v1.21.0,
+  `schema-v2.0.0-alpha.3` keeps 14 of the 25 methods, dropping all five
+  `terminal/*` and both `fs/*` among them.
+
 ### Fixed
 
 - **A boolean session configuration option could be set without the capability

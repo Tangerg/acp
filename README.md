@@ -122,10 +122,11 @@ The agent requests permission before writing `/tmp/workspace/NOTES.md`. Enter `1
 to approve it. Interrupt the client during the turn to send `session/cancel`
 without terminating the process.
 
-Focused examples for cancellation, authentication, terminals, extensions, `Opt`,
-and `Meta` are part of the [package
+Focused examples for cancellation, authentication, terminals, session
+configuration, the session lifecycle, elicitation, extension methods, a custom
+transport, `Opt` and `Meta` are part of the [package
 documentation](https://pkg.go.dev/github.com/Tangerg/acp#pkg-examples). Every
-package example runs under `go test`.
+package example runs under `go test`, so none of them can go stale.
 
 ## Behavioural contracts
 
@@ -207,6 +208,46 @@ a local dialect.
 The repository vendors `schema/schema.json` from the published release. The
 generator commits 153 of its 170 definitions to `schema.gen.go`, so schema updates
 produce reviewable source diffs and `go get` needs no generator.
+
+### The v2 draft
+
+Upstream is drafting protocol version 2 and publishing it as
+`schema-v2.0.0-alpha.N` alongside the stable v1 line. **This module does not speak
+it, and that is enforced rather than incidental**: `acp.CurrentProtocolVersion` is
+1, an agent built here answers 1 to any request, and a client built here closes a
+connection whose agent answers anything else.
+
+You can still talk to a peer that supports v2, as long as it also still supports
+v1. The specification requires an agent to answer with the version the client
+asked for when it supports that version, so a v2-capable agent asked for 1 answers
+1 and the connection proceeds in v1. A peer that has dropped v1 is out of reach,
+and there is no flag, option, or extension method that changes this — the
+extension API covers `_`-prefixed methods, and what v2 changes is the standard
+ones.
+
+It is not a flag because v2 is a different grammar rather than an increment.
+Measured against the pinned v1.21.0, `schema-v2.0.0-alpha.3` keeps 14 of the 25
+methods and drops 11:
+
+| Change | Methods |
+| --- | --- |
+| Removed | all five `terminal/*`, both `fs/*`, `session/load`, `session/set_mode`, `authenticate`, `logout` |
+| Added | `auth/login`, `auth/logout` |
+
+Terminals stop being methods and become session updates, and running a command
+becomes a permission subject. Forty definitions disappear and forty-five arrive. A
+package that tried to speak both would have `ReadTextFile` in one grammar and not
+the other, and a version branch inside every operation.
+
+So the module major will track the protocol major: when v2 stabilises this module
+becomes `acp/v2` and speaks version 2 only. Both can be imported side by side by
+an editor that has to drive agents of either kind, which is what Go's major-version
+rule is for. `design/design.md` records the argument and the cost.
+
+Until then the pin stays on v1 and the alphas are watched rather than implemented,
+because implementing a draft would encode a dialect that is still changing. To
+follow it, watch the `schema-v2.0.0-alpha` releases in the
+[upstream repository](https://github.com/agentclientprotocol/agent-client-protocol/releases).
 
 ## Verification
 

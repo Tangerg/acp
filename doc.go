@@ -73,6 +73,19 @@
 //
 // Public wire types are generated from the vendored published schema and
 // committed as schema.gen.go. Generated doc comments preserve the schema's prose.
+//
+// # Protocol version
+//
+// This package speaks protocol version 1 and refuses any other, because a
+// protocol number names a grammar rather than a feature level. An agent built
+// here answers 1; a client built here closes a connection whose agent answers
+// otherwise. A peer that supports both still works, since the specification
+// requires an agent to answer with the version its client asked for.
+//
+// Upstream is drafting version 2, which drops eleven of the twenty-five methods
+// rather than adding to them. It will arrive as a separate major version of this
+// module rather than as a negotiated mode; README.md has what to expect and
+// design/design.md has the argument.
 package acp
 
 //go:generate go run ./internal/cmd/schemagen

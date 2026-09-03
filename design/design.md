@@ -750,6 +750,16 @@ would gain a branch on which grammar this connection settled, which is precisely
 the compatibility layer this repository's rules forbid: not a path being removed,
 but a second one being kept alive inside every method.
 
+How much of a different grammar it is was measured rather than assumed.
+`schema-v2.0.0-alpha.3` against the pinned v1.21.0: 40 definitions gone, 45 new,
+and 11 of the 25 methods removed against 2 added. The removals are not
+peripheral — all five `terminal/*` methods and both `fs/*` methods stop existing,
+`authenticate` and `logout` become `auth/login` and `auth/logout`, `session/load`
+and `session/set_mode` go. Terminals reappear as arms of `SessionUpdate` and
+running a command as a permission subject, so the client's side of the protocol is
+reorganised rather than extended. A package holding both would export
+`ReadTextFile` in one grammar and not the other.
+
 The cost is real and belongs in the same paragraph as the decision. An editor
 that must drive both a v1 and a v2 agent imports both modules and finds out which
 it is talking to the way the protocol says — by being refused at `initialize` —

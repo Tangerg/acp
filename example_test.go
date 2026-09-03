@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/Tangerg/acp"
+	"github.com/Tangerg/acp/jsonrpc"
 )
 
 // Every example here runs both halves in one process over
@@ -691,3 +692,380 @@ func ExampleAgentSession_CreateElicitation() {
 	// field: branch
 	// the user chose: main
 }
+
+// Session configuration options are the agent's to define and the client's to
+// change. The agent returns the full set from session/new and from every answer
+// here, so a client renders whatever it is given rather than knowing the options.
+//
+// The boolean option type is gated on a client capability, so an agent may only
+// offer one to a client that advertised it. This client does not, which is why
+// the agent below offers a select instead.
+func ExampleClientSession_SetConfigOption() {
+	ctx := context.Background()
+
+	options := func(model acp.SessionConfigValueID) []acp.SessionConfigOption {
+		return []acp.SessionConfigOption{{
+			ID:       "model",
+			Name:     "Model",
+			Category: acp.OptValue(acp.SessionConfigOptionCategoryModel),
+			Value: &acp.SessionConfigSelect{
+				CurrentValue: model,
+				Options: &acp.SessionConfigSelectOptionsUngrouped{
+					{Value: "fast", Name: "Fast"},
+					{Value: "careful", Name: "Careful"},
+				},
+			},
+		}}
+	}
+
+	agent, err := acp.NewAgent(&acp.AgentConfig{
+		NewSession: func(
+			context.Context,
+			*acp.AgentConn,
+			*acp.NewSessionRequest,
+		) (*acp.NewSessionResponse, error) {
+			return &acp.NewSessionResponse{
+				SessionID:     "session-1",
+				ConfigOptions: acp.OptValue(options("fast")),
+			}, nil
+		},
+		Prompt: func(
+			context.Context,
+			*acp.AgentSession,
+			*acp.PromptRequest,
+		) (*acp.PromptResponse, error) {
+			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+		},
+		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
+
+		// Setting this advertises nothing: config options are gated by data rather
+		// than by a capability, so an agent that offers none simply returns none.
+		SetConfigOption: func(
+			_ context.Context,
+			_ *acp.AgentSession,
+			request *acp.SetSessionConfigOptionRequest,
+		) (*acp.SetSessionConfigOptionResponse, error) {
+			chosen, ok := request.Value.(*acp.SetSessionConfigOptionRequestValueID)
+			if !ok {
+				return nil, errors.New("this agent offers only select options")
+			}
+			fmt.Println("agent switched", request.ConfigID, "to", chosen.Value)
+			return &acp.SetSessionConfigOptionResponse{ConfigOptions: options(chosen.Value)}, nil
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	client, err := acp.NewClient(&acp.ClientConfig{
+		SessionUpdate: func(context.Context, *acp.SessionNotification) {},
+		RequestPermission: func(
+			context.Context,
+			*acp.RequestPermissionRequest,
+		) (*acp.RequestPermissionResponse, error) {
+			return nil, errors.New("this example asks for nothing")
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	clientSide, agentSide := acp.NewInMemoryTransports()
+	go func() { _ = agent.Run(ctx, agentSide) }()
+
+	conn, err := client.Connect(ctx, clientSide)
+	if err != nil {
+		panic(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	session, opened, err := conn.NewSession(ctx, &acp.NewSessionRequest{Cwd: "/work"})
+	if err != nil {
+		panic(err)
+	}
+	offered, _ := opened.ConfigOptions.Get()
+	for _, option := range offered {
+		if selector, ok := option.Value.(*acp.SessionConfigSelect); ok {
+			fmt.Println("offered:", option.Name, "=", selector.CurrentValue)
+		}
+	}
+
+	answer, err := session.SetConfigOption(ctx, &acp.SetConfigOptionParams{
+		ConfigID: "model",
+		Value:    &acp.SetSessionConfigOptionRequestValueID{Value: "careful"},
+	})
+	if err != nil {
+		panic(err)
+	}
+	for _, option := range answer.ConfigOptions {
+		if selector, ok := option.Value.(*acp.SessionConfigSelect); ok {
+			fmt.Println("now:", option.Name, "=", selector.CurrentValue)
+		}
+	}
+
+	// A boolean value needs clientCapabilities.session.configOptions.boolean, which
+	// this client never advertised, so it is refused before anything is sent.
+	_, err = session.SetConfigOption(ctx, &acp.SetConfigOptionParams{
+		ConfigID: "verbose",
+		Value:    &acp.SetSessionConfigOptionRequestBoolean{Value: true},
+	})
+	fmt.Println("boolean without the capability:", err)
+
+	// Output:
+	// offered: Model = fast
+	// agent switched model to careful
+	// now: Model = careful
+	// boolean without the capability: acp: invalid params: a boolean session configuration option was not advertised because clientCapabilities.session.configOptions.boolean is not set
+}
+
+// The session lifecycle beyond one turn: an agent that can list, resume and delete
+// sessions advertises each separately, and each handler it sets is that
+// advertisement. A client calling one the agent did not advertise is refused
+// locally, before the request is written.
+//
+// Resuming is not loading. The schema distinguishes them: session/load replays the
+// conversation through session/update, and session/resume reopens without
+// replaying — which is why this agent serves one and not the other.
+func ExampleClientConn_ResumeSession() {
+	ctx := context.Background()
+	stored := map[acp.SessionID]string{"session-1": "/work"}
+
+	agent, err := acp.NewAgent(&acp.AgentConfig{
+		NewSession: func(
+			context.Context,
+			*acp.AgentConn,
+			*acp.NewSessionRequest,
+		) (*acp.NewSessionResponse, error) {
+			return &acp.NewSessionResponse{SessionID: "session-1"}, nil
+		},
+		Prompt: func(
+			context.Context,
+			*acp.AgentSession,
+			*acp.PromptRequest,
+		) (*acp.PromptResponse, error) {
+			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+		},
+		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
+
+		// Each of the three advertises itself by being set.
+		ListSessions: func(
+			_ context.Context,
+			_ *acp.AgentConn,
+			_ *acp.ListSessionsRequest,
+		) (*acp.ListSessionsResponse, error) {
+			listed := make([]acp.SessionInfo, 0, len(stored))
+			for id, cwd := range stored {
+				listed = append(listed, acp.SessionInfo{SessionID: id, Cwd: cwd})
+			}
+			return &acp.ListSessionsResponse{Sessions: listed}, nil
+		},
+		ResumeSession: func(
+			_ context.Context,
+			session *acp.AgentSession,
+			_ *acp.ResumeSessionRequest,
+		) (*acp.ResumeSessionResponse, error) {
+			if _, known := stored[session.ID()]; !known {
+				return nil, &acp.Error{Code: acp.ErrorCodeResourceNotFound, Message: string(session.ID())}
+			}
+			return &acp.ResumeSessionResponse{}, nil
+		},
+		DeleteSession: func(
+			_ context.Context,
+			_ *acp.AgentConn,
+			request *acp.DeleteSessionRequest,
+		) (*acp.DeleteSessionResponse, error) {
+			delete(stored, request.SessionID)
+			return &acp.DeleteSessionResponse{}, nil
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	client, err := acp.NewClient(&acp.ClientConfig{
+		SessionUpdate: func(context.Context, *acp.SessionNotification) {},
+		RequestPermission: func(
+			context.Context,
+			*acp.RequestPermissionRequest,
+		) (*acp.RequestPermissionResponse, error) {
+			return nil, errors.New("this example asks for nothing")
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	clientSide, agentSide := acp.NewInMemoryTransports()
+	go func() { _ = agent.Run(ctx, agentSide) }()
+
+	conn, err := client.Connect(ctx, clientSide)
+	if err != nil {
+		panic(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	listed, err := conn.ListSessions(ctx, nil)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("sessions:", len(listed.Sessions), listed.Sessions[0].SessionID)
+
+	// A handle for a session this connection never opened, which is what a client
+	// keeps the identifier for: the identifier outlives the connection, the handle
+	// does not.
+	resumed, _, err := conn.ResumeSession(ctx, &acp.ResumeSessionRequest{
+		SessionID: "session-1",
+		Cwd:       "/work",
+	})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("resumed:", resumed.ID())
+
+	if _, err := conn.DeleteSession(ctx, &acp.DeleteSessionRequest{SessionID: "session-1"}); err != nil {
+		panic(err)
+	}
+	if _, _, err := conn.ResumeSession(ctx, &acp.ResumeSessionRequest{
+		SessionID: "session-1",
+		Cwd:       "/work",
+	}); err != nil {
+		fmt.Println("after deleting:", err)
+	}
+
+	// session/load is not advertised, because no LoadSession handler is set. The
+	// refusal happens here rather than after a round trip.
+	if _, _, err := conn.LoadSession(ctx, &acp.LoadSessionRequest{
+		SessionID: "session-1",
+		Cwd:       "/work",
+	}); err != nil {
+		fmt.Println("loading:", err)
+	}
+
+	// Output:
+	// sessions: 1 session-1
+	// resumed: session-1
+	// after deleting: acp: resource not found: session-1
+	// loading: acp: method not found: method "session/load" was not advertised because agentCapabilities.loadSession is not set
+}
+
+// A custom transport, which is how ACP reaches a stream this package does not
+// ship: a WebSocket, a TLS session, a message bus. The contract is on
+// [acp.Connection], and the two rules worth naming are that Write may be called
+// from any number of goroutines and that Close must unblock a pending Read —
+// without the second, the goroutine owning Read cannot be stopped.
+//
+// Wrapping an existing transport is the common case, because delegating satisfies
+// the whole contract for free. Nothing here reimplements framing.
+func ExampleTransport() {
+	ctx := context.Background()
+
+	clientSide, agentSide := acp.NewInMemoryTransports()
+	watched := &countingTransport{inner: clientSide}
+
+	agent, err := acp.NewAgent(&acp.AgentConfig{
+		NewSession: func(
+			context.Context,
+			*acp.AgentConn,
+			*acp.NewSessionRequest,
+		) (*acp.NewSessionResponse, error) {
+			return &acp.NewSessionResponse{SessionID: "session-1"}, nil
+		},
+		Prompt: func(
+			ctx context.Context,
+			session *acp.AgentSession,
+			_ *acp.PromptRequest,
+		) (*acp.PromptResponse, error) {
+			if err := session.Update(ctx, &acp.SessionUpdateParams{
+				Update: &acp.AgentMessageChunk{ContentChunk: acp.ContentChunk{
+					Content: &acp.TextContent{Text: "done"},
+				}},
+			}); err != nil {
+				return nil, err
+			}
+			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+		},
+		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	client, err := acp.NewClient(&acp.ClientConfig{
+		SessionUpdate: func(context.Context, *acp.SessionNotification) {},
+		RequestPermission: func(
+			context.Context,
+			*acp.RequestPermissionRequest,
+		) (*acp.RequestPermissionResponse, error) {
+			return nil, errors.New("this example asks for nothing")
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	go func() { _ = agent.Run(ctx, agentSide) }()
+
+	conn, err := client.Connect(ctx, watched)
+	if err != nil {
+		panic(err)
+	}
+
+	session, _, err := conn.NewSession(ctx, &acp.NewSessionRequest{Cwd: "/work"})
+	if err != nil {
+		panic(err)
+	}
+	if _, err := session.Prompt(ctx, &acp.PromptParams{}); err != nil {
+		panic(err)
+	}
+	if err := conn.Close(); err != nil {
+		panic(err)
+	}
+
+	// initialize, session/new and session/prompt out; three answers and one
+	// session/update back.
+	fmt.Println("written:", watched.written.Load(), "read:", watched.read.Load())
+
+	// Output:
+	// written: 3 read: 4
+}
+
+type countingTransport struct {
+	inner   acp.Transport
+	written atomic.Int64
+	read    atomic.Int64
+}
+
+func (t *countingTransport) Connect(ctx context.Context) (acp.Connection, error) {
+	stream, err := t.inner.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &countingConnection{inner: stream, transport: t}, nil
+}
+
+type countingConnection struct {
+	inner     acp.Connection
+	transport *countingTransport
+}
+
+func (c *countingConnection) Read(ctx context.Context) (jsonrpc.Message, error) {
+	message, err := c.inner.Read(ctx)
+	if err == nil {
+		c.transport.read.Add(1)
+	}
+	return message, err
+}
+
+// The counter is atomic because this is called from every goroutine that sends,
+// and delegating is what keeps the ctx.Err promise: a wrapper that substituted its
+// own error would tell the connection a partly written message was never
+// committed.
+func (c *countingConnection) Write(ctx context.Context, message jsonrpc.Message) error {
+	if err := c.inner.Write(ctx, message); err != nil {
+		return err
+	}
+	c.transport.written.Add(1)
+	return nil
+}
+
+func (c *countingConnection) Close() error { return c.inner.Close() }
