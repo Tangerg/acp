@@ -58,8 +58,8 @@ func planMethods(doc *Document, table *MethodTable) ([]*Method, error) {
 		return nil, fmt.Errorf("meta.json declares version %d, and only 1 is implemented", table.Version)
 	}
 
-	// The wire name is the identity; meta.json lists mcp/message under both
-	// directions, which is how the schema says either peer may send it.
+	// The wire name is the identity. A method listed under both directions is one
+	// method that either peer may send, not two that share a name.
 	byName := make(map[string]*Method)
 	sides := map[string][]string{sideNameAgent: nil, sideNameClient: nil, sideNameProtocol: nil}
 	for _, group := range []struct {
@@ -141,7 +141,8 @@ func finishMethod(method *Method, sides map[string][]string) error {
 
 	// Whether a method expects a response is not stated anywhere; it follows from
 	// which payloads exist. A method with a response payload is a request, one
-	// with a notification payload is a notification, and mcp/message has both.
+	// with a notification payload is a notification, and one the schema defines
+	// both ways is either.
 	var request, notification bool
 	for _, payload := range method.Payloads {
 		switch {
@@ -211,7 +212,7 @@ func emitMethods(methods []*Method, table *MethodTable) ([]byte, error) {
 	out.WriteString("type methodShape uint8\n\nconst (\n")
 	out.WriteString("\t// shapeRequest expects a response.\n\tshapeRequest methodShape = iota\n")
 	out.WriteString("\t// shapeNotification has none.\n\tshapeNotification\n")
-	out.WriteString("\t// shapeEither is defined both ways, which mcp/message is.\n\tshapeEither\n)\n\n")
+	out.WriteString("\t// shapeEither is defined both ways, so neither form contradicts the schema.\n\tshapeEither\n)\n\n")
 
 	out.WriteString("type methodDescriptor struct {\n\tside  methodSide\n\tshape methodShape\n}\n\n")
 

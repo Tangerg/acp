@@ -1,6 +1,9 @@
 package acp
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // What a connection will hold on a peer's behalf.
 //
@@ -27,26 +30,86 @@ import "errors"
 // running away from an application that cannot keep up, and neither is a condition
 // this side can recover from in place.
 const (
-	// maxQueuedDeliveries bounds the messages read but not yet delivered. It is
+	// defaultQueuedDeliveries bounds the messages read but not yet delivered. It is
 	// reached only when the delivery loop falls behind the read loop, which for a
 	// turn's session/update stream means an application handler slower than the
 	// agent producing it.
-	maxQueuedDeliveries = 1024
+	defaultQueuedDeliveries = 1024
 
-	// maxInflightRequests bounds the inbound calls being served at once. Each one
-	// holds a goroutine, a context and the right to answer, so this is the bound
+	// defaultInflightRequests bounds the inbound calls being served at once. Each
+	// one holds a goroutine, a context and the right to answer, so this is the bound
 	// on work a peer can start and never finish.
-	maxInflightRequests = 1024
+	defaultInflightRequests = 1024
 
-	// maxSessionsPerConnection bounds the session handles one connection caches.
+	// defaultSessionHandles bounds the session handles one connection caches.
 	//
 	// A ClientConn reclaims an entry when Close or DeleteSession succeeds. An
 	// AgentConn reclaims one only when it serves session/close, because its
 	// session/delete handler takes no handle and never names the cache. So a peer
 	// that opens a session per prompt and closes none grows this population until
 	// it ends the connection.
-	maxSessionsPerConnection = 1024
+	defaultSessionHandles = 1024
 )
+
+// Limits bounds what one connection will hold on a peer's behalf. The zero value
+// takes every default, and a zero field takes the default for that field.
+//
+// The defaults suit an application whose handlers return promptly. Raising a
+// bound is how an application that knows otherwise says so, and the field worth
+// raising is almost always QueuedDeliveries: it is the only one an honest peer
+// reaches, because a turn's session/update stream is produced by an agent and
+// consumed by a handler that may render it.
+//
+// Because a breach ends the connection, a bound set too low for the application
+// that chose it is a self-inflicted disconnection. This is why the field is here
+// rather than a constant: the package cannot know how fast a caller's handler
+// returns, and guessing on the caller's behalf is what a configuration field
+// exists to stop.
+type Limits struct {
+	// QueuedDeliveries bounds the messages read but not yet delivered, which is
+	// how far the delivery loop may fall behind the read loop.
+	QueuedDeliveries int
+
+	// InflightRequests bounds the inbound calls being served at once.
+	InflightRequests int
+
+	// SessionHandles bounds the session handles one connection caches.
+	SessionHandles int
+}
+
+// resolve substitutes the default for every field left zero.
+func (l Limits) resolve() Limits {
+	if l.QueuedDeliveries == 0 {
+		l.QueuedDeliveries = defaultQueuedDeliveries
+	}
+	if l.InflightRequests == 0 {
+		l.InflightRequests = defaultInflightRequests
+	}
+	if l.SessionHandles == 0 {
+		l.SessionHandles = defaultSessionHandles
+	}
+	return l
+}
+
+// check refuses a bound that cannot be served, at construction rather than on the
+// message that breaches it. A negative bound is unreachable arithmetic dressed as
+// a limit: every push would refuse and the first inbound message would end the
+// connection, which is a configuration error and not a peer's fault.
+func (l Limits) check() error {
+	for _, bound := range []struct {
+		name  string
+		value int
+	}{
+		{"QueuedDeliveries", l.QueuedDeliveries},
+		{"InflightRequests", l.InflightRequests},
+		{"SessionHandles", l.SessionHandles},
+	} {
+		if bound.value < 0 {
+			return fmt.Errorf("acp: Limits.%s is %d; a bound cannot be negative", bound.name, bound.value)
+		}
+	}
+	return nil
+}
 
 var (
 	errTooManyQueued   = errors.New("acp: inbound delivery queue limit exceeded")

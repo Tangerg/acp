@@ -32,7 +32,7 @@ func deepCopy[T any](value T) T {
 
 // A deepCopier copies itself, for types whose contents reflection cannot reach.
 //
-// [Opt] is the only one. Its three states live in unexported fields, which
+// [Opt] and [Meta] are the two. Their state lives in unexported fields, which
 // reflection may read and may not write, so the copy has to be made from inside
 // the type. Every generated struct's fields are exported, so nothing else needs
 // this — and a test holds that fact against the generated types.

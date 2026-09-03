@@ -18,6 +18,11 @@ import (
 // These are internal tests because a bound is reached by feeding the read loop
 // faster than anything drains it, which is a shape the public API exists to make
 // impossible.
+//
+// Each drives a bound configured small rather than the default. The accounting is
+// the same at either size, and stating the bound in the test is what makes it a
+// test of the configured value instead of a test that 1024 is 1024.
+const testBound = 8
 
 // A peer that outruns delivery ends the connection rather than growing a backlog
 // without limit.
@@ -28,7 +33,8 @@ func TestABacklogPastItsBoundEndsTheConnection(t *testing.T) {
 	held := make(chan struct{})
 	defer close(held)
 
-	stream, agentConn := connectRawAgent(t, blockingAgent(t, reached, held))
+	agent := blockingAgent(t, Limits{QueuedDeliveries: testBound}, reached, held)
+	stream, agentConn := connectRawAgent(t, agent)
 	defer agentConn.Close() //nolint:errcheck // idempotent.
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -42,7 +48,7 @@ func TestABacklogPastItsBoundEndsTheConnection(t *testing.T) {
 
 	// One past the bound, because the held notification has left the queue. A write
 	// may fail part-way through, which is the connection ending as intended.
-	for range maxQueuedDeliveries + 1 {
+	for range testBound + 1 {
 		if err := stream.Write(ctx, rawNotification(methodSessionCancel, `{"sessionId":"sess-1"}`)); err != nil {
 			break
 		}
@@ -56,12 +62,12 @@ func TestABacklogPastItsBoundEndsTheConnection(t *testing.T) {
 // a reused identifier takes, which TestReusingAnActiveRequestIDEndsTheConnection
 // proves end to end.
 //
-// The bound itself is checked here rather than over the wire because it is the
-// same size as the delivery bound: a wire test would race whichever filled first.
+// The bound itself is checked here rather than over the wire because filling it
+// over the wire would race the delivery bound.
 func TestTooManyInflightRequestsIsRefused(t *testing.T) {
-	conn := newTestAgentConn()
+	conn := newTestAgentConnWith(Limits{InflightRequests: testBound})
 
-	for id := range maxInflightRequests {
+	for id := range testBound {
 		_, cancel := context.WithCancel(context.Background())
 		if err := conn.requests.accept(jsonrpcTestID(id), cancel); err != nil {
 			t.Fatalf("request %d was refused below the bound: %v", id, err)
@@ -69,7 +75,7 @@ func TestTooManyInflightRequestsIsRefused(t *testing.T) {
 	}
 
 	_, cancel := context.WithCancel(context.Background())
-	err := conn.requests.accept(jsonrpcTestID(maxInflightRequests), cancel)
+	err := conn.requests.accept(jsonrpcTestID(testBound), cancel)
 	if !errors.Is(err, errTooManyInflight) {
 		t.Fatalf("the request past the bound was answered %v, want the in-flight bound", err)
 	}
@@ -77,7 +83,7 @@ func TestTooManyInflightRequestsIsRefused(t *testing.T) {
 	// And finishing one makes room, so a peer that keeps up is never refused.
 	conn.requests.release(jsonrpcTestID(0))
 	_, cancel = context.WithCancel(context.Background())
-	if err := conn.requests.accept(jsonrpcTestID(maxInflightRequests), cancel); err != nil {
+	if err := conn.requests.accept(jsonrpcTestID(testBound), cancel); err != nil {
 		t.Fatalf("a request was refused after one finished: %v", err)
 	}
 }
@@ -89,10 +95,11 @@ func TestTooManyInflightRequestsIsRefused(t *testing.T) {
 func TestTooManySessionsEndsTheConnection(t *testing.T) {
 	// A real transport, because this bound ends the connection and ending one
 	// closes what it was reading.
-	_, conn := connectRawAgent(t, blockingAgent(t, make(chan struct{}), make(chan struct{})))
+	agent := blockingAgent(t, Limits{SessionHandles: testBound}, make(chan struct{}), make(chan struct{}))
+	_, conn := connectRawAgent(t, agent)
 
 	var last *AgentSession
-	for index := range maxSessionsPerConnection + 1 {
+	for index := range testBound + 1 {
 		last = conn.session(SessionID(fmt.Sprintf("sess-%d", index)))
 	}
 
@@ -112,10 +119,11 @@ func TestTooManySessionsEndsTheConnection(t *testing.T) {
 // A handle already minted is returned again rather than counted again, so a peer
 // reusing its sessions never approaches the bound.
 func TestRepeatingASessionDoesNotConsumeTheBound(t *testing.T) {
-	_, conn := connectRawAgent(t, blockingAgent(t, make(chan struct{}), make(chan struct{})))
+	agent := blockingAgent(t, Limits{SessionHandles: testBound}, make(chan struct{}), make(chan struct{}))
+	_, conn := connectRawAgent(t, agent)
 
 	first := conn.session("sess-1")
-	for range maxSessionsPerConnection * 2 {
+	for range testBound * 2 {
 		if again := conn.session("sess-1"); again != first {
 			t.Fatal("one identifier produced two handles, so the one-prompt rule holds for neither")
 		}
@@ -125,11 +133,67 @@ func TestRepeatingASessionDoesNotConsumeTheBound(t *testing.T) {
 	}
 }
 
+// A zero field takes the default for that field, so raising one bound does not
+// silently drop the other two to nothing.
+func TestAZeroLimitTakesItsDefault(t *testing.T) {
+	resolved := Limits{QueuedDeliveries: 7}.resolve()
+
+	if resolved.QueuedDeliveries != 7 {
+		t.Fatalf("QueuedDeliveries resolved to %d, want the stated 7", resolved.QueuedDeliveries)
+	}
+	if resolved.InflightRequests != defaultInflightRequests {
+		t.Fatalf("InflightRequests resolved to %d, want the default %d",
+			resolved.InflightRequests, defaultInflightRequests)
+	}
+	if resolved.SessionHandles != defaultSessionHandles {
+		t.Fatalf("SessionHandles resolved to %d, want the default %d",
+			resolved.SessionHandles, defaultSessionHandles)
+	}
+
+	// And the connection reads the resolved value, so the bound in an error message
+	// is the effective one rather than the field the caller left zero.
+	conn := newTestAgentConnWith(Limits{})
+	if conn.limits.QueuedDeliveries != defaultQueuedDeliveries {
+		t.Fatalf("the link holds bound %d, want the resolved default %d",
+			conn.limits.QueuedDeliveries, defaultQueuedDeliveries)
+	}
+}
+
+// A negative bound is refused where it is stated, not on the message that would
+// breach it: every push would refuse, and the first inbound message would end the
+// connection for what is a configuration error rather than a peer's fault.
+func TestANegativeLimitIsRefusedAtConstruction(t *testing.T) {
+	_, clientErr := NewClient(&ClientConfig{
+		SessionUpdate: func(context.Context, *SessionNotification) {},
+		RequestPermission: func(context.Context, *RequestPermissionRequest) (*RequestPermissionResponse, error) {
+			return &RequestPermissionResponse{}, nil
+		},
+		Limits: Limits{QueuedDeliveries: -1},
+	})
+	if clientErr == nil {
+		t.Fatal("NewClient accepted a negative bound")
+	}
+
+	_, agentErr := NewAgent(&AgentConfig{
+		NewSession: func(context.Context, *NewSessionRequest) (*NewSessionResponse, error) {
+			return &NewSessionResponse{}, nil
+		},
+		Prompt: func(context.Context, *AgentSession, *PromptRequest) (*PromptResponse, error) {
+			return &PromptResponse{}, nil
+		},
+		Cancel: func(context.Context, *AgentSession, *CancelNotification) {},
+		Limits: Limits{SessionHandles: -1},
+	})
+	if agentErr == nil {
+		t.Fatal("NewAgent accepted a negative bound")
+	}
+}
+
 func jsonrpcTestID(n int) jsonrpc.ID { return jsonrpc2.Int64ID(int64(n)) }
 
 // blockingAgent serves nothing: the first handler to run reports that it arrived
 // and then waits, which is how a test gets a peer that outruns this side.
-func blockingAgent(t *testing.T, reached chan<- struct{}, held <-chan struct{}) *Agent {
+func blockingAgent(t *testing.T, limits Limits, reached chan<- struct{}, held <-chan struct{}) *Agent {
 	t.Helper()
 
 	var once sync.Once
@@ -138,6 +202,7 @@ func blockingAgent(t *testing.T, reached chan<- struct{}, held <-chan struct{}) 
 		<-held
 	}
 	agent, err := NewAgent(&AgentConfig{
+		Limits: limits,
 		NewSession: func(context.Context, *NewSessionRequest) (*NewSessionResponse, error) {
 			arrive()
 			return &NewSessionResponse{SessionID: "sess-1"}, nil

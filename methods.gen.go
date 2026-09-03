@@ -62,7 +62,7 @@ const (
 	shapeRequest methodShape = iota
 	// shapeNotification has none.
 	shapeNotification
-	// shapeEither is defined both ways, which mcp/message is.
+	// shapeEither is defined both ways, so neither form contradicts the schema.
 	shapeEither
 )
 

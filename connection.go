@@ -48,7 +48,7 @@ func (c *connection) Wait() error { return c.wait() }
 // The handle already minted is still honoured, so that whatever is mid-flight
 // fails on the connection ending rather than on a nil pointer.
 func (c *connection) tooManySessions() {
-	c.endReading(fmt.Errorf("%w (limit %d)", errTooManySessions, maxSessionsPerConnection))
+	c.endReading(fmt.Errorf("%w (limit %d)", errTooManySessions, c.limits.SessionHandles))
 }
 
 // handshake owns the transition from an unopened connection to an accepted and
@@ -245,7 +245,7 @@ type sessions[Handle any] struct {
 // The handle is real whether or not the bound was breached: the caller is mid-way
 // through serving something and needs one, so a false only says the connection
 // must now end.
-func (s *sessions[Handle]) lookup(id SessionID, open func(SessionID) *Handle) (*Handle, bool) {
+func (s *sessions[Handle]) lookup(id SessionID, limit int, open func(SessionID) *Handle) (*Handle, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.byID == nil {
@@ -255,7 +255,7 @@ func (s *sessions[Handle]) lookup(id SessionID, open func(SessionID) *Handle) (*
 		return existing, true
 	}
 	handle := open(id)
-	if len(s.byID) >= maxSessionsPerConnection {
+	if len(s.byID) >= limit {
 		return handle, false
 	}
 	s.byID[id] = handle

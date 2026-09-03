@@ -411,7 +411,7 @@ func (c *ClientConn) checkSessionSetup(cwd string, servers []McpServer, director
 }
 
 func (c *ClientConn) session(id SessionID) *ClientSession {
-	handle, within := c.sessions.lookup(id, func(id SessionID) *ClientSession {
+	handle, within := c.sessions.lookup(id, c.limits.SessionHandles, func(id SessionID) *ClientSession {
 		return &ClientSession{id: id, conn: c}
 	})
 	if !within {
@@ -493,7 +493,7 @@ func (s *AgentSession) RequestPermission(
 }
 
 func (c *AgentConn) session(id SessionID) *AgentSession {
-	handle, within := c.sessions.lookup(id, func(id SessionID) *AgentSession {
+	handle, within := c.sessions.lookup(id, c.limits.SessionHandles, func(id SessionID) *AgentSession {
 		return &AgentSession{id: id, conn: c}
 	})
 	if !within {

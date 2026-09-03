@@ -228,15 +228,17 @@ const promptParams = `{"sessionId":"sess-1","prompt":[]}`
 
 // The two connections these tests drive directly: a link with no transport, which
 // is enough for registration and turn state and nothing that would need a peer.
-func newTestAgentConn() *AgentConn {
+func newTestAgentConn() *AgentConn { return newTestAgentConnWith(Limits{}) }
+
+func newTestAgentConnWith(limits Limits) *AgentConn {
 	conn := &AgentConn{connection: newConnection()}
-	conn.link = newLink(nil, conn, nil)
+	conn.link = newLink(nil, conn, nil, limits)
 	return conn
 }
 
 func newTestClientConn() *ClientConn {
 	conn := &ClientConn{connection: newConnection()}
-	conn.link = newLink(nil, conn, nil)
+	conn.link = newLink(nil, conn, nil, Limits{})
 	return conn
 }
 

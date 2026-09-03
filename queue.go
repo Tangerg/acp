@@ -39,6 +39,7 @@ type queue struct {
 	mu      sync.Mutex
 	pending []delivery
 	wake    chan struct{}
+	limit   int
 }
 
 // delivery carries the request context created while the read side was alive.
@@ -49,8 +50,8 @@ type delivery struct {
 	ctx     context.Context //nolint:containedctx // created at read time so drained calls start cancelled.
 }
 
-func newQueue() *queue {
-	return &queue{wake: make(chan struct{}, 1)}
+func newQueue(limit int) *queue {
+	return &queue{wake: make(chan struct{}, 1), limit: limit}
 }
 
 func (q *queue) push(message jsonrpc.Message) bool {
@@ -64,7 +65,7 @@ func (q *queue) pushCall(ctx context.Context, message *jsonrpc.Request) bool {
 // A refusal is the connection's to act on: a queue does not know how to end one.
 func (q *queue) pushDelivery(pending delivery) bool {
 	q.mu.Lock()
-	if len(q.pending) >= maxQueuedDeliveries {
+	if len(q.pending) >= q.limit {
 		q.mu.Unlock()
 		return false
 	}

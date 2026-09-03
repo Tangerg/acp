@@ -42,6 +42,8 @@ var handWritten = map[string]string{
 	"AgentConfig":  "agent.go — construction settings, mirroring ClientConfig in structure and not in content",
 	"AgentConn":    "agent.go — one logical connection, which has no session-creating methods",
 	"NewAgent":     "agent.go — construction, which fails without the baseline handlers",
+	"Limits": "limits.go — what one connection will hold on a peer's behalf, which the schema " +
+		"does not bound because it describes messages rather than the process serving them",
 
 	// The conversation, seen from each side. The schema has a session identifier;
 	// a handle that binds it is this package's.

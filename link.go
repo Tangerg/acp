@@ -80,27 +80,33 @@ type link struct {
 	side      side
 	logger    *slog.Logger
 
+	// limits is resolved, so every bound read from here is the effective one and
+	// no reader has to remember which fields meant "take the default".
+	limits Limits
+
 	life     *lifetime
 	calls    *calls
 	requests *requests
 	queue    *queue
 }
 
-func newLink(transport Connection, half side, logger *slog.Logger) *link {
+func newLink(transport Connection, half side, logger *slog.Logger, limits Limits) *link {
 	if logger == nil {
 		// nil means discard, and never "log somewhere sensible": an agent's stdout
 		// is the protocol stream, so a well-meant default logger would corrupt
 		// every connection it was supposed to help debug.
 		logger = slog.New(slog.DiscardHandler)
 	}
+	limits = limits.resolve()
 	return &link{
 		transport: transport,
 		side:      half,
 		logger:    logger,
+		limits:    limits,
 		life:      newLifetime(),
 		calls:     newCalls(),
-		requests:  newRequests(),
-		queue:     newQueue(),
+		requests:  newRequests(limits.InflightRequests),
+		queue:     newQueue(limits.QueuedDeliveries),
 	}
 }
 
@@ -177,7 +183,7 @@ func (l *link) admit(request *jsonrpc.Request) bool {
 // See limits.go for why a full backlog ends the connection instead of applying
 // backpressure.
 func (l *link) overflowed() {
-	l.endReading(fmt.Errorf("%w (limit %d)", errTooManyQueued, maxQueuedDeliveries))
+	l.endReading(fmt.Errorf("%w (limit %d)", errTooManyQueued, l.limits.QueuedDeliveries))
 }
 
 // deliverLoop owns the moment the connection becomes observably over: it is the

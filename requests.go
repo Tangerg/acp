@@ -19,6 +19,7 @@ import (
 type requests struct {
 	mu      sync.Mutex
 	serving map[jsonrpc.ID]*inboundRequest
+	limit   int
 }
 
 // inboundRequest keeps the right to answer and the work it controls together.
@@ -35,8 +36,8 @@ type requestClaim struct {
 	cancelled bool
 }
 
-func newRequests() *requests {
-	return &requests{serving: make(map[jsonrpc.ID]*inboundRequest)}
+func newRequests(limit int) *requests {
+	return &requests{serving: make(map[jsonrpc.ID]*inboundRequest), limit: limit}
 }
 
 // Both refusals are terminal: an answer written under a reused identifier would
@@ -49,9 +50,9 @@ func (r *requests) accept(id jsonrpc.ID, cancel context.CancelFunc) error {
 		cancel()
 		return fmt.Errorf("acp: the peer reused active request id %v", id.Raw())
 	}
-	if len(r.serving) >= maxInflightRequests {
+	if len(r.serving) >= r.limit {
 		cancel()
-		return fmt.Errorf("%w (limit %d)", errTooManyInflight, maxInflightRequests)
+		return fmt.Errorf("%w (limit %d)", errTooManyInflight, r.limit)
 	}
 	r.serving[id] = &inboundRequest{cancel: cancel, settled: make(chan struct{})}
 	return nil

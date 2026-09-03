@@ -94,6 +94,10 @@ type AgentConfig struct {
 	// inferred from the client callbacks an agent happens to be able to make: what
 	// an agent advertises is what it implements. See [ClientConfig.Capabilities].
 	Capabilities *AgentCapabilities
+
+	// Limits bounds what each of this agent's connections will hold on a client's
+	// behalf. The zero value takes every default; see [Limits].
+	Limits Limits
 }
 
 // An Agent owns the model-facing handlers and capabilities shared by its
@@ -122,6 +126,9 @@ func NewAgent(config *AgentConfig) (*Agent, error) {
 	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("acp: AgentConfig is missing required handlers: %v", missing)
+	}
+	if err := config.Limits.check(); err != nil {
+		return nil, err
 	}
 	capabilities, err := config.resolveCapabilities()
 	if err != nil {
@@ -246,7 +253,7 @@ func (a *Agent) Connect(ctx context.Context, transport Transport) (*AgentConn, e
 	}
 
 	conn := &AgentConn{connection: newConnection(), agent: a}
-	conn.link = newLink(stream, conn, a.config.Logger)
+	conn.link = newLink(stream, conn, a.config.Logger, a.config.Limits)
 	conn.run()
 
 	a.conns.add(conn)

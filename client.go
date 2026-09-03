@@ -66,6 +66,11 @@ type ClientConfig struct {
 	// need to distinguish "set to false" from "not set", and a scalar boolean has
 	// no third state to express that.
 	Capabilities *ClientCapabilities
+
+	// Limits bounds what each of this client's connections will hold on an agent's
+	// behalf. The zero value takes every default; see [Limits] for which bound a
+	// slow SessionUpdate handler is the one to raise.
+	Limits Limits
 }
 
 // TerminalHandlers is the complete terminal capability. When non-nil, all five
@@ -102,6 +107,9 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		return nil, errors.New("acp: ClientConfig.RequestPermission is required")
 	}
 	if err := config.Terminal.check(); err != nil {
+		return nil, err
+	}
+	if err := config.Limits.check(); err != nil {
 		return nil, err
 	}
 
@@ -218,7 +226,7 @@ func (c *Client) Connect(ctx context.Context, transport Transport) (*ClientConn,
 	}
 
 	conn := &ClientConn{connection: newConnection(), client: c}
-	conn.link = newLink(stream, conn, c.config.Logger)
+	conn.link = newLink(stream, conn, c.config.Logger, c.config.Limits)
 	conn.run()
 
 	if err := conn.initialize(ctx); err != nil {
