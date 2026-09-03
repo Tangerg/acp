@@ -65,8 +65,9 @@
 //
 // # What is served
 //
-// The package serves every method in the pinned schema except elicitation/create
-// and elicitation/complete. It rejects those methods with method-not-found.
+// The package serves every method in the pinned schema. A method a later schema
+// adds is refused with method-not-found until it is served, rather than being
+// absent from the capability gate.
 //
 // # The wire types are generated
 //

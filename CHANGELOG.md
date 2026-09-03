@@ -8,6 +8,24 @@ migration instructions.
 
 ### Added
 
+- **Elicitation**: `elicitation/create` and `elicitation/complete` are served, so
+  the SDK now covers all 25 methods in the pinned schema.
+
+  A client sets `ClientConfig.Elicitation` to an `ElicitationHandlers` whose
+  `Form` and `URL` fields each advertise the mode they serve. Both modes arrive
+  through one method, so a mode with no handler is refused with invalid-params
+  rather than method-not-found. `Complete` is required alongside `URL` and
+  refused without it.
+
+  An agent calls `AgentSession.CreateElicitation` to elicit within a session, or
+  `AgentConn.CreateElicitation` to elicit within the request it is serving.
+  The scope is the operation's and is never named by the caller —
+  `ElicitationRequestScope` is not exported, because it holds a JSON-RPC request
+  identifier and this API does not surface those.
+
+  A client that advertised elicitation before this release was refused at
+  construction; it is now accepted when the handlers back it.
+
 - **`Limits`**: `ClientConfig.Limits` and `AgentConfig.Limits` bound what one
   connection will hold on a peer's behalf — the delivery backlog, the inbound
   calls in flight, and the cached session handles. A zero field takes the default
@@ -19,6 +37,14 @@ migration instructions.
   reaches: a turn's `session/update` stream is produced by an agent and consumed
   by a `SessionUpdate` handler that may render it, and because a breach ends the
   connection, an application whose handler is slow now has somewhere to say so.
+
+### Fixed
+
+- **A map whose values are a union did not survive the wire.** The discriminant
+  belongs to the union rather than to the arm, and such a map was going to
+  `encoding/json`: it encoded without the discriminant and could not be decoded at
+  all. The schema's only such property is `ElicitationSchema.properties`, so
+  nothing reached it until elicitation was served.
 
 ### Changed
 

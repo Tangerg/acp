@@ -163,7 +163,7 @@ twice.
 
 ## Protocol coverage
 
-The SDK serves 23 of the 25 methods in the pinned schema:
+The SDK serves all 25 methods in the pinned schema:
 
 - **Connection and authentication**: `initialize`, `authenticate`, `logout`, and
   `$/cancel_request`
@@ -173,12 +173,14 @@ The SDK serves 23 of the 25 methods in the pinned schema:
   `session/update`, and `session/request_permission`
 - **Workspace**: `fs/read_text_file`, `fs/write_text_file`, and all five
   `terminal/*` methods
+- **Elicitation**: `elicitation/create` and `elicitation/complete`
 
-`elicitation/create` and `elicitation/complete` are not implemented. The SDK
-answers either call with method-not-found and rejects an advertisement that
-claims elicitation support. Elicitation needs its own state machine because URL
-mode completes asynchronously and form mode carries a JSON Schema for the client
-to render.
+Elicitation is one feature rather than two methods. A client sets
+`ElicitationHandlers.Form`, `ElicitationHandlers.URL`, or both, and each field
+advertises the mode it serves; a mode with no handler is refused with
+invalid-params. An agent names the mode and never the scope:
+`AgentSession.CreateElicitation` elicits within its session, and
+`AgentConn.CreateElicitation` elicits within the request being served.
 
 ## Project status
 

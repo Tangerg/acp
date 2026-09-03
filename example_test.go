@@ -578,3 +578,116 @@ func ExampleMeta() {
 	// present: true trace: abc123
 	// {"prompt":[{"type":"text","text":"hello"}],"_meta":{"example.com/trace":"abc123"}}
 }
+
+// Elicitation is the agent asking the user for structured input. The client
+// renders it; the agent names the mode and never the scope, because the operation
+// it called has already decided one.
+func ExampleAgentSession_CreateElicitation() {
+	ctx := context.Background()
+
+	client, err := acp.NewClient(&acp.ClientConfig{
+		SessionUpdate: func(context.Context, *acp.SessionNotification) {},
+		RequestPermission: func(
+			context.Context,
+			*acp.RequestPermissionRequest,
+		) (*acp.RequestPermissionResponse, error) {
+			return nil, errors.New("this example asks for nothing")
+		},
+
+		// Setting Form advertises clientCapabilities.elicitation.form and nothing
+		// else. An agent asking for a URL elicitation is refused before it is sent,
+		// because this client never said it could show a page.
+		Elicitation: &acp.ElicitationHandlers{
+			Form: func(
+				_ context.Context,
+				request *acp.CreateElicitationRequest,
+				mode *acp.ElicitationFormMode,
+			) (*acp.CreateElicitationResponse, error) {
+				fmt.Println("asking:", request.Message)
+				if scope, ok := mode.Value.(*acp.ElicitationFormModeSession); ok {
+					fmt.Println("within session:", scope.SessionID)
+				}
+				for name := range mode.RequestedSchema.Properties {
+					fmt.Println("field:", name)
+				}
+				// A real client renders the schema and waits. The three actions are
+				// accept, decline and cancel.
+				answer := acp.ElicitationContentValueString("main")
+				return &acp.CreateElicitationResponse{
+					Value: &acp.ElicitationAcceptAction{
+						Content: acp.OptValue(map[string]acp.ElicitationContentValue{
+							"branch": &answer,
+						}),
+					},
+				}, nil
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	agent, err := acp.NewAgent(&acp.AgentConfig{
+		NewSession: func(context.Context, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+			return &acp.NewSessionResponse{SessionID: "session-1"}, nil
+		},
+		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
+		Prompt: func(
+			ctx context.Context,
+			session *acp.AgentSession,
+			_ *acp.PromptRequest,
+		) (*acp.PromptResponse, error) {
+			// No scope here: this session is the scope, and CreateElicitation fills
+			// it in. ToolCallID would tie it to one tool call within the session.
+			answer, elicitErr := session.CreateElicitation(ctx, &acp.CreateElicitationParams{
+				Message: "which branch should I push to?",
+				Mode: &acp.ElicitationFormMode{
+					RequestedSchema: acp.ElicitationSchema{
+						Type: acp.ElicitationSchemaTypeObject,
+						Properties: map[string]acp.ElicitationPropertySchema{
+							"branch": &acp.StringPropertySchema{},
+						},
+					},
+				},
+			})
+			if elicitErr != nil {
+				return nil, elicitErr
+			}
+			if accepted, ok := answer.Value.(*acp.ElicitationAcceptAction); ok {
+				content, _ := accepted.Content.Get()
+				if branch, ok := content["branch"].(*acp.ElicitationContentValueString); ok {
+					fmt.Println("the user chose:", string(*branch))
+				}
+			}
+			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	clientSide, agentSide := acp.NewInMemoryTransports()
+	go func() { _ = agent.Run(ctx, agentSide) }()
+
+	conn, err := client.Connect(ctx, clientSide)
+	if err != nil {
+		panic(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	session, _, err := conn.NewSession(ctx, &acp.NewSessionRequest{Cwd: "/work"})
+	if err != nil {
+		panic(err)
+	}
+	if _, err := session.Prompt(ctx, &acp.PromptParams{
+		Prompt: []acp.ContentBlock{&acp.TextContent{Text: "push my work"}},
+	}); err != nil {
+		panic(err)
+	}
+
+	// Output:
+	// asking: which branch should I push to?
+	// within session: session-1
+	// field: branch
+	// the user chose: main
+}
