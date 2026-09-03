@@ -45,6 +45,14 @@ migration instructions.
 
 ### Fixed
 
+- **A custom elicitation mode was accepted without a scope.** Each mode carries a
+  scope union — a session or a request — and the catch-all arm carries it too. The
+  generator read a catch-all arm's declared properties and ignored the arm's own
+  alternatives, so this package accepted a message the published schema rejects
+  and handed an application an elicitation belonging to nothing. The alternatives
+  are now enforced by the same `validate` that already checks the arm's `not`
+  clause, in both directions.
+
 - **A map whose values are a union did not survive the wire.** The discriminant
   belongs to the union rather than to the arm, and such a map was going to
   `encoding/json`: it encoded without the discriminant and could not be decoded at

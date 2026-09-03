@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -271,6 +272,81 @@ func TestAUnionMustReachItsGeneratedCodec(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "no generated codec") {
 				t.Fatalf("refused with %q, which does not say the codec is missing", err)
+			}
+		})
+	}
+}
+
+// A catch-all arm may itself be a union, and reading its alternatives is only
+// possible for the shapes below. Anything else stops generation rather than being
+// dropped, which is what the elicitation modes were: the arm carried a scope union
+// the generator did not see, so this package accepted messages the published
+// schema rejects.
+func TestACatchAllArmsAlternativesAreReadOrRefused(t *testing.T) {
+	planner := newPlanner(loadSchema(t))
+	if err := planner.allocate(); err != nil {
+		t.Fatalf("allocate: %v", err)
+	}
+	// The arm declares its discriminant and nothing else, which is what a
+	// catch-all is.
+	def := &Def{GoName: "Other", Fields: []*Field{{JSONName: "mode"}}}
+
+	t.Run("the elicitation scopes", func(t *testing.T) {
+		var arm Schema
+		if err := arm.UnmarshalJSON([]byte(`{"anyOf":[
+			{"allOf":[{"$ref":"#/$defs/ElicitationSessionScope"}]},
+			{"allOf":[{"$ref":"#/$defs/ElicitationRequestScope"}]}
+		]}`)); err != nil {
+			t.Fatalf("the case's own schema does not parse: %v", err)
+		}
+		groups, err := planner.catchAllRequiredGroups(&arm, def)
+		if err != nil {
+			t.Fatalf("catchAllRequiredGroups: %v", err)
+		}
+		want := [][]string{{"sessionId"}, {"requestId"}}
+		if !reflect.DeepEqual(groups, want) {
+			t.Fatalf("read %v, want %v", groups, want)
+		}
+	})
+
+	t.Run("an arm that is not a union", func(t *testing.T) {
+		var arm Schema
+		if err := arm.UnmarshalJSON([]byte(`{"type":"object"}`)); err != nil {
+			t.Fatalf("the case's own schema does not parse: %v", err)
+		}
+		groups, err := planner.catchAllRequiredGroups(&arm, def)
+		if err != nil || groups != nil {
+			t.Fatalf("read %v, %v; an arm with no alternatives constrains nothing", groups, err)
+		}
+	})
+
+	refusals := map[string]struct{ schema, wants string }{
+		"an alternative that is not a single $ref": {
+			schema: `{"anyOf":[{"type":"object","properties":{"a":{"type":"string"}}}]}`,
+			wants:  "not a single $ref",
+		},
+		"an alternative requiring nothing": {
+			schema: `{"anyOf":[{"allOf":[{"$ref":"#/$defs/ElicitationAcceptAction"}]}]}`,
+			wants:  "requires no property",
+		},
+		"an alternative requiring a property the arm declares": {
+			schema: `{"anyOf":[{"allOf":[{"$ref":"#/$defs/CompleteElicitationNotification"}]}]}`,
+			wants:  "which the arm declares itself",
+		},
+	}
+	for name, test := range refusals {
+		t.Run(name, func(t *testing.T) {
+			var arm Schema
+			if err := arm.UnmarshalJSON([]byte(test.schema)); err != nil {
+				t.Fatalf("the case's own schema does not parse: %v", err)
+			}
+			declaring := &Def{GoName: "Other", Fields: []*Field{{JSONName: "elicitationId"}}}
+			_, err := planner.catchAllRequiredGroups(&arm, declaring)
+			if err == nil {
+				t.Fatal("the shape was accepted; if it is implemented now, move this case above")
+			}
+			if !strings.Contains(err.Error(), test.wants) {
+				t.Fatalf("refused with %q, which does not mention %q", err, test.wants)
 			}
 		})
 	}

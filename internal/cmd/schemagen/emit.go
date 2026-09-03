@@ -708,12 +708,22 @@ func (e *emitter) encodeExpr(field *Field) string {
 }
 
 func (e *emitter) retainedValidate(def *Def) {
-	e.printf("%s", comment("", []string{
+	doc := []string{
 		"validate enforces the `not` clause of the catch-all arm: the discriminant",
 		"values the known arms claim are reserved, and a value carrying one is a",
 		"malformed known arm rather than a custom one. Both the decoder and the",
 		"encoder check it, so the rule holds in each direction.",
-	}))
+	}
+	if len(def.RequiredGroups) > 0 {
+		doc = append(doc, "",
+			"It also enforces the alternatives this arm is itself a union of. A custom",
+			"value is not anything that is not a known arm: the arm has a schema of its",
+			"own, and a value has to satisfy one of its alternatives to be one. The",
+			"properties they require are retained rather than declared, so the check",
+			"reads Extra.")
+	}
+	e.printf("%s", comment("", doc))
+
 	e.printf("func (x *%s) validate() error {\n", def.GoName)
 	reserved := make([]string, len(def.ReservedTags))
 	for i, tag := range def.ReservedTags {
@@ -723,5 +733,23 @@ func (e *emitter) retainedValidate(def *Def) {
 	e.printf("\t\treturn wire.At(%q, fmt.Errorf(\n", def.TagProperty)
 	e.printf("\t\t\t\"acp: %%q is reserved by a known arm, but the value does not match that arm\", x.%s))\n",
 		goName(def.TagProperty))
-	e.printf("\t}\n\treturn nil\n}\n\n")
+	e.printf("\t}\n")
+
+	if len(def.RequiredGroups) > 0 {
+		groups := make([]string, len(def.RequiredGroups))
+		for i, group := range def.RequiredGroups {
+			quoted := make([]string, len(group))
+			for j, name := range group {
+				quoted[j] = strconv.Quote(name)
+			}
+			groups[i] = "{" + strings.Join(quoted, ", ") + "}"
+		}
+		e.printf("\tif !wire.SatisfiesOneGroup(x.Extra, [][]string{%s}) {\n", strings.Join(groups, ", "))
+		e.printf("\t\treturn fmt.Errorf(\n")
+		e.printf("\t\t\t\"acp: a %s satisfies none of the alternatives its arm is a union of: %%v\",\n", def.GoName)
+		e.printf("\t\t\t[][]string{%s})\n", strings.Join(groups, ", "))
+		e.printf("\t}\n")
+	}
+
+	e.printf("\treturn nil\n}\n\n")
 }

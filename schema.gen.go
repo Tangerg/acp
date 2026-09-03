@@ -2217,10 +2217,21 @@ func (x CreateElicitationRequestOther) MarshalJSON() ([]byte, error) {
 // values the known arms claim are reserved, and a value carrying one is a
 // malformed known arm rather than a custom one. Both the decoder and the
 // encoder check it, so the rule holds in each direction.
+//
+// It also enforces the alternatives this arm is itself a union of. A custom
+// value is not anything that is not a known arm: the arm has a schema of its
+// own, and a value has to satisfy one of its alternatives to be one. The
+// properties they require are retained rather than declared, so the check
+// reads Extra.
 func (x *CreateElicitationRequestOther) validate() error {
 	if slices.Contains([]string{"form", "url"}, x.Mode) {
 		return wire.At("mode", fmt.Errorf(
 			"acp: %q is reserved by a known arm, but the value does not match that arm", x.Mode))
+	}
+	if !wire.SatisfiesOneGroup(x.Extra, [][]string{{"sessionId"}, {"requestId"}}) {
+		return fmt.Errorf(
+			"acp: a CreateElicitationRequestOther satisfies none of the alternatives its arm is a union of: %v",
+			[][]string{{"sessionId"}, {"requestId"}})
 	}
 	return nil
 }

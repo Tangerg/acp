@@ -239,3 +239,33 @@ func describe(data []byte) string {
 		return "invalid JSON"
 	}
 }
+
+// SatisfiesOneGroup reports whether the retained properties satisfy at least one
+// of the alternatives a catch-all arm is a union of.
+//
+// A catch-all arm is not everything that is not a known arm. It has a schema of
+// its own, and when that schema is a union — the elicitation modes each carry a
+// scope union, and the custom mode carries it too — a value belongs to the arm
+// only if it satisfies one alternative. The alternatives are told apart by which
+// properties they require, and those are retained rather than declared, so this
+// reads the map the arm kept them in.
+//
+// No groups means the arm is not a union and every value satisfies it.
+func SatisfiesOneGroup(extra map[string]json.RawMessage, groups [][]string) bool {
+	if len(groups) == 0 {
+		return true
+	}
+	for _, group := range groups {
+		satisfied := true
+		for _, name := range group {
+			if _, present := extra[name]; !present {
+				satisfied = false
+				break
+			}
+		}
+		if satisfied {
+			return true
+		}
+	}
+	return false
+}

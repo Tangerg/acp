@@ -65,6 +65,16 @@ type Def struct {
 	// schema does not declare. The schema gives such an arm additionalProperties,
 	// so those keys are a vendor's payload and have to survive.
 	Retained bool
+	// RequiredGroups are the alternatives a catch-all arm is itself a union of,
+	// each as the set of properties that alternative requires. A value matches the
+	// arm only if it satisfies one of them.
+	//
+	// The elicitation modes are the case: each carries a scope union, and the
+	// catch-all carries it too, so a custom mode still has to say whether it
+	// belongs to a session or to a request. Without this the catch-all would match
+	// a message the schema does not, which is the arm accepting more than it was
+	// given rather than preserving what it was.
+	RequiredGroups [][]string
 	// ReservedTags are the discriminant values known arms claim. A catch-all arm
 	// whose tag is one of them is the malformed known arm the `not` clause
 	// excludes, not a custom one.
@@ -1242,7 +1252,65 @@ func (p *planner) planCatchAllArm(goType string, arm *Schema, union *Def, reserv
 	if len(def.Fields) == 0 {
 		return nil, errors.New("a catch-all arm with no declared discriminant property")
 	}
+
+	groups, err := p.catchAllRequiredGroups(arm, def)
+	if err != nil {
+		return nil, err
+	}
+	def.RequiredGroups = groups
 	return def, nil
+}
+
+// catchAllRequiredGroups reads the alternatives a catch-all arm is itself a union
+// of, as the property set each one requires.
+//
+// A catch-all arm is not "anything that is not a known arm". It is an arm with a
+// schema of its own, and when that schema is a union the value has to satisfy one
+// of its alternatives. Ignoring that would make this package accept messages the
+// published schema rejects — which is not leniency in the decoder's sense, where
+// a malformed optional property recovers to its default. It is a message this
+// package would hand an application after the schema said it was not one.
+//
+// The check is expressible only because the alternatives are distinguished by
+// which properties they require, and those properties are never ones the arm
+// declares. Both facts are asserted rather than assumed: a shape this cannot
+// express stops generation instead of being dropped.
+func (p *planner) catchAllRequiredGroups(arm *Schema, def *Def) ([][]string, error) {
+	alternatives := arm.Arms()
+	if len(alternatives) == 0 {
+		return nil, nil
+	}
+
+	declared := make(map[string]bool, len(def.Fields))
+	for _, field := range def.Fields {
+		declared[field.JSONName] = true
+	}
+
+	groups := make([][]string, 0, len(alternatives))
+	for i, alternative := range alternatives {
+		payload := armPayload(alternative)
+		if payload == "" {
+			return nil, fmt.Errorf(
+				"alternative %d of a catch-all arm is not a single $ref, which is the only shape implemented", i)
+		}
+		referenced, defined := p.doc.Defs[payload]
+		if !defined {
+			return nil, fmt.Errorf("a catch-all arm's alternative refers to %s, which the schema does not define", payload)
+		}
+		if len(referenced.Required) == 0 {
+			return nil, fmt.Errorf(
+				"alternative %s of a catch-all arm requires no property, so nothing tells it from the others", payload)
+		}
+		for _, name := range referenced.Required {
+			if declared[name] {
+				return nil, fmt.Errorf(
+					"alternative %s of a catch-all arm requires %q, which the arm declares itself; the check "+
+						"reads the retained properties and cannot see a declared one", payload, name)
+			}
+		}
+		groups = append(groups, slices.Clone(referenced.Required))
+	}
+	return groups, nil
 }
 
 // isObjectUnion reports whether a definition is a union whose arms are objects.

@@ -646,14 +646,31 @@ could not reach it either: a zero value's map is nil. `wire` now has
 `MarshalMapFunc` and `UnmarshalMapFunc` beside the slice pair, and the generator
 emits them when a map's values are a union.
 
+Writing the fixtures found the second one, and it is the same shape of mistake:
+the generator was reading a catch-all arm's declared properties and silently
+ignoring the arm's own `anyOf`. Each elicitation mode carries a scope union, and
+the catch-all carries it too — a custom mode still has to say whether it belongs
+to a session or to a request. Without that, this package accepted a message the
+published schema rejects and the reference implementation refuses, and handed an
+application an elicitation belonging to nothing.
+
+That is not leniency in the decoder's sense. Recovering a malformed optional
+property to its default is the schema telling this package what to do with it;
+matching an arm whose schema the value does not satisfy is this package deciding
+the schema said something else. The arm's alternatives are now read into the
+`validate` that already enforces its `not` clause in both directions, and a
+catch-all whose alternatives cannot be read that way stops generation.
+
 ## Verification
 
 A design document is a claim about code. These are the checks that keep the two
 in agreement:
 
-- **Cross-SDK fixtures**: 125 expected outcomes come from the reference
+- **Cross-SDK fixtures**: 147 expected outcomes come from the reference
   TypeScript SDK's own deserialisation machinery, regenerated from the pinned
-  schema and replayed by `go test` with no network.
+  schema and replayed by `go test` with no network. Re-running the oracle
+  reproduces every previously recorded answer byte for byte, which is what makes
+  the pin worth having.
 - **A codec property over every generated type**: the corpus starts from JSON a
   peer sent, so it reaches the encoder only where a case re-encodes, and 163
   generated types had a `MarshalJSON` nothing called. The generator emits the list
