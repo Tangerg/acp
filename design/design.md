@@ -797,6 +797,26 @@ The decision: **one package speaks one grammar, and the module major tracks the
 protocol major.** When ACP 2 stabilises, this module becomes `/v2` and speaks
 version 2 only. It does not learn to speak both.
 
+The schema settles what a version number means before any of this is a judgement
+call: "This version is only bumped for breaking changes. Non-breaking changes
+should be introduced via capabilities." So every schema release in the v1 line —
+1.19, 1.20, 1.21 — is protocol version 1, and what separates them is which
+capabilities a peer advertises. There is no negotiation for this package to do
+within a major that the capability gate is not already doing, and a version number
+that differs is upstream saying the two grammars are incompatible.
+
+That is worth stating beside the official MCP Go SDK, because it negotiates five
+protocol versions in one package and looks at first like a counterexample. It is
+not, for two reasons. Its versions are dated spec releases that mostly add, so
+version is the axis along which MCP evolves and it pays for that with
+`if protocolVersion >= …` branches through its client, server and transport. ACP
+evolves along the capability axis instead, and reserves the version number for the
+breaks. And its own policy, written down, is this one: "If feasible, the SDK will
+support all versions of the MCP spec. However, if breaking changes to the spec
+make this infeasible, preference will be given to the most recent version" —
+with breaking API changes requiring a v2 module. ACP 2 removing eleven of
+twenty-five methods is the infeasible case, named in advance.
+
 The alternative is one module negotiating either grammar, and it fails on the
 same two facts that shaped everything above. The types are generated from one
 pinned schema into one package, so two grammars would be two definitions of

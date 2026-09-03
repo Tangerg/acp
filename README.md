@@ -258,6 +258,12 @@ becomes a permission subject. Forty definitions disappear and forty-five arrive.
 package that tried to speak both would have `ReadTextFile` in one grammar and not
 the other, and a version branch inside every operation.
 
+An ACP version number is only bumped for breaking changes — the schema says so,
+and says non-breaking ones arrive as capabilities instead. That is why every v1.x
+schema release is protocol version 1 and why there is nothing to negotiate within
+a major: what differs between 1.19 and 1.21 is which capabilities a peer
+advertises, which the connection already checks in both directions.
+
 So the module major will track the protocol major: when v2 stabilises this module
 becomes `acp/v2` and speaks version 2 only. Both can be imported side by side by
 an editor that has to drive agents of either kind, which is what Go's major-version
