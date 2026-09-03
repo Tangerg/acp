@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -154,31 +155,6 @@ func NewAgent(config *AgentConfig) (*Agent, error) {
 	return &Agent{config: cloned, capabilities: capabilities, auth: auth}, nil
 }
 
-// The same rule the client keeps locally, kept here against any peer: a client
-// that does not go through this package can still name a method that was never
-// offered, and the handler would otherwise be asked to authenticate something
-// this agent never said it could.
-func (c *AgentConn) authenticate(ctx context.Context, request *jsonrpc.Request) (any, error) {
-	params, err := decodeParams[AuthenticateRequest](request)
-	if err != nil {
-		return nil, err
-	}
-	if refusal := c.Peer().authenticates(params.MethodID); refusal != nil {
-		return nil, refusal
-	}
-	if c.agent.config.Authenticate == nil {
-		return nil, methodNotImplemented(request.Method)
-	}
-	response, err := c.agent.config.Authenticate(ctx, c, params)
-	if err != nil {
-		return nil, err
-	}
-	if response == nil {
-		return nil, nilHandlerResponse(request.Method)
-	}
-	return response, nil
-}
-
 func (config *AgentConfig) resolveCapabilities() (AgentCapabilities, error) {
 	derived := AgentCapabilities{LoadSession: config.LoadSession != nil}
 	if config.Logout != nil {
@@ -315,6 +291,97 @@ type AgentConn struct {
 	elicitations urlElicitations
 }
 
+// CreateElicitation asks the user for structured input from inside a request this
+// connection is serving, for the phases before any session exists.
+//
+// It must be called from a handler, on the context that handler was given: the
+// scope is the request being served and nothing else identifies one. Called
+// anywhere else it fails rather than inventing a scope.
+func (c *AgentConn) CreateElicitation(
+	ctx context.Context,
+	params *CreateElicitationParams,
+) (*CreateElicitationResponse, error) {
+	scope := func(mode CreateElicitationRequestValue) (CreateElicitationRequestValue, error) {
+		if !params.ToolCallID.IsZero() {
+			return nil, errors.New(
+				"acp: CreateElicitationParams.ToolCallID names a tool call within a session, " +
+					"and a request-scoped elicitation has no session; use AgentSession.CreateElicitation")
+		}
+		id, method, serving := servingRequest(ctx)
+		if !serving {
+			return nil, errors.New(
+				"acp: AgentConn.CreateElicitation is scoped to the request being served, so it " +
+					"must be called from a handler with the context that handler was given")
+		}
+		// The schema defines this scope as "tied to a specific JSON-RPC request
+		// outside of a session". A session-scoped request has a session, so an
+		// elicitation from one belongs to that session and AgentSession is where it
+		// is asked for; scoping it to the request instead would name a call the
+		// client already knows belongs to a conversation.
+		if descriptor, standard := standardMethods[method]; standard {
+			if descriptor.side != sideAgent {
+				return nil, fmt.Errorf(
+					"acp: %q is not a request this connection serves, so it cannot be an elicitation's scope",
+					method)
+			}
+			if descriptor.requiresSessionID {
+				return nil, fmt.Errorf(
+					"acp: %q is scoped to a session because its params require a session ID; "+
+						"use AgentSession.CreateElicitation", method)
+			}
+		}
+		within := elicitationRequestScope{RequestID: id}
+		switch mode := mode.(type) {
+		case *ElicitationFormMode:
+			mode.Value = &ElicitationFormModeRequest{elicitationRequestScope: within}
+		case *ElicitationURLMode:
+			mode.Value = &ElicitationURLModeRequest{elicitationRequestScope: within}
+		}
+		return mode, nil
+	}
+	return createElicitation(ctx, c, params, scope)
+}
+
+// CompleteElicitation says an accepted URL interaction is finished and the
+// client may stop presenting it.
+//
+// Calling it for an ID whose create response did not accept returns an error.
+// When the transport proves a failed send committed no bytes, the ID remains
+// outstanding so the caller can retry.
+//
+// It is on the connection because the notification names only an elicitation, and
+// one started before any session exists has no session to send it under.
+func (c *AgentConn) CompleteElicitation(
+	ctx context.Context,
+	params *CompleteElicitationNotification,
+) error {
+	if params == nil {
+		return paramsRequired("CompleteElicitation", "ElicitationID")
+	}
+	if err := c.awaitHandshake(ctx, methodElicitationComplete); err != nil {
+		return err
+	}
+	if err := c.Peer().permits(methodElicitationComplete); err != nil {
+		return err
+	}
+	completion, outstanding := c.elicitations.beginCompletion(params.ElicitationID)
+	if !outstanding {
+		return fmt.Errorf(
+			"acp: elicitation %q is not outstanding on this connection", params.ElicitationID)
+	}
+	if err := c.notify(ctx, methodElicitationComplete, params); err != nil {
+		// The transport promises that an exact context error means it committed no
+		// bytes. writeFailure keeps the connection alive only in that case, so a
+		// live connection means retrying this completion is both safe and useful.
+		if !c.ended() {
+			completion.unsent()
+		}
+		return err
+	}
+	completion.sent()
+	return nil
+}
+
 // Call sends an extension request. Extension methods only; see [ClientConn.Call].
 //
 // It waits for the handshake. Connect returns before one arrives — this side
@@ -337,17 +404,6 @@ func (c *AgentConn) Notify(ctx context.Context, method string, params any) error
 		return err
 	}
 	return extensionNotify(ctx, c.link, method, params)
-}
-
-func (c *AgentConn) awaitHandshake(ctx context.Context, method string) error {
-	select {
-	case <-c.handshake.whenPublished():
-		return nil
-	case <-c.over():
-		return c.failure()
-	case <-ctx.Done():
-		return fmt.Errorf("acp: method %q waited for the client to initialize: %w", method, ctx.Err())
-	}
 }
 
 // initialize prepares the answer without publishing it.
@@ -390,6 +446,42 @@ func (c *AgentConn) initialize(request *InitializeRequest) *InitializeResponse {
 		AuthMethods:        response.AuthMethods,
 	})
 	return response
+}
+
+func (c *AgentConn) awaitHandshake(ctx context.Context, method string) error {
+	select {
+	case <-c.handshake.whenPublished():
+		return nil
+	case <-c.over():
+		return c.failure()
+	case <-ctx.Done():
+		return fmt.Errorf("acp: method %q waited for the client to initialize: %w", method, ctx.Err())
+	}
+}
+
+// The same rule the client keeps locally, kept here against any peer: a client
+// that does not go through this package can still name a method that was never
+// offered, and the handler would otherwise be asked to authenticate something
+// this agent never said it could.
+func (c *AgentConn) authenticate(ctx context.Context, request *jsonrpc.Request) (any, error) {
+	params, err := decodeParams[AuthenticateRequest](request)
+	if err != nil {
+		return nil, err
+	}
+	if refusal := c.Peer().authenticates(params.MethodID); refusal != nil {
+		return nil, refusal
+	}
+	if c.agent.config.Authenticate == nil {
+		return nil, methodNotImplemented(request.Method)
+	}
+	response, err := c.agent.config.Authenticate(ctx, c, params)
+	if err != nil {
+		return nil, err
+	}
+	if response == nil {
+		return nil, nilHandlerResponse(request.Method)
+	}
+	return response, nil
 }
 
 func (c *AgentConn) serve(ctx context.Context, request *jsonrpc.Request) (any, error) {
@@ -448,4 +540,204 @@ func (c *AgentConn) serve(ctx context.Context, request *jsonrpc.Request) (any, e
 		return nil, methodNotImplemented(request.Method)
 	}
 	return dispatchExtension(ctx, request, config.CallFallback, config.NotifyFallback)
+}
+
+func (c *AgentConn) session(id SessionID) *AgentSession {
+	handle, within := c.sessions.lookup(id, c.limits.SessionHandles, func(id SessionID) *AgentSession {
+		return &AgentSession{id: id, conn: c}
+	})
+	if !within {
+		c.tooManySessions()
+	}
+	return handle
+}
+
+// The handler receives no handle because this is the call that creates one.
+func (c *AgentConn) newSession(ctx context.Context, request *jsonrpc.Request) (any, error) {
+	result, err := dispatchConnCall(ctx, c, request, c.agent.config.NewSession)
+	if err != nil {
+		return nil, err
+	}
+	response, ok := result.(*NewSessionResponse)
+	if !ok {
+		return nil, newError(ErrorCodeInternalError, "session/new returned %T", result)
+	}
+	c.session(response.SessionID)
+	return response, nil
+}
+
+// closeSession serves session/close, whose obligation is the schema's rather than
+// the application's: "the agent **must** cancel any ongoing work related to the
+// session (treat it as if `session/cancel` was called) and then free up any
+// resources associated with the session".
+//
+// The cancellation is the connection's because the turn is: an application that
+// had to remember to cancel its own turn before freeing it would forget, and the
+// prompt still owes the client the cancelled stop reason. The application's own
+// Cancel handler is deliberately not invoked — it is about to be told something
+// strictly more specific, and one event should not arrive twice.
+//
+// The handle is forgotten only after the handler returns, because the handler is
+// given it, and only when the handler succeeded, because a close that failed
+// closed nothing.
+func (c *AgentConn) closeSession(ctx context.Context, request *jsonrpc.Request) (any, error) {
+	params, err := decodeParams[CloseSessionRequest](request)
+	if err != nil {
+		return nil, err
+	}
+	if c.agent.config.CloseSession == nil {
+		return nil, methodNotImplemented(request.Method)
+	}
+	c.cancelTurn(params.SessionID)
+
+	response, err := c.agent.config.CloseSession(ctx, c.session(params.SessionID), params)
+	if err != nil {
+		return nil, err
+	}
+	if response == nil {
+		return nil, nilHandlerResponse(request.Method)
+	}
+	c.sessions.forget(params.SessionID)
+	return response, nil
+}
+
+// deleteSession binds the session named by the request before handing it to the
+// application. The session need not have been cached already: its identifier is
+// nevertheless the protocol scope, and the successful deletion is what releases
+// the handle again.
+func (c *AgentConn) deleteSession(ctx context.Context, request *jsonrpc.Request) (any, error) {
+	handle := c.agent.config.DeleteSession
+	if handle == nil {
+		return nil, methodNotImplemented(request.Method)
+	}
+	params, err := decodeParams[DeleteSessionRequest](request)
+	if err != nil {
+		return nil, err
+	}
+	response, err := handle(ctx, c.session(params.SessionID), params)
+	if err != nil {
+		return nil, err
+	}
+	if response == nil {
+		return nil, nilHandlerResponse(request.Method)
+	}
+	c.sessions.forget(params.SessionID)
+	return response, nil
+}
+
+// This is where the ordering the peer intended becomes the ordering this
+// connection has. A prompt is claimed here rather than in its handler, so a
+// cancellation that follows it on the wire finds the turn on record even though
+// the handler that serves it may not have started.
+//
+// Only the claim belongs here. The cancellation itself is an effect on work
+// already in progress, and doing it here would let it overtake every message read
+// before it — including the responses the peer sent first, which is exactly the
+// order a cancelled turn depends on.
+func (c *AgentConn) register(request *jsonrpc.Request) registration {
+	switch request.Method {
+	case methodInitialize:
+		// The attempt is queued in wire order, not claimed in a concurrent handler.
+		// A later request waits for the preceding answer to settle, then either owns
+		// the still-idle negotiation or observes the accepted agreement.
+		attempt := c.handshake.registerAttempt()
+		return registration{
+			dispatch: true,
+			admit:    attempt.await,
+			settled:  attempt.settle,
+			answered: attempt.publish,
+		}
+
+	case methodSessionPrompt:
+		session, ok := sessionOf(request)
+		if !ok {
+			// It will fail its own decode in the handler, with a better message.
+			return registration{dispatch: true}
+		}
+		if !c.turns.claim(session, request.ID) {
+			// Refused here rather than in the handler, because the handler is not
+			// where the ordering is intact. The rule is the one the client handle
+			// keeps locally, kept here against any peer.
+			refusal := newError(ErrorCodeInvalidRequest,
+				"session %s already has a prompt in flight, and session/cancel names no turn", session)
+			if c.claimAnswer(request.ID) {
+				c.spawn(func() { c.writeResponse(request.ID, nil, refusal) })
+			}
+			return registration{}
+		}
+		// Released only after the answer write settles. The peer may send the next
+		// prompt after it reads that answer, while one it pipelines before then must
+		// still find this turn in flight.
+		return registration{
+			dispatch: true,
+			served:   func() { c.turns.commit(session, request.ID) },
+			settled:  func() { c.turns.release(session, request.ID) },
+		}
+
+	default:
+		return registration{dispatch: true}
+	}
+}
+
+// The turn was claimed in wire order and is released by the request lifecycle,
+// so what is left here is the handler.
+func (c *AgentConn) prompt(ctx context.Context, request *jsonrpc.Request) (any, error) {
+	params, err := decodeParams[PromptRequest](request)
+	if err != nil {
+		// Ordered admission may have claimed the session from the small prefix it
+		// could decode. Once the full payload is known invalid, commit that failure
+		// so a later cancellation cannot reinterpret it as a valid cancelled turn.
+		if session, ok := sessionOf(request); ok {
+			c.turns.commit(session, request.ID)
+		}
+		return nil, err
+	}
+	response, err := c.agent.config.Prompt(ctx, c.session(params.SessionID), params)
+	if c.turns.commit(params.SessionID, request.ID) {
+		// session/cancel is a semantic turn result, not a failed JSON-RPC call.
+		// This boundary catches abort errors from model and tool libraries so they
+		// cannot leak as -32603, which the protocol explicitly warns against.
+		return &PromptResponse{StopReason: StopReasonCancelled}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if response == nil {
+		return nil, nilHandlerResponse(request.Method)
+	}
+	return response, nil
+}
+
+// This runs from the ordered queue, which is where the cancellation belongs: the
+// responses the client sent before it — the cancelled permission outcomes it owed
+// the turn — are delivered first, and the agent's own calls return their answers
+// rather than the cancellation that was chasing them.
+func (c *AgentConn) cancel(ctx context.Context, request *jsonrpc.Request) error {
+	params, err := decodeParams[CancelNotification](request)
+	if err != nil {
+		return err
+	}
+	c.cancelTurn(params.SessionID)
+	c.agent.config.Cancel(ctx, c.session(params.SessionID), params)
+	return nil
+}
+
+// It does not answer the prompt. The protocol says what the answer is — the
+// cancelled stop reason — and it is the agent's handler that owes it: the client
+// is still waiting on that response, and the agent may have final tool-call
+// updates to send before it. Other sessions and unrelated calls are untouched.
+//
+// The turn's handler may not have started yet, and that is not a problem the turn
+// has to solve: the request's context is created when the request is read, so
+// cancelling it now means the handler starts already cancelled.
+func (c *AgentConn) cancelTurn(session SessionID) {
+	id, cancellable := c.turns.cancel(session)
+	if !cancellable {
+		// Nothing to interrupt: either no turn is on record, or its handler already
+		// committed the result. The turn is claimed in wire order, so a prompt this
+		// cancellation follows cannot be missing merely because its handler has not
+		// started.
+		return
+	}
+	c.interruptRequest(id)
 }

@@ -292,6 +292,204 @@ type ClientConn struct {
 	elicitations urlElicitations
 }
 
+// Authenticate performs the authentication an agent asked for, which is how a
+// client answers [ErrAuthRequired].
+//
+// The method identifier is one of those the agent advertised in its initialize
+// response, which [ClientConn.Peer] carries. A terminal method is not one of
+// them: the schema says the client "MUST NOT pass this method to authenticate",
+// because it is performed by running the agent again in an interactive terminal
+// rather than by calling it.
+func (c *ClientConn) Authenticate(
+	ctx context.Context,
+	params *AuthenticateRequest,
+) (*AuthenticateResponse, error) {
+	if params == nil {
+		params = &AuthenticateRequest{}
+	}
+	if err := c.Peer().authenticates(params.MethodID); err != nil {
+		return nil, err
+	}
+	response := new(AuthenticateResponse)
+	if err := c.call(ctx, methodAuthenticate, params, response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+// Logout ends the authentication a client established, without ending the
+// connection.
+//
+// Gated on agentCapabilities.auth.logout.
+func (c *ClientConn) Logout(ctx context.Context, params *LogoutRequest) (*LogoutResponse, error) {
+	if params == nil {
+		params = &LogoutRequest{}
+	}
+	if err := c.Peer().permits(methodLogout); err != nil {
+		return nil, err
+	}
+	response := new(LogoutResponse)
+	if err := c.call(ctx, methodLogout, params, response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+// NewSession opens a conversation.
+//
+// It returns the response as well as the handle because the response carries more
+// than an identifier — modes, configuration options and _meta — and a handle alone
+// would put those out of reach.
+//
+// An agent that requires authentication answers this with -32000, which is control
+// flow rather than failure:
+//
+//	session, result, err := conn.NewSession(ctx, params)
+//	if errors.Is(err, acp.ErrAuthRequired) {
+//		// Expected. Authenticate, then retry.
+//	}
+func (c *ClientConn) NewSession(
+	ctx context.Context,
+	params *NewSessionRequest,
+) (*ClientSession, *NewSessionResponse, error) {
+	if params == nil {
+		params = &NewSessionRequest{}
+	}
+	if err := c.checkSessionSetup(params.Cwd, params.McpServers, params.AdditionalDirectories); err != nil {
+		return nil, nil, err
+	}
+	response := new(NewSessionResponse)
+	if err := c.call(ctx, methodSessionNew, params, response); err != nil {
+		return nil, nil, err
+	}
+	return c.session(response.SessionID), response, nil
+}
+
+// LoadSession reopens a conversation the agent already has, replaying its history
+// as [SessionNotification] updates before it answers.
+//
+// Loading an identifier this connection has already seen returns the handle it
+// already has. Loading it through a different connection returns a different one:
+// handles never silently move between transports.
+//
+// Gated on agentCapabilities.loadSession.
+func (c *ClientConn) LoadSession(
+	ctx context.Context,
+	params *LoadSessionRequest,
+) (*ClientSession, *LoadSessionResponse, error) {
+	if params == nil {
+		return nil, nil, paramsRequired("LoadSession", "SessionID")
+	}
+	// The outbound half of the gate. A call the peer never advertised is refused
+	// here rather than sent and refused there: the answer would be the same, and
+	// asking wastes a round trip while making a developer read a wire trace to
+	// find out what they forgot.
+	if err := c.Peer().permits(methodSessionLoad); err != nil {
+		return nil, nil, err
+	}
+	if err := c.checkSessionSetup(params.Cwd, params.McpServers, params.AdditionalDirectories); err != nil {
+		return nil, nil, err
+	}
+	response := new(LoadSessionResponse)
+	if err := c.call(ctx, methodSessionLoad, params, response); err != nil {
+		return nil, nil, err
+	}
+	return c.session(params.SessionID), response, nil
+}
+
+// ResumeSession reopens a session the agent still has, without replaying it.
+//
+// That is what the schema says separates it from [ClientConn.LoadSession]: resume
+// is for an agent that can continue a conversation but does not implement handing
+// its history back.
+//
+// Gated on agentCapabilities.sessionCapabilities.resume.
+func (c *ClientConn) ResumeSession(
+	ctx context.Context,
+	params *ResumeSessionRequest,
+) (*ClientSession, *ResumeSessionResponse, error) {
+	if params == nil {
+		return nil, nil, paramsRequired("ResumeSession", "SessionID")
+	}
+	if err := c.Peer().permits(methodSessionResume); err != nil {
+		return nil, nil, err
+	}
+	if err := c.checkSessionSetup(params.Cwd, params.McpServers, params.AdditionalDirectories); err != nil {
+		return nil, nil, err
+	}
+	response := new(ResumeSessionResponse)
+	if err := c.call(ctx, methodSessionResume, params, response); err != nil {
+		return nil, nil, err
+	}
+	return c.session(params.SessionID), response, nil
+}
+
+// ListSessions reports the sessions the agent has stored.
+//
+// It is paginated: a response carrying NextCursor has more behind it, and passing
+// that cursor back asks for the next page. The pages are the agent's own — this
+// does not gather them, because a caller that wants one page should not pay for
+// all of them.
+//
+// Gated on agentCapabilities.sessionCapabilities.list.
+func (c *ClientConn) ListSessions(
+	ctx context.Context,
+	params *ListSessionsRequest,
+) (*ListSessionsResponse, error) {
+	if params == nil {
+		params = &ListSessionsRequest{}
+	}
+	if err := c.Peer().permits(methodSessionList); err != nil {
+		return nil, err
+	}
+	response := new(ListSessionsResponse)
+	if err := c.call(ctx, methodSessionList, params, response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+// DeleteSession removes a stored session, which the schema describes as removing
+// it from [ClientConn.ListSessions].
+//
+// It takes an identifier rather than a handle because the session it names is one
+// this connection may never have opened. If it did, the handle is forgotten: it
+// would otherwise name a session the agent no longer has.
+//
+// Gated on agentCapabilities.sessionCapabilities.delete.
+func (c *ClientConn) DeleteSession(
+	ctx context.Context,
+	params *DeleteSessionRequest,
+) (*DeleteSessionResponse, error) {
+	if params == nil {
+		return nil, paramsRequired("DeleteSession", "SessionID")
+	}
+	if err := c.Peer().permits(methodSessionDelete); err != nil {
+		return nil, err
+	}
+	response := new(DeleteSessionResponse)
+	if err := c.call(ctx, methodSessionDelete, params, response); err != nil {
+		return nil, err
+	}
+	c.sessions.forget(params.SessionID)
+	return response, nil
+}
+
+// Call sends an extension request and decodes its result.
+//
+// Extension methods only. A method the specification defines is refused, because
+// it has exactly one path through the typed codec and the capability gate, and
+// this is not it.
+func (c *ClientConn) Call(ctx context.Context, method string, params, result any) error {
+	return extensionCall(ctx, c.link, method, params, result)
+}
+
+// Notify sends an extension notification. Extension methods only; see
+// [ClientConn.Call].
+func (c *ClientConn) Notify(ctx context.Context, method string, params any) error {
+	return extensionNotify(ctx, c.link, method, params)
+}
+
 func (c *ClientConn) initialize(ctx context.Context) error {
 	if !c.handshake.begin() {
 		return errors.New("acp: initialize is already in progress on this connection")
@@ -317,6 +515,20 @@ func (c *ClientConn) initialize(ctx context.Context) error {
 		}
 		return c.accept(request, &response)
 	})
+}
+
+// awaitHandshake holds an inbound message until this side knows what was
+// negotiated, or refuses one that genuinely arrived first.
+//
+// The delivery queue processes the initialize answer before every message that
+// followed it, so an unaccepted handshake here proves the peer sent the request
+// too early rather than exposing a publication race.
+func (c *ClientConn) awaitHandshake(request *jsonrpc.Request) error {
+	if c.handshake.isAccepted() {
+		return nil
+	}
+	return newError(ErrorCodeInvalidRequest,
+		"method %q arrived before initialize completed", request.Method)
 }
 
 func (c *ClientConn) accept(request *InitializeRequest, response *InitializeResponse) error {
@@ -348,35 +560,6 @@ func (c *ClientConn) accept(request *InitializeRequest, response *InitializeResp
 	})
 	c.handshake.publish()
 	return nil
-}
-
-// Call sends an extension request and decodes its result.
-//
-// Extension methods only. A method the specification defines is refused, because
-// it has exactly one path through the typed codec and the capability gate, and
-// this is not it.
-func (c *ClientConn) Call(ctx context.Context, method string, params, result any) error {
-	return extensionCall(ctx, c.link, method, params, result)
-}
-
-// Notify sends an extension notification. Extension methods only; see
-// [ClientConn.Call].
-func (c *ClientConn) Notify(ctx context.Context, method string, params any) error {
-	return extensionNotify(ctx, c.link, method, params)
-}
-
-// awaitHandshake holds an inbound message until this side knows what was
-// negotiated, or refuses one that genuinely arrived first.
-//
-// The delivery queue processes the initialize answer before every message that
-// followed it, so an unaccepted handshake here proves the peer sent the request
-// too early rather than exposing a publication race.
-func (c *ClientConn) awaitHandshake(request *jsonrpc.Request) error {
-	if c.handshake.isAccepted() {
-		return nil
-	}
-	return newError(ErrorCodeInvalidRequest,
-		"method %q arrived before initialize completed", request.Method)
 }
 
 func (c *ClientConn) serve(ctx context.Context, request *jsonrpc.Request) (any, error) {
@@ -424,4 +607,194 @@ func (c *ClientConn) serve(ctx context.Context, request *jsonrpc.Request) (any, 
 		return nil, methodNotImplemented(request.Method)
 	}
 	return dispatchExtension(ctx, request, config.CallFallback, config.NotifyFallback)
+}
+
+func (c *ClientConn) session(id SessionID) *ClientSession {
+	handle, within := c.sessions.lookup(id, c.limits.SessionHandles, func(id SessionID) *ClientSession {
+		return &ClientSession{id: id, conn: c}
+	})
+	if !within {
+		c.tooManySessions()
+	}
+	return handle
+}
+
+// The three requests that open or reopen a session carry the same workspace
+// parameters, and the specification constrains all of them: an http or sse MCP
+// server and additionalDirectories are gated on what the agent advertised, and
+// every path must be absolute.
+func (c *ClientConn) checkSessionSetup(cwd string, servers []McpServer, directories []string) error {
+	if err := c.Peer().permitsSessionSetup(servers, directories); err != nil {
+		return err
+	}
+	if err := absolutePath("cwd", cwd); err != nil {
+		return err
+	}
+	return absoluteDirectories(directories)
+}
+
+// createElicitation routes an inbound request to the handler for its mode.
+func (c *ClientConn) createElicitation(ctx context.Context, request *jsonrpc.Request) (any, error) {
+	handlers := c.client.config.Elicitation
+	if handlers == nil {
+		return nil, methodNotImplemented(request.Method)
+	}
+	params, err := decodeParams[CreateElicitationRequest](request)
+	if err != nil {
+		return nil, err
+	}
+
+	var response *CreateElicitationResponse
+	switch mode := params.Value.(type) {
+	case *ElicitationFormMode:
+		if handlers.Form == nil {
+			return nil, unadvertisedMode(elicitationModeForm, "clientCapabilities.elicitation.form")
+		}
+		response, err = handlers.Form(ctx, params, mode)
+		if err == nil {
+			if content, answered := response.acceptedContent(); answered {
+				if bad := mode.RequestedSchema.validate(content); bad != nil {
+					// The client's own form and the client's own answer disagree, so
+					// this is a bug on this side and the agent is told so rather than
+					// handed a value its schema does not describe.
+					return nil, newError(ErrorCodeInternalError, "%s", bad.Error())
+				}
+			}
+		}
+
+	case *ElicitationURLMode:
+		if handlers.URL == nil {
+			return nil, unadvertisedMode(elicitationModeURL, "clientCapabilities.elicitation.url")
+		}
+		reservation, reserveErr := c.elicitations.reserve(mode.ElicitationID)
+		if reserveErr != nil {
+			if errors.Is(reserveErr, errElicitationIDInUse) {
+				return nil, newError(ErrorCodeInvalidParams, "%s", reserveErr)
+			}
+			return nil, newError(ErrorCodeInternalError, "%s", reserveErr)
+		}
+		response, err = handlers.URL(ctx, params, mode)
+		if err != nil || response == nil || !response.accepted() {
+			reservation.reject()
+		} else {
+			// The protocol state commits only to an accept the peer can receive.
+			// Response encoding normally happens after the handler returns; checking
+			// it here prevents a malformed union supplied by the handler from
+			// leaving an interaction outstanding after the peer received -32603.
+			if _, encodeErr := json.Marshal(response); encodeErr != nil {
+				reservation.reject()
+				err = fmt.Errorf("acp: URL elicitation response cannot be encoded: %w", encodeErr)
+			} else {
+				reservation.accept()
+			}
+		}
+
+	default:
+		// The catch-all arm included: guessing which known mode a future one
+		// resembles would be worse than saying it is not implemented.
+		return nil, newError(ErrorCodeInvalidParams,
+			"the elicitation names a mode this package does not implement")
+	}
+
+	if err != nil {
+		return nil, err
+	}
+	if response == nil {
+		return nil, nilHandlerResponse(request.Method)
+	}
+	return response, nil
+}
+
+// completeElicitation clears a URL elicitation and tells the application, in that
+// order.
+//
+// "Clients MUST ignore notifications referencing unknown or already-completed
+// IDs", and ignoring is the connection's to do rather than the application's: an
+// application cannot tell a completion for an interaction it never accepted from
+// one already closed, because it does not hold the set. A handler that is not set
+// changes nothing here — the elicitation is still closed, because the protocol
+// makes hearing about it optional and forgetting about it is not.
+func (c *ClientConn) completeElicitation(ctx context.Context, request *jsonrpc.Request) error {
+	params, err := decodeParams[CompleteElicitationNotification](request)
+	if err != nil {
+		return err
+	}
+	if !c.elicitations.receiveCompletion(params.ElicitationID) {
+		c.logger.Debug("acp: ignoring a completion for an unknown or finished elicitation",
+			slog.String("elicitationId", string(params.ElicitationID)))
+		return nil
+	}
+	if handlers := c.client.config.Elicitation; handlers != nil && handlers.Complete != nil {
+		handlers.Complete(ctx, params)
+	}
+	return nil
+}
+
+// Registration has already happened in wire order, and forgetting it belongs
+// to the request lifecycle. If the turn was cancelled between then and now the
+// request has been answered, and the claim in respond is what stops this answer
+// being a second one.
+func (c *ClientConn) requestPermission(ctx context.Context, request *jsonrpc.Request) (any, error) {
+	params, err := decodeParams[RequestPermissionRequest](request)
+	if err != nil {
+		return nil, err
+	}
+
+	response, err := c.client.config.RequestPermission(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	if response == nil {
+		return nil, nilHandlerResponse(request.Method)
+	}
+	return response, nil
+}
+
+func (c *ClientConn) register(request *jsonrpc.Request) registration {
+	if request.Method != methodSessionRequestPermission {
+		return registration{dispatch: true}
+	}
+	session, ok := sessionOf(request)
+	if !ok {
+		// It will fail its own decode in the handler, with a better message.
+		return registration{dispatch: true}
+	}
+
+	switch c.turns.registerPermission(session, request.ID) {
+	case permissionOwned:
+	case permissionCancelled:
+		// The turn is being cancelled. Answering here rather than dispatching is
+		// the difference between a dialog the user never sees and one they see and
+		// whose answer is then thrown away.
+		if write := c.answerCancelled(request.ID); write != nil {
+			c.spawn(write)
+		}
+		return registration{}
+	case permissionUnowned:
+		// The published grammar does not make permission requests children of a
+		// prompt. Without an active turn there is nothing for session/cancel to
+		// claim, but the request itself is still valid and cancellable through
+		// $/cancel_request.
+		return registration{dispatch: true}
+	}
+	return registration{
+		dispatch: true,
+		settled:  func() { c.turns.forgetPermission(session, request.ID) },
+	}
+}
+
+// The claim is taken now, on whatever goroutine is asking, because it is what
+// decides the race. Where the write goes is the caller's to say: cancelPermissions
+// needs it on the wire before the cancellation notification, and ordered
+// delivery needs the write off its own loop.
+func (c *ClientConn) answerCancelled(id jsonrpc.ID) func() {
+	if !c.claimAnswer(id) {
+		return nil
+	}
+	return func() {
+		c.writeResponse(id, &RequestPermissionResponse{
+			Outcome: &RequestPermissionOutcomeCancelled{},
+		}, nil)
+		c.interruptRequest(id)
+	}
 }

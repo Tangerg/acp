@@ -1,7 +1,6 @@
 package acp
 
 import (
-	"context"
 	"sync"
 
 	"github.com/Tangerg/acp/jsonrpc"
@@ -15,8 +14,7 @@ import (
 // Cancelling a Prompt's context does the first; [ClientSession.Cancel] does the
 // second.
 //
-// Separating them leaves obligations that cannot be an application's problem, and
-// this file is where the connection takes them:
+// Separating them leaves obligations that cannot be an application's problem:
 //
 //   - A client that cancels a turn must answer every pending
 //     session/request_permission for that session with the cancelled outcome —
@@ -27,7 +25,9 @@ import (
 //     that arrives before the handler for the turn it names has started.
 //
 // Both obligations are races, and both are settled by one piece of per-session
-// state with one lock rather than by ordering two independent maps.
+// state with one lock rather than by ordering two independent maps. That state is
+// what this file holds. The connection methods that discharge the obligations
+// live with the rest of their own type, in client.go and agent.go.
 
 // A clientTurn is what a client knows about one session's current turn.
 //
@@ -185,75 +185,6 @@ func (t *clientTurns) finishCancellation(session SessionID, generation uint64) {
 	}
 }
 
-// The claim is taken now, on whatever goroutine is asking, because it is what
-// decides the race. Where the write goes is the caller's to say: cancelPermissions
-// needs it on the wire before the cancellation notification, and ordered
-// delivery needs the write off its own loop.
-func (c *ClientConn) answerCancelled(id jsonrpc.ID) func() {
-	if !c.claimAnswer(id) {
-		return nil
-	}
-	return func() {
-		c.writeResponse(id, &RequestPermissionResponse{
-			Outcome: &RequestPermissionOutcomeCancelled{},
-		}, nil)
-		c.interruptRequest(id)
-	}
-}
-
-func (c *ClientConn) register(request *jsonrpc.Request) registration {
-	if request.Method != methodSessionRequestPermission {
-		return registration{dispatch: true}
-	}
-	session, ok := sessionOf(request)
-	if !ok {
-		// It will fail its own decode in the handler, with a better message.
-		return registration{dispatch: true}
-	}
-
-	switch c.turns.registerPermission(session, request.ID) {
-	case permissionOwned:
-	case permissionCancelled:
-		// The turn is being cancelled. Answering here rather than dispatching is
-		// the difference between a dialog the user never sees and one they see and
-		// whose answer is then thrown away.
-		if write := c.answerCancelled(request.ID); write != nil {
-			c.spawn(write)
-		}
-		return registration{}
-	case permissionUnowned:
-		// The published grammar does not make permission requests children of a
-		// prompt. Without an active turn there is nothing for session/cancel to
-		// claim, but the request itself is still valid and cancellable through
-		// $/cancel_request.
-		return registration{dispatch: true}
-	}
-	return registration{
-		dispatch: true,
-		settled:  func() { c.turns.forgetPermission(session, request.ID) },
-	}
-}
-
-// Registration has already happened in wire order, and forgetting it belongs
-// to the request lifecycle. If the turn was cancelled between then and now the
-// request has been answered, and the claim in respond is what stops this answer
-// being a second one.
-func (c *ClientConn) requestPermission(ctx context.Context, request *jsonrpc.Request) (any, error) {
-	params, err := decodeParams[RequestPermissionRequest](request)
-	if err != nil {
-		return nil, err
-	}
-
-	response, err := c.client.config.RequestPermission(ctx, params)
-	if err != nil {
-		return nil, err
-	}
-	if response == nil {
-		return nil, nilHandlerResponse(request.Method)
-	}
-	return response, nil
-}
-
 // An agentTurn is what an agent knows about one session's current turn.
 type agentTurn struct {
 	// id is the prompt request being served, when one is.
@@ -324,60 +255,6 @@ func (t *agentTurns) commit(session SessionID, id jsonrpc.ID) bool {
 	return turn.cancelled
 }
 
-// This is where the ordering the peer intended becomes the ordering this
-// connection has. A prompt is claimed here rather than in its handler, so a
-// cancellation that follows it on the wire finds the turn on record even though
-// the handler that serves it may not have started.
-//
-// Only the claim belongs here. The cancellation itself is an effect on work
-// already in progress, and doing it here would let it overtake every message read
-// before it — including the responses the peer sent first, which is exactly the
-// order a cancelled turn depends on.
-func (c *AgentConn) register(request *jsonrpc.Request) registration {
-	switch request.Method {
-	case methodInitialize:
-		// The attempt is queued in wire order, not claimed in a concurrent handler.
-		// A later request waits for the preceding answer to settle, then either owns
-		// the still-idle negotiation or observes the accepted agreement.
-		attempt := c.handshake.registerAttempt()
-		return registration{
-			dispatch: true,
-			admit:    attempt.await,
-			settled:  attempt.settle,
-			answered: attempt.publish,
-		}
-
-	case methodSessionPrompt:
-		session, ok := sessionOf(request)
-		if !ok {
-			// It will fail its own decode in the handler, with a better message.
-			return registration{dispatch: true}
-		}
-		if !c.turns.claim(session, request.ID) {
-			// Refused here rather than in the handler, because the handler is not
-			// where the ordering is intact. The rule is the one the client handle
-			// keeps locally, kept here against any peer.
-			refusal := newError(ErrorCodeInvalidRequest,
-				"session %s already has a prompt in flight, and session/cancel names no turn", session)
-			if c.claimAnswer(request.ID) {
-				c.spawn(func() { c.writeResponse(request.ID, nil, refusal) })
-			}
-			return registration{}
-		}
-		// Released only after the answer write settles. The peer may send the next
-		// prompt after it reads that answer, while one it pipelines before then must
-		// still find this turn in flight.
-		return registration{
-			dispatch: true,
-			served:   func() { c.turns.commit(session, request.ID) },
-			settled:  func() { c.turns.release(session, request.ID) },
-		}
-
-	default:
-		return registration{dispatch: true}
-	}
-}
-
 // Admission needs the identifier and nothing else, and must not spend the time to
 // decode a whole prompt to get it.
 func sessionOf(request *jsonrpc.Request) (SessionID, bool) {
@@ -388,67 +265,4 @@ func sessionOf(request *jsonrpc.Request) (SessionID, bool) {
 		return "", false
 	}
 	return *params.SessionID, true
-}
-
-// It does not answer the prompt. The protocol says what the answer is — the
-// cancelled stop reason — and it is the agent's handler that owes it: the client
-// is still waiting on that response, and the agent may have final tool-call
-// updates to send before it. Other sessions and unrelated calls are untouched.
-//
-// The turn's handler may not have started yet, and that is not a problem the turn
-// has to solve: the request's context is created when the request is read, so
-// cancelling it now means the handler starts already cancelled.
-func (c *AgentConn) cancelTurn(session SessionID) {
-	id, cancellable := c.turns.cancel(session)
-	if !cancellable {
-		// Nothing to interrupt: either no turn is on record, or its handler already
-		// committed the result. The turn is claimed in wire order, so a prompt this
-		// cancellation follows cannot be missing merely because its handler has not
-		// started.
-		return
-	}
-	c.interruptRequest(id)
-}
-
-// The turn was claimed in wire order and is released by the request lifecycle,
-// so what is left here is the handler.
-func (c *AgentConn) prompt(ctx context.Context, request *jsonrpc.Request) (any, error) {
-	params, err := decodeParams[PromptRequest](request)
-	if err != nil {
-		// Ordered admission may have claimed the session from the small prefix it
-		// could decode. Once the full payload is known invalid, commit that failure
-		// so a later cancellation cannot reinterpret it as a valid cancelled turn.
-		if session, ok := sessionOf(request); ok {
-			c.turns.commit(session, request.ID)
-		}
-		return nil, err
-	}
-	response, err := c.agent.config.Prompt(ctx, c.session(params.SessionID), params)
-	if c.turns.commit(params.SessionID, request.ID) {
-		// session/cancel is a semantic turn result, not a failed JSON-RPC call.
-		// This boundary catches abort errors from model and tool libraries so they
-		// cannot leak as -32603, which the protocol explicitly warns against.
-		return &PromptResponse{StopReason: StopReasonCancelled}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if response == nil {
-		return nil, nilHandlerResponse(request.Method)
-	}
-	return response, nil
-}
-
-// This runs from the ordered queue, which is where the cancellation belongs: the
-// responses the client sent before it — the cancelled permission outcomes it owed
-// the turn — are delivered first, and the agent's own calls return their answers
-// rather than the cancellation that was chasing them.
-func (c *AgentConn) cancel(ctx context.Context, request *jsonrpc.Request) error {
-	params, err := decodeParams[CancelNotification](request)
-	if err != nil {
-		return err
-	}
-	c.cancelTurn(params.SessionID)
-	c.agent.config.Cancel(ctx, c.session(params.SessionID), params)
-	return nil
 }

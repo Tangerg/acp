@@ -232,195 +232,6 @@ func (s *ClientSession) Close(ctx context.Context, params *CloseParams) (*CloseS
 	return response, nil
 }
 
-// NewSession opens a conversation.
-//
-// It returns the response as well as the handle because the response carries more
-// than an identifier — modes, configuration options and _meta — and a handle alone
-// would put those out of reach.
-//
-// An agent that requires authentication answers this with -32000, which is control
-// flow rather than failure:
-//
-//	session, result, err := conn.NewSession(ctx, params)
-//	if errors.Is(err, acp.ErrAuthRequired) {
-//		// Expected. Authenticate, then retry.
-//	}
-func (c *ClientConn) NewSession(
-	ctx context.Context,
-	params *NewSessionRequest,
-) (*ClientSession, *NewSessionResponse, error) {
-	if params == nil {
-		params = &NewSessionRequest{}
-	}
-	if err := c.checkSessionSetup(params.Cwd, params.McpServers, params.AdditionalDirectories); err != nil {
-		return nil, nil, err
-	}
-	response := new(NewSessionResponse)
-	if err := c.call(ctx, methodSessionNew, params, response); err != nil {
-		return nil, nil, err
-	}
-	return c.session(response.SessionID), response, nil
-}
-
-// LoadSession reopens a conversation the agent already has, replaying its history
-// as [SessionNotification] updates before it answers.
-//
-// Loading an identifier this connection has already seen returns the handle it
-// already has. Loading it through a different connection returns a different one:
-// handles never silently move between transports.
-//
-// Gated on agentCapabilities.loadSession.
-func (c *ClientConn) LoadSession(
-	ctx context.Context,
-	params *LoadSessionRequest,
-) (*ClientSession, *LoadSessionResponse, error) {
-	if params == nil {
-		return nil, nil, paramsRequired("LoadSession", "SessionID")
-	}
-	// The outbound half of the gate. A call the peer never advertised is refused
-	// here rather than sent and refused there: the answer would be the same, and
-	// asking wastes a round trip while making a developer read a wire trace to
-	// find out what they forgot.
-	if err := c.Peer().permits(methodSessionLoad); err != nil {
-		return nil, nil, err
-	}
-	if err := c.checkSessionSetup(params.Cwd, params.McpServers, params.AdditionalDirectories); err != nil {
-		return nil, nil, err
-	}
-	response := new(LoadSessionResponse)
-	if err := c.call(ctx, methodSessionLoad, params, response); err != nil {
-		return nil, nil, err
-	}
-	return c.session(params.SessionID), response, nil
-}
-
-// ResumeSession reopens a session the agent still has, without replaying it.
-//
-// That is what the schema says separates it from [ClientConn.LoadSession]: resume
-// is for an agent that can continue a conversation but does not implement handing
-// its history back.
-//
-// Gated on agentCapabilities.sessionCapabilities.resume.
-func (c *ClientConn) ResumeSession(
-	ctx context.Context,
-	params *ResumeSessionRequest,
-) (*ClientSession, *ResumeSessionResponse, error) {
-	if params == nil {
-		return nil, nil, paramsRequired("ResumeSession", "SessionID")
-	}
-	if err := c.Peer().permits(methodSessionResume); err != nil {
-		return nil, nil, err
-	}
-	if err := c.checkSessionSetup(params.Cwd, params.McpServers, params.AdditionalDirectories); err != nil {
-		return nil, nil, err
-	}
-	response := new(ResumeSessionResponse)
-	if err := c.call(ctx, methodSessionResume, params, response); err != nil {
-		return nil, nil, err
-	}
-	return c.session(params.SessionID), response, nil
-}
-
-// ListSessions reports the sessions the agent has stored.
-//
-// It is paginated: a response carrying NextCursor has more behind it, and passing
-// that cursor back asks for the next page. The pages are the agent's own — this
-// does not gather them, because a caller that wants one page should not pay for
-// all of them.
-//
-// Gated on agentCapabilities.sessionCapabilities.list.
-func (c *ClientConn) ListSessions(
-	ctx context.Context,
-	params *ListSessionsRequest,
-) (*ListSessionsResponse, error) {
-	if params == nil {
-		params = &ListSessionsRequest{}
-	}
-	if err := c.Peer().permits(methodSessionList); err != nil {
-		return nil, err
-	}
-	response := new(ListSessionsResponse)
-	if err := c.call(ctx, methodSessionList, params, response); err != nil {
-		return nil, err
-	}
-	return response, nil
-}
-
-// DeleteSession removes a stored session, which the schema describes as removing
-// it from [ClientConn.ListSessions].
-//
-// It takes an identifier rather than a handle because the session it names is one
-// this connection may never have opened. If it did, the handle is forgotten: it
-// would otherwise name a session the agent no longer has.
-//
-// Gated on agentCapabilities.sessionCapabilities.delete.
-func (c *ClientConn) DeleteSession(
-	ctx context.Context,
-	params *DeleteSessionRequest,
-) (*DeleteSessionResponse, error) {
-	if params == nil {
-		return nil, paramsRequired("DeleteSession", "SessionID")
-	}
-	if err := c.Peer().permits(methodSessionDelete); err != nil {
-		return nil, err
-	}
-	response := new(DeleteSessionResponse)
-	if err := c.call(ctx, methodSessionDelete, params, response); err != nil {
-		return nil, err
-	}
-	c.sessions.forget(params.SessionID)
-	return response, nil
-}
-
-// Authenticate performs the authentication an agent asked for, which is how a
-// client answers [ErrAuthRequired].
-//
-// The method identifier is one of those the agent advertised in its initialize
-// response, which [ClientConn.Peer] carries. A terminal method is not one of
-// them: the schema says the client "MUST NOT pass this method to authenticate",
-// because it is performed by running the agent again in an interactive terminal
-// rather than by calling it.
-func (c *ClientConn) Authenticate(
-	ctx context.Context,
-	params *AuthenticateRequest,
-) (*AuthenticateResponse, error) {
-	if params == nil {
-		params = &AuthenticateRequest{}
-	}
-	if err := c.Peer().authenticates(params.MethodID); err != nil {
-		return nil, err
-	}
-	response := new(AuthenticateResponse)
-	if err := c.call(ctx, methodAuthenticate, params, response); err != nil {
-		return nil, err
-	}
-	return response, nil
-}
-
-// The three requests that open or reopen a session carry the same workspace
-// parameters, and the specification constrains all of them: an http or sse MCP
-// server and additionalDirectories are gated on what the agent advertised, and
-// every path must be absolute.
-func (c *ClientConn) checkSessionSetup(cwd string, servers []McpServer, directories []string) error {
-	if err := c.Peer().permitsSessionSetup(servers, directories); err != nil {
-		return err
-	}
-	if err := absolutePath("cwd", cwd); err != nil {
-		return err
-	}
-	return absoluteDirectories(directories)
-}
-
-func (c *ClientConn) session(id SessionID) *ClientSession {
-	handle, within := c.sessions.lookup(id, c.limits.SessionHandles, func(id SessionID) *ClientSession {
-		return &ClientSession{id: id, conn: c}
-	})
-	if !within {
-		c.tooManySessions()
-	}
-	return handle
-}
-
 // An AgentSession is the same conversation as the agent sees it.
 //
 // A different set of operations, so a different type. A client never calls
@@ -491,87 +302,105 @@ func (s *AgentSession) RequestPermission(
 	return response, nil
 }
 
-func (c *AgentConn) session(id SessionID) *AgentSession {
-	handle, within := c.sessions.lookup(id, c.limits.SessionHandles, func(id SessionID) *AgentSession {
-		return &AgentSession{id: id, conn: c}
-	})
-	if !within {
-		c.tooManySessions()
+// CreateElicitation asks the user for structured input within this session.
+func (s *AgentSession) CreateElicitation(
+	ctx context.Context,
+	params *CreateElicitationParams,
+) (*CreateElicitationResponse, error) {
+	scope := func(mode CreateElicitationRequestValue) (CreateElicitationRequestValue, error) {
+		within := ElicitationSessionScope{SessionID: s.id, ToolCallID: params.ToolCallID}
+		switch mode := mode.(type) {
+		case *ElicitationFormMode:
+			mode.Value = &ElicitationFormModeSession{ElicitationSessionScope: within}
+		case *ElicitationURLMode:
+			mode.Value = &ElicitationURLModeSession{ElicitationSessionScope: within}
+		}
+		return mode, nil
 	}
-	return handle
+	return createElicitation(ctx, s.conn, params, scope)
 }
 
-// The handler receives no handle because this is the call that creates one.
-func (c *AgentConn) newSession(ctx context.Context, request *jsonrpc.Request) (any, error) {
-	result, err := dispatchConnCall(ctx, c, request, c.agent.config.NewSession)
-	if err != nil {
-		return nil, err
-	}
-	response, ok := result.(*NewSessionResponse)
-	if !ok {
-		return nil, newError(ErrorCodeInternalError, "session/new returned %T", result)
-	}
-	c.session(response.SessionID)
-	return response, nil
-}
-
-// closeSession serves session/close, whose obligation is the schema's rather than
-// the application's: "the agent **must** cancel any ongoing work related to the
-// session (treat it as if `session/cancel` was called) and then free up any
-// resources associated with the session".
+// ReadTextFile reads a text file from the client's workspace.
 //
-// The cancellation is the connection's because the turn is: an application that
-// had to remember to cancel its own turn before freeing it would forget, and the
-// prompt still owes the client the cancelled stop reason. The application's own
-// Cancel handler is deliberately not invoked — it is about to be told something
-// strictly more specific, and one event should not arrive twice.
-//
-// The handle is forgotten only after the handler returns, because the handler is
-// given it, and only when the handler succeeded, because a close that failed
-// closed nothing.
-func (c *AgentConn) closeSession(ctx context.Context, request *jsonrpc.Request) (any, error) {
-	params, err := decodeParams[CloseSessionRequest](request)
-	if err != nil {
+// Gated on clientCapabilities.fs.readTextFile.
+func (s *AgentSession) ReadTextFile(
+	ctx context.Context,
+	params *ReadTextFileParams,
+) (*ReadTextFileResponse, error) {
+	if params == nil {
+		return nil, paramsRequired("ReadTextFile", "Path")
+	}
+	if err := absolutePath("path", params.Path); err != nil {
 		return nil, err
 	}
-	if c.agent.config.CloseSession == nil {
-		return nil, methodNotImplemented(request.Method)
+	request := &ReadTextFileRequest{
+		SessionID: s.id,
+		Path:      params.Path,
+		Line:      params.Line,
+		Limit:     params.Limit,
+		Meta:      params.Meta,
 	}
-	c.cancelTurn(params.SessionID)
-
-	response, err := c.agent.config.CloseSession(ctx, c.session(params.SessionID), params)
-	if err != nil {
-		return nil, err
-	}
-	if response == nil {
-		return nil, nilHandlerResponse(request.Method)
-	}
-	c.sessions.forget(params.SessionID)
-	return response, nil
+	return callGated[ReadTextFileResponse](ctx, s.conn, methodFsReadTextFile, request)
 }
 
-// deleteSession binds the session named by the request before handing it to the
-// application. The session need not have been cached already: its identifier is
-// nevertheless the protocol scope, and the successful deletion is what releases
-// the handle again.
-func (c *AgentConn) deleteSession(ctx context.Context, request *jsonrpc.Request) (any, error) {
-	handle := c.agent.config.DeleteSession
-	if handle == nil {
-		return nil, methodNotImplemented(request.Method)
+// WriteTextFile writes a text file in the client's workspace.
+//
+// Gated on clientCapabilities.fs.writeTextFile, which is a second boolean: reading
+// and writing are two capabilities and not one.
+func (s *AgentSession) WriteTextFile(
+	ctx context.Context,
+	params *WriteTextFileParams,
+) (*WriteTextFileResponse, error) {
+	if params == nil {
+		return nil, paramsRequired("WriteTextFile", "Path and Content")
 	}
-	params, err := decodeParams[DeleteSessionRequest](request)
-	if err != nil {
+	if err := absolutePath("path", params.Path); err != nil {
 		return nil, err
 	}
-	response, err := handle(ctx, c.session(params.SessionID), params)
+	request := &WriteTextFileRequest{
+		SessionID: s.id,
+		Path:      params.Path,
+		Content:   params.Content,
+		Meta:      params.Meta,
+	}
+	return callGated[WriteTextFileResponse](ctx, s.conn, methodFsWriteTextFile, request)
+}
+
+// CreateTerminal runs a command in the client's workspace and returns a handle to
+// it.
+//
+// Gated on clientCapabilities.terminal, one boolean covering all five terminal
+// methods — so a client that advertises it implements all five, and a handle from
+// here can use any of them.
+//
+// The response is returned as well as the handle, because it carries _meta besides
+// the identifier and returning only a handle would make that unreachable.
+func (s *AgentSession) CreateTerminal(
+	ctx context.Context,
+	params *CreateTerminalParams,
+) (*TerminalHandle, *CreateTerminalResponse, error) {
+	if params == nil {
+		return nil, nil, paramsRequired("CreateTerminal", "Command")
+	}
+	if cwd, set := params.Cwd.Get(); set {
+		if err := absolutePath("cwd", cwd); err != nil {
+			return nil, nil, err
+		}
+	}
+	request := &CreateTerminalRequest{
+		SessionID:       s.id,
+		Command:         params.Command,
+		Args:            params.Args,
+		Env:             params.Env,
+		Cwd:             params.Cwd,
+		OutputByteLimit: params.OutputByteLimit,
+		Meta:            params.Meta,
+	}
+	response, err := callGated[CreateTerminalResponse](ctx, s.conn, methodTerminalCreate, request)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if response == nil {
-		return nil, nilHandlerResponse(request.Method)
-	}
-	c.sessions.forget(params.SessionID)
-	return response, nil
+	return &TerminalHandle{id: response.TerminalID, session: s}, response, nil
 }
 
 // A sessionRequest is a request that names the session it belongs to, which is
