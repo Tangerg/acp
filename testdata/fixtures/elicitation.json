@@ -149,6 +149,85 @@
       }
     },
     {
+      "name": "a url elicitation with an empty url",
+      "type": "CreateElicitationRequest",
+      "why": "format uri is a constraint the schema states and this asks what it means",
+      "input": {
+        "message": "sign in",
+        "mode": "url",
+        "elicitationId": "e-1",
+        "url": "",
+        "sessionId": "sess-1"
+      },
+      "accepted": false
+    },
+    {
+      "name": "a url elicitation with a bare word",
+      "type": "CreateElicitationRequest",
+      "why": "no scheme, so not a URI under any reading",
+      "input": {
+        "message": "sign in",
+        "mode": "url",
+        "elicitationId": "e-1",
+        "url": "not a url",
+        "sessionId": "sess-1"
+      },
+      "accepted": false
+    },
+    {
+      "name": "a url elicitation with a relative path",
+      "type": "CreateElicitationRequest",
+      "why": "a relative reference is not an absolute URI",
+      "input": {
+        "message": "sign in",
+        "mode": "url",
+        "elicitationId": "e-1",
+        "url": "/sign-in",
+        "sessionId": "sess-1"
+      },
+      "accepted": false
+    },
+    {
+      "name": "a url elicitation with a mailto scheme",
+      "type": "CreateElicitationRequest",
+      "why": "a URI need not be http, and the oracle decides how far that goes",
+      "input": {
+        "message": "sign in",
+        "mode": "url",
+        "elicitationId": "e-1",
+        "url": "mailto:someone@example.invalid",
+        "sessionId": "sess-1"
+      },
+      "accepted": true,
+      "normalized": {
+        "sessionId": "sess-1",
+        "elicitationId": "e-1",
+        "url": "mailto:someone@example.invalid",
+        "mode": "url",
+        "message": "sign in"
+      }
+    },
+    {
+      "name": "a url elicitation with a urn",
+      "type": "CreateElicitationRequest",
+      "why": "the other end of the same question",
+      "input": {
+        "message": "sign in",
+        "mode": "url",
+        "elicitationId": "e-1",
+        "url": "urn:ietf:rfc:3986",
+        "sessionId": "sess-1"
+      },
+      "accepted": true,
+      "normalized": {
+        "sessionId": "sess-1",
+        "elicitationId": "e-1",
+        "url": "urn:ietf:rfc:3986",
+        "mode": "url",
+        "message": "sign in"
+      }
+    },
+    {
       "name": "a mode no version of the schema defines",
       "type": "CreateElicitationRequest",
       "why": "the catch-all arm is how a mode from a later release survives being decoded; it carries a scope like every other arm",
@@ -165,6 +244,28 @@
         "message": "think at me",
         "channel": "alpha"
       }
+    },
+    {
+      "name": "a custom mode whose session scope is not a session scope",
+      "type": "CreateElicitationRequest",
+      "why": "an alternative is satisfied by decoding as it, not by naming the properties it requires",
+      "input": {
+        "message": "think at me",
+        "mode": "telepathy",
+        "sessionId": 1
+      },
+      "accepted": false
+    },
+    {
+      "name": "a custom mode whose request scope is not a request scope",
+      "type": "CreateElicitationRequest",
+      "why": "the same for the other alternative: a JSON-RPC id is a string, a number or null",
+      "input": {
+        "message": "think at me",
+        "mode": "telepathy",
+        "requestId": {}
+      },
+      "accepted": false
     },
     {
       "name": "a form elicitation with no scope",

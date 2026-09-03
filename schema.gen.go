@@ -2220,17 +2220,20 @@ func (x CreateElicitationRequestOther) MarshalJSON() ([]byte, error) {
 //
 // It also enforces the alternatives this arm is itself a union of. A custom
 // value is not anything that is not a known arm: the arm has a schema of its
-// own, and a value has to satisfy one of its alternatives to be one. The
-// properties they require are retained rather than declared, so the check
-// reads Extra.
+// own, and a value has to decode as one of its alternatives to be one. Their
+// properties are retained rather than declared, so the check runs each
+// candidate's codec over Extra.
 func (x *CreateElicitationRequestOther) validate() error {
 	if slices.Contains([]string{"form", "url"}, x.Mode) {
 		return wire.At("mode", fmt.Errorf(
 			"acp: %q is reserved by a known arm, but the value does not match that arm", x.Mode))
 	}
-	if !wire.SatisfiesOneGroup(x.Extra, [][]string{{"sessionId"}, {"requestId"}}) {
+	if !wire.SatisfiesOneAlternative(x.Extra,
+		func(raw []byte) error { var v ElicitationSessionScope; return v.UnmarshalJSON(raw) },
+		func(raw []byte) error { var v elicitationRequestScope; return v.UnmarshalJSON(raw) },
+	) {
 		return fmt.Errorf(
-			"acp: a CreateElicitationRequestOther satisfies none of the alternatives its arm is a union of: %v",
+			"acp: a CreateElicitationRequestOther decodes as none of the alternatives its arm is a union of: %v",
 			[][]string{{"sessionId"}, {"requestId"}})
 	}
 	return nil
@@ -4008,7 +4011,7 @@ func (x *ElicitationURLMode) UnmarshalJSON(data []byte) error {
 	}
 
 	if raw, ok := object["url"]; ok {
-		value, err := wire.UnmarshalValue[string](raw)
+		value, err := wire.UnmarshalURI("url", raw)
 		if err == nil {
 			x.URL = value
 		} else {
@@ -4032,7 +4035,13 @@ func (x *ElicitationURLMode) UnmarshalJSON(data []byte) error {
 func (x ElicitationURLMode) MarshalJSON() ([]byte, error) {
 	var writer wire.ObjectWriter
 	writer.Set("elicitationId", x.ElicitationID)
-	writer.Set("url", x.URL)
+	{
+		raw, err := wire.MarshalURI("url", x.URL)
+		if err != nil {
+			return nil, wire.At("url", err)
+		}
+		writer.SetRaw("url", raw)
+	}
 	{
 		raw, err := marshalElicitationURLModeValue(x.Value)
 		if err != nil {

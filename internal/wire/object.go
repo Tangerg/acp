@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"slices"
 )
 
@@ -240,32 +241,78 @@ func describe(data []byte) string {
 	}
 }
 
-// SatisfiesOneGroup reports whether the retained properties satisfy at least one
-// of the alternatives a catch-all arm is a union of.
+// SatisfiesOneAlternative reports whether the retained properties decode as one of
+// the alternatives a catch-all arm is a union of.
 //
 // A catch-all arm is not everything that is not a known arm. It has a schema of
 // its own, and when that schema is a union — the elicitation modes each carry a
 // scope union, and the custom mode carries it too — a value belongs to the arm
-// only if it satisfies one alternative. The alternatives are told apart by which
-// properties they require, and those are retained rather than declared, so this
-// reads the map the arm kept them in.
+// only if it satisfies one alternative. Satisfying one means decoding as it: a
+// numeric sessionId names the property the session scope requires and is still not
+// a session scope, so the check runs each candidate's own codec rather than
+// looking for its property names.
 //
-// No groups means the arm is not a union and every value satisfies it.
-func SatisfiesOneGroup(extra map[string]json.RawMessage, groups [][]string) bool {
-	if len(groups) == 0 {
+// No alternatives means the arm is not a union and every value satisfies it.
+func SatisfiesOneAlternative(
+	extra map[string]json.RawMessage,
+	alternatives ...func([]byte) error,
+) bool {
+	if len(alternatives) == 0 {
 		return true
 	}
-	for _, group := range groups {
-		satisfied := true
-		for _, name := range group {
-			if _, present := extra[name]; !present {
-				satisfied = false
-				break
-			}
-		}
-		if satisfied {
+	encoded, err := json.Marshal(extra)
+	if err != nil {
+		return false
+	}
+	for _, decode := range alternatives {
+		if decode(encoded) == nil {
 			return true
 		}
 	}
 	return false
+}
+
+// ValidateURI enforces `format: "uri"`, which the schema states once — on the URL
+// a client sends a user to.
+//
+// A scheme is what separates a URI from a string that looks like one: net/url
+// parses "not a url" and "/sign-in" without complaint, and both would send a user
+// nowhere. Requiring one matches the reference implementation on every value the
+// fixture corpus asks it about, including the two that are URIs without being web
+// addresses — mailto: and urn:.
+// ValidateURI enforces `format: "uri"`, which the schema states once — on the URL
+// a client sends a user to.
+//
+// A scheme is what separates a URI from a string that looks like one: net/url
+// parses "not a url" and "/sign-in" without complaint, and both would send a user
+// nowhere. Requiring one matches the reference implementation on every value the
+// fixture corpus asks it about, including the two that are URIs without being web
+// addresses — mailto: and urn:.
+func ValidateURI(property, value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return At(property, fmt.Errorf("acp: %q is not a URI: %w", value, err))
+	}
+	if !parsed.IsAbs() {
+		return At(property, fmt.Errorf("acp: %q is not a URI: it names no scheme", value))
+	}
+	return nil
+}
+
+// UnmarshalURI is the reading half of [ValidateURI]: a value this side would
+// refuse to send is one it refuses to accept.
+func UnmarshalURI(property string, data []byte) (string, error) {
+	value, err := UnmarshalValue[string](data)
+	if err != nil {
+		return "", err
+	}
+	return value, ValidateURI(property, value)
+}
+
+// MarshalURI is the writing half.
+func MarshalURI(property, value string) ([]byte, error) {
+	if err := ValidateURI(property, value); err != nil {
+		return nil, err
+	}
+	return json.Marshal(value)
 }

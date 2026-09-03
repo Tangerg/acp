@@ -230,78 +230,84 @@ func (failingMarshaler) MarshalJSON() ([]byte, error) { return nil, errStub }
 
 var errStub = errors.New("stub failure")
 
-// A catch-all arm's alternatives are told apart by which properties they require,
-// and those are retained rather than declared, so the check reads the map the arm
-// kept them in.
-func TestSatisfiesOneGroup(t *testing.T) {
-	scope := [][]string{{"sessionId"}, {"requestId"}}
-	both := [][]string{{"a", "b"}}
+// An alternative is satisfied by decoding as it, not by naming the properties it
+// requires: a numeric sessionId names what the session scope needs and is still
+// not one.
+func TestSatisfiesOneAlternative(t *testing.T) {
+	type session struct {
+		SessionID string `json:"sessionId"`
+	}
+	type request struct {
+		RequestID int `json:"requestId"`
+	}
+	decodes := func(into any) func([]byte) error {
+		return func(raw []byte) error {
+			// A required property is only "required" here if its absence fails, so
+			// the stand-ins use DisallowUnknownFields-free strict typing and an
+			// explicit presence check.
+			var probe map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &probe); err != nil {
+				return err
+			}
+			switch into.(type) {
+			case *session:
+				if _, ok := probe["sessionId"]; !ok {
+					return errors.New("no sessionId")
+				}
+			case *request:
+				if _, ok := probe["requestId"]; !ok {
+					return errors.New("no requestId")
+				}
+			}
+			return json.Unmarshal(raw, into)
+		}
+	}
+	scope := []func([]byte) error{decodes(new(session)), decodes(new(request))}
 
 	tests := []struct {
-		name   string
-		extra  map[string]json.RawMessage
-		groups [][]string
-		want   bool
-		why    string
+		name  string
+		extra map[string]json.RawMessage
+		want  bool
+		why   string
 	}{
 		{
-			name:   "no groups",
-			extra:  nil,
-			groups: nil,
-			want:   true,
-			why:    "an arm that is not a union is satisfied by everything",
+			name:  "no alternatives",
+			extra: nil,
+			want:  true,
+			why:   "an arm that is not a union is satisfied by everything",
 		},
 		{
-			name:   "the first alternative",
-			extra:  map[string]json.RawMessage{"sessionId": json.RawMessage(`"s"`)},
-			groups: scope,
-			want:   true,
+			name:  "the first alternative",
+			extra: map[string]json.RawMessage{"sessionId": json.RawMessage(`"s"`)},
+			want:  true,
 		},
 		{
-			name:   "the second alternative",
-			extra:  map[string]json.RawMessage{"requestId": json.RawMessage(`7`)},
-			groups: scope,
-			want:   true,
+			name:  "the second alternative",
+			extra: map[string]json.RawMessage{"requestId": json.RawMessage(`7`)},
+			want:  true,
 		},
 		{
-			name:   "neither alternative",
-			extra:  map[string]json.RawMessage{"channel": json.RawMessage(`"alpha"`)},
-			groups: scope,
-			want:   false,
-			why:    "a custom mode still has to say whether it belongs to a session or to a request",
+			name:  "neither alternative",
+			extra: map[string]json.RawMessage{"channel": json.RawMessage(`"alpha"`)},
+			want:  false,
+			why:   "a custom mode still has to say whether it belongs to a session or to a request",
 		},
 		{
-			name:   "nothing retained at all",
-			extra:  nil,
-			groups: scope,
-			want:   false,
-		},
-		{
-			name:   "a group only partly satisfied",
-			extra:  map[string]json.RawMessage{"a": json.RawMessage(`1`)},
-			groups: both,
-			want:   false,
-			why:    "an alternative requiring two properties is not satisfied by one of them",
-		},
-		{
-			name:   "a group fully satisfied",
-			extra:  map[string]json.RawMessage{"a": json.RawMessage(`1`), "b": json.RawMessage(`2`)},
-			groups: both,
-			want:   true,
-		},
-		{
-			name:   "a null value still counts as present",
-			extra:  map[string]json.RawMessage{"sessionId": json.RawMessage(`null`)},
-			groups: scope,
-			want:   true,
-			why:    "the alternatives are told apart by which keys are there, and whether a value is legal is the property's own question",
+			name:  "the right property with the wrong type",
+			extra: map[string]json.RawMessage{"sessionId": json.RawMessage(`1`)},
+			want:  false,
+			why:   "naming the property an alternative requires is not being that alternative",
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := wire.SatisfiesOneGroup(test.extra, test.groups); got != test.want {
-				t.Fatalf("SatisfiesOneGroup = %t, want %t (%s)", got, test.want, test.why)
+			alternatives := scope
+			if test.name == "no alternatives" {
+				alternatives = nil
+			}
+			if got := wire.SatisfiesOneAlternative(test.extra, alternatives...); got != test.want {
+				t.Fatalf("SatisfiesOneAlternative = %t, want %t (%s)", got, test.want, test.why)
 			}
 		})
 	}

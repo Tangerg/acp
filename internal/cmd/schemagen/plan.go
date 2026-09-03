@@ -21,6 +21,14 @@ type Plan struct {
 	SchemaTag string
 }
 
+// A catchAllAlternative is one arm of the union a catch-all arm may itself be.
+// GoName is the type whose codec decides; Required is what it needs, which is
+// only used to say what a refusal was looking for.
+type catchAllAlternative struct {
+	GoName   string
+	Required []string
+}
+
 type defKind int
 
 const (
@@ -65,16 +73,15 @@ type Def struct {
 	// schema does not declare. The schema gives such an arm additionalProperties,
 	// so those keys are a vendor's payload and have to survive.
 	Retained bool
-	// RequiredGroups are the alternatives a catch-all arm is itself a union of,
-	// each as the set of properties that alternative requires. A value matches the
-	// arm only if it satisfies one of them.
+	// Alternatives are the arms a catch-all arm is itself a union of. A value
+	// matches the catch-all only if it decodes as one of them.
 	//
 	// The elicitation modes are the case: each carries a scope union, and the
 	// catch-all carries it too, so a custom mode still has to say whether it
 	// belongs to a session or to a request. Without this the catch-all would match
 	// a message the schema does not, which is the arm accepting more than it was
 	// given rather than preserving what it was.
-	RequiredGroups [][]string
+	Alternatives []catchAllAlternative
 	// ReservedTags are the discriminant values known arms claim. A catch-all arm
 	// whose tag is one of them is the malformed known arm the `not` clause
 	// excludes, not a custom one.
@@ -193,7 +200,10 @@ type ValueType struct {
 	Ident   string
 	Ref     string // schema definition name, for vRef
 	IsUnion bool   // a vRef whose definition is a union with a generated selector
-	Elem    *ValueType
+	// Format is the schema's `format` for a string, which is a constraint rather
+	// than a Go type: the field stays a string and the codec enforces it.
+	Format string
+	Elem   *ValueType
 }
 
 // A Manifest is the committed root set. Generation scope is its transitive $ref
@@ -453,6 +463,10 @@ func containsUnion(value *ValueType) bool {
 	}
 	return false
 }
+
+// The string formats this generator enforces. The schema states one, on the URL a
+// client sends a user to.
+const formatURI = "uri"
 
 // isFlattenedUnion reports a definition that is an object and a union at once:
 // properties of its own, plus a choice of kind-specific shapes in the same JSON
@@ -872,7 +886,17 @@ func (p *planner) valueType(schema *Schema) (*ValueType, error) {
 
 	switch base := schema.Type.Base(); base {
 	case jsonString:
-		return &ValueType{Kind: vScalar, Go: goString}, nil
+		// A format is a constraint the schema states and something has to enforce.
+		// Dropping one silently is how a package accepts what the grammar refuses,
+		// so an unimplemented format stops generation instead.
+		switch schema.Format {
+		case "":
+			return &ValueType{Kind: vScalar, Go: goString}, nil
+		case formatURI:
+			return &ValueType{Kind: vScalar, Go: goString, Format: formatURI}, nil
+		default:
+			return nil, fmt.Errorf("unimplemented string format %q", schema.Format)
+		}
 	case "boolean":
 		return &ValueType{Kind: vScalar, Go: goBool}, nil
 	case "integer", "number":
@@ -1257,7 +1281,7 @@ func (p *planner) planCatchAllArm(goType string, arm *Schema, union *Def, reserv
 	if err != nil {
 		return nil, err
 	}
-	def.RequiredGroups = groups
+	def.Alternatives = groups
 	return def, nil
 }
 
@@ -1271,11 +1295,11 @@ func (p *planner) planCatchAllArm(goType string, arm *Schema, union *Def, reserv
 // a malformed optional property recovers to its default. It is a message this
 // package would hand an application after the schema said it was not one.
 //
-// The check is expressible only because the alternatives are distinguished by
-// which properties they require, and those properties are never ones the arm
-// declares. Both facts are asserted rather than assumed: a shape this cannot
-// express stops generation instead of being dropped.
-func (p *planner) catchAllRequiredGroups(arm *Schema, def *Def) ([][]string, error) {
+// The alternatives are told apart by which properties they require, and those are
+// never ones the arm declares — otherwise they would not be among the retained
+// properties the check reads. Both facts are asserted rather than assumed: a shape
+// this cannot express stops generation instead of being dropped.
+func (p *planner) catchAllRequiredGroups(arm *Schema, def *Def) ([]catchAllAlternative, error) {
 	alternatives := arm.Arms()
 	if len(alternatives) == 0 {
 		return nil, nil
@@ -1286,7 +1310,7 @@ func (p *planner) catchAllRequiredGroups(arm *Schema, def *Def) ([][]string, err
 		declared[field.JSONName] = true
 	}
 
-	groups := make([][]string, 0, len(alternatives))
+	groups := make([]catchAllAlternative, 0, len(alternatives))
 	for i, alternative := range alternatives {
 		payload := armPayload(alternative)
 		if payload == "" {
@@ -1308,7 +1332,10 @@ func (p *planner) catchAllRequiredGroups(arm *Schema, def *Def) ([][]string, err
 						"reads the retained properties and cannot see a declared one", payload, name)
 			}
 		}
-		groups = append(groups, slices.Clone(referenced.Required))
+		groups = append(groups, catchAllAlternative{
+			GoName:   p.goNames[payload],
+			Required: slices.Clone(referenced.Required),
+		})
 	}
 	return groups, nil
 }

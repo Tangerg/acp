@@ -303,7 +303,10 @@ func TestACatchAllArmsAlternativesAreReadOrRefused(t *testing.T) {
 		if err != nil {
 			t.Fatalf("catchAllRequiredGroups: %v", err)
 		}
-		want := [][]string{{"sessionId"}, {"requestId"}}
+		want := []catchAllAlternative{
+			{GoName: "ElicitationSessionScope", Required: []string{"sessionId"}},
+			{GoName: "ElicitationRequestScope", Required: []string{"requestId"}},
+		}
 		if !reflect.DeepEqual(groups, want) {
 			t.Fatalf("read %v, want %v", groups, want)
 		}

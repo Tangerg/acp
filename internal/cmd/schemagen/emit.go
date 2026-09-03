@@ -576,6 +576,12 @@ func (e *emitter) decodeExpr(field *Field) string {
 	if value.IsUnion {
 		return fmt.Sprintf("unmarshal%s(raw)", value.Ident)
 	}
+	// A format is enforced where the value is read, so it takes whatever the
+	// property's own fallback is: a malformed URI recovers exactly as a malformed
+	// anything else does.
+	if value.Format == formatURI {
+		return fmt.Sprintf("wire.UnmarshalURI(%q, raw)", field.JSONName)
+	}
 	return fmt.Sprintf("wire.UnmarshalValue[%s](raw)", value.Go)
 }
 
@@ -704,6 +710,9 @@ func (e *emitter) encodeExpr(field *Field) string {
 	if value.IsUnion {
 		return fmt.Sprintf("marshal%s($)", value.Ident)
 	}
+	if value.Format == formatURI {
+		return fmt.Sprintf("wire.MarshalURI(%q, $)", field.JSONName)
+	}
 	return ""
 }
 
@@ -714,13 +723,13 @@ func (e *emitter) retainedValidate(def *Def) {
 		"malformed known arm rather than a custom one. Both the decoder and the",
 		"encoder check it, so the rule holds in each direction.",
 	}
-	if len(def.RequiredGroups) > 0 {
+	if len(def.Alternatives) > 0 {
 		doc = append(doc, "",
 			"It also enforces the alternatives this arm is itself a union of. A custom",
 			"value is not anything that is not a known arm: the arm has a schema of its",
-			"own, and a value has to satisfy one of its alternatives to be one. The",
-			"properties they require are retained rather than declared, so the check",
-			"reads Extra.")
+			"own, and a value has to decode as one of its alternatives to be one. Their",
+			"properties are retained rather than declared, so the check runs each",
+			"candidate's codec over Extra.")
 	}
 	e.printf("%s", comment("", doc))
 
@@ -735,19 +744,23 @@ func (e *emitter) retainedValidate(def *Def) {
 		goName(def.TagProperty))
 	e.printf("\t}\n")
 
-	if len(def.RequiredGroups) > 0 {
-		groups := make([]string, len(def.RequiredGroups))
-		for i, group := range def.RequiredGroups {
-			quoted := make([]string, len(group))
-			for j, name := range group {
+	if len(def.Alternatives) > 0 {
+		decoders := make([]string, len(def.Alternatives))
+		wanted := make([]string, len(def.Alternatives))
+		for i, alternative := range def.Alternatives {
+			decoders[i] = fmt.Sprintf(
+				"\n\t\tfunc(raw []byte) error { var v %s; return v.UnmarshalJSON(raw) },",
+				alternative.GoName)
+			quoted := make([]string, len(alternative.Required))
+			for j, name := range alternative.Required {
 				quoted[j] = strconv.Quote(name)
 			}
-			groups[i] = "{" + strings.Join(quoted, ", ") + "}"
+			wanted[i] = "{" + strings.Join(quoted, ", ") + "}"
 		}
-		e.printf("\tif !wire.SatisfiesOneGroup(x.Extra, [][]string{%s}) {\n", strings.Join(groups, ", "))
+		e.printf("\tif !wire.SatisfiesOneAlternative(x.Extra,%s\n\t) {\n", strings.Join(decoders, ""))
 		e.printf("\t\treturn fmt.Errorf(\n")
-		e.printf("\t\t\t\"acp: a %s satisfies none of the alternatives its arm is a union of: %%v\",\n", def.GoName)
-		e.printf("\t\t\t[][]string{%s})\n", strings.Join(groups, ", "))
+		e.printf("\t\t\t\"acp: a %s decodes as none of the alternatives its arm is a union of: %%v\",\n", def.GoName)
+		e.printf("\t\t\t[][]string{%s})\n", strings.Join(wanted, ", "))
 		e.printf("\t}\n")
 	}
 

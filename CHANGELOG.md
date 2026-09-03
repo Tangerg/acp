@@ -90,6 +90,41 @@ other entry is additive or a fix.
 
 ### Fixed
 
+- **A URL elicitation had no lifetime.** The identifier could name an elicitation
+  that was never opened, or one already finished, and a client passed every
+  completion to the application including ones for pages it never showed. The
+  connection now owns the set on both sides: an agent's identifier is unique among
+  the URL elicitations one connection has open, and a client ignores a completion
+  for an identifier it does not recognise or has already closed.
+
+- **An elicitation capability was only checked to the method.** An explicit
+  `Capabilities` could advertise `form` while only a URL handler existed, and a
+  present but empty `elicitation` object was read as advertising the method — so a
+  client could say yes and then refuse every call for its mode. Modes are now
+  checked against handlers at construction, and an empty object advertises
+  nothing.
+
+- **`ClientConfig.clone` shared the elicitation handlers.** The terminal group was
+  copied and this one was not, so a caller who kept the pointer could change what a
+  running client serves.
+
+- **A typed nil in the mode interface panicked** instead of being refused as a
+  parameter error.
+
+- **A request-scoped elicitation could be taken from a session-scoped request.**
+  The context proved a request was being served, not that it was one outside a
+  session, so a prompt handler could produce a scope the schema defines as being
+  for the phases before any session.
+
+- **`format: "uri"` was dropped by the generator.** Every string became a plain
+  string, so a URL that names no scheme was accepted in both directions. The
+  generator now enforces it and refuses to generate for a format it does not
+  implement, rather than ignoring one.
+
+- **A custom mode's scope was checked by property name, not by value.** A numeric
+  `sessionId` names what the session scope requires without being one. The catch-all
+  arm now runs each candidate's own codec.
+
 - **A boolean session configuration option could be set without the capability
   that grants it.** The schema gates the boolean option type through
   `clientCapabilities.session.configOptions.boolean`, and nothing read it:
@@ -112,6 +147,13 @@ other entry is additive or a fix.
   nothing reached it until elicitation was served.
 
 ### Documentation
+
+- **Form answers are checked against the form that asked for them**, on both
+  sides: a client checks what its own handler produced before sending it, and an
+  agent checks what came back before the caller sees it. `pattern` and `format` are
+  deliberately not checked — a JSON Schema pattern is an ECMA-262 regular
+  expression and Go's regexp is RE2, so refusing an answer this package could not
+  read the pattern for would be worse than not reading it.
 
 - **Three more runnable examples**: session configuration options, the session
   lifecycle (list, resume, delete, and the refusal for an unadvertised

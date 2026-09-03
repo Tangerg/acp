@@ -683,3 +683,48 @@ func TestAURLElicitationIdentifierIsUniqueWhileItIsOutstanding(t *testing.T) {
 		t.Errorf("the client was shown %d pages, want 2: the first and the one reopened after it closed", len(shown))
 	}
 }
+
+// A request-scoped elicitation is the schema's "tied to a specific JSON-RPC
+// request outside of a session". A prompt has a session, so an elicitation from
+// one belongs to that session — scoping it to the request would name a call the
+// client already knows is part of a conversation.
+func TestARequestScopeRefusesASessionScopedRequest(t *testing.T) {
+	client, err := acp.NewClient(&acp.ClientConfig{
+		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		RequestPermission: denyingPermission,
+		Elicitation: &acp.ElicitationHandlers{
+			Form: func(
+				context.Context,
+				*acp.CreateElicitationRequest,
+				*acp.ElicitationFormMode,
+			) (*acp.CreateElicitationResponse, error) {
+				return &acp.CreateElicitationResponse{Value: &acp.ElicitationAcceptAction{}}, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	var fromPrompt error
+	agent := testAgent(t, func(
+		ctx context.Context,
+		session *acp.AgentSession,
+		_ *acp.PromptRequest,
+	) (*acp.PromptResponse, error) {
+		_, fromPrompt = session.Conn().CreateElicitation(ctx, &acp.CreateElicitationParams{
+			Message: "which branch?",
+			Mode:    &acp.ElicitationFormMode{RequestedSchema: formSchema()},
+		})
+		return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+	})
+
+	session := connectAndOpen(t, client, agent)
+	if _, promptErr := session.Prompt(context.Background(), &acp.PromptParams{}); promptErr != nil {
+		t.Fatalf("Prompt: %v", promptErr)
+	}
+	if fromPrompt == nil || !strings.Contains(fromPrompt.Error(), "scoped to a session") {
+		t.Errorf("a request scope taken from a prompt was answered %v, want a refusal naming "+
+			"the session the request already has", fromPrompt)
+	}
+}

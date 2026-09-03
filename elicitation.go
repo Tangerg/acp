@@ -133,11 +133,26 @@ func (c *AgentConn) CreateElicitation(
 				"acp: CreateElicitationParams.ToolCallID names a tool call within a session, " +
 					"and a request-scoped elicitation has no session; use AgentSession.CreateElicitation")
 		}
-		id, serving := servingRequest(ctx)
+		id, method, serving := servingRequest(ctx)
 		if !serving {
 			return nil, errors.New(
 				"acp: AgentConn.CreateElicitation is scoped to the request being served, so it " +
 					"must be called from a handler with the context that handler was given")
+		}
+		// The schema defines this scope as "tied to a specific JSON-RPC request
+		// outside of a session". A session-scoped request has a session, so an
+		// elicitation from one belongs to that session and AgentSession is where it
+		// is asked for; scoping it to the request instead would name a call the
+		// client already knows belongs to a conversation.
+		if descriptor, standard := standardMethods[method]; standard && descriptor.side != sideAgent {
+			return nil, fmt.Errorf(
+				"acp: %q is not a request this connection serves, so it cannot be an elicitation's scope",
+				method)
+		}
+		if sessionScoped(method) {
+			return nil, fmt.Errorf(
+				"acp: %q is scoped to a session, so an elicitation from it is too; "+
+					"use AgentSession.CreateElicitation", method)
 		}
 		within := elicitationRequestScope{RequestID: id}
 		switch mode := mode.(type) {
@@ -206,6 +221,14 @@ func createElicitation(
 	if err := conn.call(ctx, methodElicitationCreate, request, response); err != nil {
 		failed = true
 		return nil, err
+	}
+	if form, isForm := mode.(*ElicitationFormMode); isForm {
+		if content, answered := acceptedFormContent(response); answered {
+			if bad := validateElicitationContent(form.RequestedSchema, content); bad != nil {
+				failed = true
+				return nil, bad
+			}
+		}
 	}
 	return response, nil
 }
@@ -307,6 +330,16 @@ func (c *ClientConn) createElicitation(ctx context.Context, request *jsonrpc.Req
 			return nil, unadvertisedMode(elicitationModeForm, "clientCapabilities.elicitation.form")
 		}
 		response, err = handlers.Form(ctx, params, mode)
+		if err == nil {
+			if content, answered := acceptedFormContent(response); answered {
+				if bad := validateElicitationContent(mode.RequestedSchema, content); bad != nil {
+					// The client's own form and the client's own answer disagree, so
+					// this is a bug on this side and the agent is told so rather than
+					// handed a value its schema does not describe.
+					return nil, newError(ErrorCodeInternalError, "%s", bad.Error())
+				}
+			}
+		}
 
 	case *ElicitationURLMode:
 		if handlers.URL == nil {
@@ -402,13 +435,35 @@ func (p PeerInfo) permitsElicitationMode(mode CreateElicitationRequestValue) err
 // spelling it.
 type servingRequestKey struct{}
 
-func withServingRequest(ctx context.Context, id jsonrpc.ID) context.Context {
-	return context.WithValue(ctx, servingRequestKey{}, requestIDOf(id))
+// servedRequest is the identity of the call a handler is answering: which one,
+// and which method. The method is there because the identifier alone does not say
+// whether the request has a session, and a request-scoped elicitation is defined
+// as one outside a session.
+type servedRequest struct {
+	id     requestID
+	method string
 }
 
-func servingRequest(ctx context.Context) (requestID, bool) {
-	id, serving := ctx.Value(servingRequestKey{}).(requestID)
-	return id, serving
+func withServingRequest(ctx context.Context, id jsonrpc.ID, method string) context.Context {
+	return context.WithValue(ctx, servingRequestKey{}, servedRequest{requestIDOf(id), method})
+}
+
+func servingRequest(ctx context.Context) (requestID, string, bool) {
+	served, serving := ctx.Value(servingRequestKey{}).(servedRequest)
+	return served.id, served.method, serving
+}
+
+// sessionScoped reports whether an agent method is served against a session
+// handle, which is the same division dispatch makes: dispatchSessionCall hands a
+// handler an AgentSession and dispatchConnCall hands it an AgentConn.
+func sessionScoped(method string) bool {
+	switch method {
+	case methodSessionPrompt, methodSessionCancel, methodSessionLoad, methodSessionResume,
+		methodSessionClose, methodSessionSetMode, methodSessionSetConfigOption:
+		return true
+	default:
+		return false
+	}
 }
 
 // urlElicitations is the set of URL elicitations one connection has open.
