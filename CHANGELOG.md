@@ -4,6 +4,49 @@ This file records caller-visible changes, newest first. The module is pre-1.0, s
 a minor release may change its public API. Each released entry will include
 migration instructions.
 
+## v0.2.2 — 2026-09-04
+
+No API change: `gorelease` reports the exported surface identical to v0.2.1, and
+the protocol target has not moved. This release is repository engineering — the
+checks that were not checking, and one bound that was wired by hand.
+
+### Fixed
+
+- **The release gate asked a question a published tag cannot answer.** On a tag
+  push it ran `gorelease` in a mode that refuses a version which already exists:
+  `-version` because the version is taken, and suggest mode because it needs the
+  baseline to be the newest release, which the tag just pushed now is. So it
+  failed on v0.2.0 and again on v0.2.1, both times for a reason that had nothing
+  to do with the release it was guarding.
+
+  Compatibility against the baseline is a pre-tag question, and
+  `scripts/release.sh` is where it is asked, while the answer can still stop
+  something. A tag push now asks what survives publication instead: whether the
+  module can be released under this version at all, which catches a major bump
+  whose module path was not bumped with it. `workflow_dispatch` keeps the full
+  comparison, because a version named there does not exist yet.
+
+- **`design/design.md` was not spell-checked**, and had not been since the commit
+  that moved the design out of `docs/` rewrote the file list without it. The
+  repository's longest prose document — the one README and the package
+  documentation both send readers to — was linted and not spelled. `cspell.json`
+  now takes markdownlint's set, so the two gates cover the same ten files or
+  neither is a gate. The pull request template joins them: a `**` glob does not
+  descend into a leading-dot directory, so it has to be named.
+
+- **The bound on outstanding URL elicitations was wired by hand**, once per peer
+  type, into a field whose zero value refuses every elicitation. It is now an
+  argument, as it already was for the session-handle bound beside it. Nothing had
+  tested that wiring end to end — deleting the assignment broke no test — so the
+  bound now has a test that drives it through the public API.
+
+### Changed
+
+- `cspell.json`'s word list carried 58 entries no checked file used, one of them
+  twice; they were Go-comment vocabulary, and no check reads Go comments. Pruned
+  to the 42 the prose needs.
+- `actions/setup-node` 6 to 7, and `cspell` 10.1.0 to 10.2.2.
+
 ## v0.2.1 — 2026-09-04
 
 No API change: `gorelease` reports the exported surface identical to v0.2.0, and
