@@ -259,7 +259,6 @@ func (c *Client) Connect(ctx context.Context, transport Transport) (*ClientConn,
 
 	conn := &ClientConn{connection: newConnection(), client: c}
 	conn.link = newLink(stream, conn, c.config.Logger, c.config.Limits)
-	conn.elicitations.limit = conn.limits.OutstandingElicitations
 	conn.run()
 
 	if err := conn.initialize(ctx); err != nil {
@@ -657,7 +656,7 @@ func (c *ClientConn) createElicitation(ctx context.Context, request *jsonrpc.Req
 		if handlers.URL == nil {
 			return nil, unadvertisedMode(elicitationModeURL, "clientCapabilities.elicitation.url")
 		}
-		reservation, reserveErr := c.elicitations.reserve(mode.ElicitationID)
+		reservation, reserveErr := c.elicitations.reserve(mode.ElicitationID, c.limits.OutstandingElicitations)
 		if reserveErr != nil {
 			if errors.Is(reserveErr, errElicitationIDInUse) {
 				return nil, newError(ErrorCodeInvalidParams, "%s", reserveErr)

@@ -812,3 +812,78 @@ func TestARequestScopeRefusesASessionScopedRequest(t *testing.T) {
 			"the session the request already has", fromPrompt)
 	}
 }
+
+// The bound on outstanding URL elicitations comes from the connection's own
+// Limits, and reaching it refuses the elicitation rather than ending the
+// connection — the one bound in limits.go that behaves that way, because either
+// peer may originate one and a refusal costs nothing already in flight.
+//
+// Driven through the public API on purpose. The reservation reads the bound from
+// the connection that resolved it, and a test that supplied its own would pass
+// with that wiring removed.
+func TestTheOutstandingURLElicitationBoundIsTheConfiguredOne(t *testing.T) {
+	client, err := acp.NewClient(&acp.ClientConfig{
+		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		RequestPermission: denyingPermission,
+		Elicitation: &acp.ElicitationHandlers{
+			URL: func(
+				context.Context,
+				*acp.CreateElicitationRequest,
+				*acp.ElicitationURLMode,
+			) (*acp.CreateElicitationResponse, error) {
+				return &acp.CreateElicitationResponse{Value: &acp.ElicitationAcceptAction{}}, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	var first, second error
+	agent, err := acp.NewAgent(&acp.AgentConfig{
+		Limits: acp.Limits{OutstandingElicitations: 1},
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
+		},
+		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
+		Prompt: func(
+			ctx context.Context,
+			session *acp.AgentSession,
+			_ *acp.PromptRequest,
+		) (*acp.PromptResponse, error) {
+			elicit := func(id acp.ElicitationID) error {
+				_, refused := session.CreateElicitation(ctx, &acp.CreateElicitationParams{
+					Message: "sign in",
+					Mode: &acp.ElicitationURLMode{
+						ElicitationID: id,
+						URL:           "https://example.invalid/sign-in",
+					},
+				})
+				return refused
+			}
+			first = elicit("elicit-1")
+			second = elicit("elicit-2")
+			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+
+	session := connectAndOpen(t, client, agent)
+	if _, err := session.Prompt(context.Background(), &acp.PromptParams{}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	if first != nil {
+		t.Fatalf("the first elicitation was refused within the bound: %v", first)
+	}
+	if second == nil || !strings.Contains(second.Error(), "URL elicitation limit exceeded (limit 1)") {
+		t.Fatalf("the elicitation past the bound was answered %v, want the configured bound", second)
+	}
+
+	// Still usable: this bound refuses the operation and nothing else.
+	if _, err := session.Prompt(context.Background(), &acp.PromptParams{}); err != nil {
+		t.Fatalf("the connection did not survive a refused elicitation: %v", err)
+	}
+}

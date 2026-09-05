@@ -59,6 +59,14 @@ go run ./internal/cmd/schemagen -check
 CI also runs fuzz targets, the Go 1.25.0 floor, platform-specific lint, and the
 cross-compilation matrix.
 
+`docs:check` spell-checks and lints every tracked Markdown file, and the two
+checkers are meant to see the same set. `cspell.json` names `.github/**/*.md`
+separately because a `**` glob does not descend into a leading-dot directory —
+without it the pull request template is linted and not spelled, which is how
+`design/design.md` once went unchecked for months. Its word list carries only
+words the checked prose actually uses; a term that lives solely in Go comments
+does not belong there, because no check reads them.
+
 Fuzz targets run in CI on every push. Run one locally with:
 
 ```sh

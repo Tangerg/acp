@@ -241,7 +241,6 @@ func (a *Agent) Connect(ctx context.Context, transport Transport) (*AgentConn, e
 
 	conn := &AgentConn{connection: newConnection(), agent: a}
 	conn.link = newLink(stream, conn, a.config.Logger, a.config.Limits)
-	conn.elicitations.limit = conn.limits.OutstandingElicitations
 	conn.run()
 
 	a.conns.add(conn)

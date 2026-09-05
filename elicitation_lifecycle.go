@@ -22,7 +22,6 @@ const (
 type urlElicitations struct {
 	mu      sync.Mutex
 	entries map[ElicitationID]*urlElicitation
-	limit   int
 }
 
 type urlElicitation struct {
@@ -38,15 +37,21 @@ type urlElicitationCompletion struct {
 // reserve establishes uniqueness before work that may put the ID on the wire or
 // in front of a user. It is provisional until the create response accepts the
 // URL interaction: decline, cancellation, and failure reject the reservation.
-func (u *urlElicitations) reserve(id ElicitationID) (*urlElicitation, error) {
+//
+// The bound is an argument rather than a field, as it is for the session handles
+// in connection.go. A field would have to be assigned by hand after the link
+// resolved it, once per peer type, and its zero value refuses every elicitation —
+// so forgetting one would look like a peer misbehaving rather than a connection
+// that was never finished being built.
+func (u *urlElicitations) reserve(id ElicitationID, limit int) (*urlElicitation, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
 	if _, exists := u.entries[id]; exists {
 		return nil, fmt.Errorf("%w: %q", errElicitationIDInUse, id)
 	}
-	if len(u.entries) >= u.limit {
-		return nil, fmt.Errorf("%w (limit %d)", errTooManyElicitations, u.limit)
+	if len(u.entries) >= limit {
+		return nil, fmt.Errorf("%w (limit %d)", errTooManyElicitations, limit)
 	}
 	if u.entries == nil {
 		u.entries = make(map[ElicitationID]*urlElicitation)

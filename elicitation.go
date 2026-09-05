@@ -138,7 +138,7 @@ func createElicitation(
 	}
 	response := new(CreateElicitationResponse)
 	if url, isURL := scoped.(*ElicitationURLMode); isURL {
-		reservation, err := conn.elicitations.reserve(url.ElicitationID)
+		reservation, err := conn.elicitations.reserve(url.ElicitationID, conn.limits.OutstandingElicitations)
 		if err != nil {
 			return nil, err
 		}

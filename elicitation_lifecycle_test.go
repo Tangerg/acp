@@ -10,16 +10,15 @@ import (
 
 func TestURLLifecycleCommitsOnlyAcceptedElicitations(t *testing.T) {
 	var elicitations urlElicitations
-	elicitations.limit = 1
 
-	declined, err := elicitations.reserve("same")
+	declined, err := elicitations.reserve("same", 1)
 	if err != nil {
 		t.Fatalf("reserve declined elicitation: %v", err)
 	}
-	if _, duplicateErr := elicitations.reserve("same"); !errors.Is(duplicateErr, errElicitationIDInUse) {
+	if _, duplicateErr := elicitations.reserve("same", 1); !errors.Is(duplicateErr, errElicitationIDInUse) {
 		t.Fatalf("duplicate reservation returned %v, want errElicitationIDInUse", duplicateErr)
 	}
-	if _, limitErr := elicitations.reserve("other"); !errors.Is(limitErr, errTooManyElicitations) {
+	if _, limitErr := elicitations.reserve("other", 1); !errors.Is(limitErr, errTooManyElicitations) {
 		t.Fatalf("reservation past the bound returned %v, want errTooManyElicitations", limitErr)
 	}
 	if _, outstanding := elicitations.beginCompletion("same"); outstanding {
@@ -27,7 +26,7 @@ func TestURLLifecycleCommitsOnlyAcceptedElicitations(t *testing.T) {
 	}
 	declined.reject()
 
-	accepted, err := elicitations.reserve("same")
+	accepted, err := elicitations.reserve("same", 1)
 	if err != nil {
 		t.Fatalf("the declined elicitation did not release its ID: %v", err)
 	}
@@ -46,15 +45,14 @@ func TestURLLifecycleCommitsOnlyAcceptedElicitations(t *testing.T) {
 		t.Fatal("a completion known not to have been sent could not be retried")
 	}
 	retry.sent()
-	if _, err := elicitations.reserve("same"); err != nil {
+	if _, err := elicitations.reserve("same", 1); err != nil {
 		t.Fatalf("a completed elicitation did not release its ID: %v", err)
 	}
 }
 
 func TestCallerCancellationStillObservesAStateOwningResponse(t *testing.T) {
 	var elicitations urlElicitations
-	elicitations.limit = 1
-	reservation, err := elicitations.reserve("late")
+	reservation, err := elicitations.reserve("late", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,9 +86,8 @@ func TestCallerCancellationStillObservesAStateOwningResponse(t *testing.T) {
 
 func TestAStaleCompletionCannotChangeAReusedID(t *testing.T) {
 	var elicitations urlElicitations
-	elicitations.limit = 1
 
-	first, err := elicitations.reserve("same")
+	first, err := elicitations.reserve("same", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +98,7 @@ func TestAStaleCompletionCannotChangeAReusedID(t *testing.T) {
 	}
 	stale.sent()
 
-	second, err := elicitations.reserve("same")
+	second, err := elicitations.reserve("same", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
