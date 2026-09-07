@@ -4,6 +4,37 @@ This file records caller-visible changes, newest first. The module is pre-1.0, s
 a minor release may change its public API. Each released entry will include
 migration instructions.
 
+## v0.2.3 — 2026-09-05
+
+Nothing here is caller-visible: `gorelease` reports the exported surface
+identical to v0.2.2, no exported signature changed, and the protocol target has
+not moved. What changed is a naming rule and the check that now holds it.
+
+### Changed
+
+- **Every production error that shadowed another is named for what it is.**
+  `govet`'s shadow check was already enabled and this file's configuration
+  claimed it enforced "the zero-shadowing property". It did not: the default rule
+  reports only a shadow whose outer variable is read again afterwards, which is
+  already a bug, and says nothing about the shape that merely reads like one.
+  Strict mode found 57 outside tests.
+
+  None was a bug, but one was worse than a naming problem. `objectKeys` wrote
+  `key, ok := tok.(string)` inside a loop whose `tok` shadowed the outer
+  delimiter token, so the line asserted on something other than what it appeared
+  to. The rest now follow the convention the package already used in places —
+  `decodeErr`, `scopeErr`, `reserveErr` — and strict mode is on, with tests
+  excluded for a stated reason. The generator emits `invalid` for the validate
+  call it writes, so the generated file stays clean without an exclusion.
+
+- **Receivers are the type's initial rather than a whole word.** Twenty-one
+  methods took `config`, `handlers`, `response`, `schema`, `msg` or `err` where
+  the rest of the package used a letter. `ID` keeps `id`, which Go's own guidance
+  allows as a two-letter abbreviation and which does not read as a loop index;
+  the single-letter receivers that are not initials stay, because
+  `urlElicitation`, `urlElicitations` and `urlElicitationCompletion` share both a
+  file and a first letter, as do `handshake` and `handshakeAttempt`.
+
 ## v0.2.2 — 2026-09-04
 
 No API change: `gorelease` reports the exported surface identical to v0.2.1, and
