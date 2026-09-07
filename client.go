@@ -547,7 +547,7 @@ func (c *ClientConn) accept(request *InitializeRequest, response *InitializeResp
 		AgentMeta:          response.Meta,
 		AuthMethods:        response.AuthMethods,
 	})
-	c.handshake.publish()
+	c.handshake.publish(nil)
 	return nil
 }
 

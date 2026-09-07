@@ -225,18 +225,18 @@ func (l *link) deliverLoop() {
 	}
 }
 
-func (l *link) deliver(ctx context.Context, pending delivery) {
+func (l *link) deliver(drain context.Context, pending delivery) {
 	switch message := pending.message.(type) {
 	case *jsonrpc.Request:
-		l.deliverRequest(ctx, pending.ctx, message)
+		l.deliverRequest(pending.serveContext(drain), message)
 	case *jsonrpc.Response:
 		l.calls.deliver(message)
 	}
 }
 
-func (l *link) deliverRequest(drain, requestCtx context.Context, request *jsonrpc.Request) {
+func (l *link) deliverRequest(ctx context.Context, request *jsonrpc.Request) {
 	if !request.IsCall() {
-		if _, err := l.side.serve(drain, request); err != nil {
+		if _, err := l.side.serve(ctx, request); err != nil {
 			l.logger.Error("acp: handling a notification failed",
 				slog.String("method", request.Method), slog.Any("error", err))
 		}
@@ -257,10 +257,10 @@ func (l *link) deliverRequest(drain, requestCtx context.Context, request *jsonrp
 		var result any
 		var err error
 		if entry.admit != nil {
-			err = entry.admit(requestCtx)
+			err = entry.admit(ctx)
 		}
 		if err == nil {
-			result, err = l.side.serve(requestCtx, request)
+			result, err = l.side.serve(ctx, request)
 		}
 		if entry.served != nil {
 			entry.served()

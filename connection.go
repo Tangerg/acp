@@ -176,19 +176,25 @@ func (a *handshakeAttempt) settle() {
 	close(next.ready)
 }
 
-// publish is attempt-bound because a failed answer may promote a successor that
-// accepts before the failed request's goroutine finishes. Letting the old answer
-// publish the new agreement would open outbound work ahead of its response.
-func (a *handshakeAttempt) publish() {
-	h := a.owner
+// publish opens the connection for outbound work, and only for whoever accepted
+// the agreement being published. A failed answer may promote a successor that
+// accepts before the failed request's goroutine finishes, and letting the old
+// answer publish the new agreement would open sending ahead of its own response.
+//
+// The client passes nil: its acceptance came from the initialize call it made
+// rather than from a queued attempt, so no attempt owns it.
+func (h *handshake) publish(acceptedBy *handshakeAttempt) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.state != handshakeAccepted || h.acceptedBy != a {
+	if h.state != handshakeAccepted || h.acceptedBy != acceptedBy {
 		return
 	}
 	h.state = handshakePublished
 	close(h.published)
 }
+
+// The request lifecycle wants a func(), and an attempt knows which one it is.
+func (a *handshakeAttempt) publish() { a.owner.publish(a) }
 
 func (h *handshake) accept(peer PeerInfo) {
 	h.mu.Lock()
@@ -200,16 +206,6 @@ func (h *handshake) accept(peer PeerInfo) {
 	h.state = handshakeAccepted
 	h.acceptedBy = h.active
 	close(h.accepted)
-}
-
-func (h *handshake) publish() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.state != handshakeAccepted || h.acceptedBy != nil {
-		return
-	}
-	h.state = handshakePublished
-	close(h.published)
 }
 
 func (h *handshake) Peer() PeerInfo {

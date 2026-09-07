@@ -219,8 +219,7 @@ func checkedMode(mode CreateElicitationRequestValue) (CreateElicitationRequestVa
 // advertisement against the handler — so a spelling that lived apart from its
 // path could report one mode while gating another.
 type elicitationMode struct {
-	name       string
-	capability string
+	parameterCapability
 	// advertised reads the one field under the elicitation capability that says
 	// whether this mode is offered.
 	advertised func(ElicitationCapabilities) bool
@@ -238,14 +237,12 @@ const (
 
 var (
 	elicitationForm = elicitationMode{
-		name:       elicitationModeForm,
-		capability: elicitationCapability + "." + elicitationModeForm,
-		advertised: func(c ElicitationCapabilities) bool { return hasCapability(c.Form) },
+		parameterCapability: elicitationOf(elicitationModeForm),
+		advertised:          func(c ElicitationCapabilities) bool { return hasCapability(c.Form) },
 	}
 	elicitationURL = elicitationMode{
-		name:       elicitationModeURL,
-		capability: elicitationCapability + "." + elicitationModeURL,
-		advertised: func(c ElicitationCapabilities) bool { return hasCapability(c.URL) },
+		parameterCapability: elicitationOf(elicitationModeURL),
+		advertised:          func(c ElicitationCapabilities) bool { return hasCapability(c.URL) },
 	}
 )
 
@@ -269,9 +266,12 @@ func elicitationModeOf(value CreateElicitationRequestValue) (elicitationMode, bo
 	}
 }
 
-func (m elicitationMode) unadvertised() *Error {
-	return newError(ErrorCodeInvalidParams,
-		"a %q elicitation was not advertised because %s is not set", m.name, m.capability)
+func elicitationOf(mode string) parameterCapability {
+	return parameterCapability{
+		kind:       mode,
+		noun:       "elicitation",
+		capability: elicitationCapability + "." + mode,
+	}
 }
 
 var errScopeIsTheOperations = errors.New(

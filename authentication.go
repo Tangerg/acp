@@ -19,9 +19,10 @@ func newAuthenticationMethods(
 		return nil, fmt.Errorf("acp: AgentConfig.AuthMethods: %w", err)
 	}
 	for _, method := range owned {
-		id, agentHandled, _ := authenticationMethod(method)
-		if agentHandled && !hasAgentHandler {
-			return nil, fmt.Errorf("acp: authentication method %q requires AgentConfig.Authenticate", id)
+		advertised, _ := authenticationMethod(method)
+		if advertised.agentHandled && !hasAgentHandler {
+			return nil, fmt.Errorf(
+				"acp: authentication method %q requires AgentConfig.Authenticate", advertised.id)
 		}
 	}
 	return owned, nil
@@ -31,32 +32,44 @@ func ownAuthenticationMethods(methods []AuthMethod) (authenticationMethods, erro
 	owned := authenticationMethods(deepCopy(methods))
 	seen := make(map[AuthMethodID]struct{}, len(owned))
 	for index, method := range owned {
-		id, _, ok := authenticationMethod(method)
-		if !ok {
+		advertised, known := authenticationMethod(method)
+		if !known {
 			return nil, fmt.Errorf("authentication method %d is nil or has an unknown form", index)
 		}
-		if _, duplicate := seen[id]; duplicate {
-			return nil, fmt.Errorf("two authentication methods share the identifier %q", id)
+		if _, duplicate := seen[advertised.id]; duplicate {
+			return nil, fmt.Errorf(
+				"two authentication methods share the identifier %q", advertised.id)
 		}
-		seen[id] = struct{}{}
+		seen[advertised.id] = struct{}{}
 	}
 	return owned, nil
 }
 
-func authenticationMethod(method AuthMethod) (AuthMethodID, bool, bool) {
+// An advertisedAuth is what this package needs from one entry in authMethods: the
+// identifier a client names, and whether this agent performs the method by
+// answering authenticate or by being run again in a terminal.
+//
+// One value rather than two returned booleans, which a caller binds by position
+// and cannot be told apart by the compiler.
+type advertisedAuth struct {
+	id           AuthMethodID
+	agentHandled bool
+}
+
+func authenticationMethod(method AuthMethod) (advertisedAuth, bool) {
 	switch method := method.(type) {
 	case *AuthMethodAgent:
 		if method == nil {
-			return "", false, false
+			return advertisedAuth{}, false
 		}
-		return method.ID, true, true
+		return advertisedAuth{id: method.ID, agentHandled: true}, true
 	case *AuthMethodTerminal:
 		if method == nil {
-			return "", false, false
+			return advertisedAuth{}, false
 		}
-		return method.ID, false, true
+		return advertisedAuth{id: method.ID}, true
 	default:
-		return "", false, false
+		return advertisedAuth{}, false
 	}
 }
 
@@ -88,11 +101,11 @@ func (m authenticationMethods) validateOffer(client ClientCapabilities) error {
 
 func (m authenticationMethods) accepts(methodID AuthMethodID) error {
 	for _, method := range m {
-		id, agentHandled, ok := authenticationMethod(method)
-		if !ok || id != methodID {
+		advertised, known := authenticationMethod(method)
+		if !known || advertised.id != methodID {
 			continue
 		}
-		if agentHandled {
+		if advertised.agentHandled {
 			return nil
 		}
 		return newError(ErrorCodeInvalidParams,

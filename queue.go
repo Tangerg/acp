@@ -50,6 +50,17 @@ type delivery struct {
 	ctx     context.Context //nolint:containedctx // created at read time so drained calls start cancelled.
 }
 
+// serveContext is the context this message's handler runs under: a call's own,
+// and the drain context for a notification, which never had one. Asking the
+// delivery is what keeps the two from being two parameters of the same type that
+// a caller could pass the wrong way round.
+func (d delivery) serveContext(drain context.Context) context.Context {
+	if d.ctx != nil {
+		return d.ctx
+	}
+	return drain
+}
+
 func newQueue(limit int) *queue {
 	return &queue{wake: make(chan struct{}, 1), limit: limit}
 }

@@ -57,6 +57,48 @@ const (
 	gatingUnimplemented
 )
 
+// A parameterCapability is a value a peer may send only because it advertised the
+// capability that describes it: an image inside a prompt, an http MCP server, a
+// form elicitation. It is the other kind of capability — see
+// [PeerInfo.permitsPromptContent] for why this kind is enforced on the way out
+// while a method capability is enforced in both directions.
+//
+// The kind and the schema path are one value because every refusal names both,
+// and because they do not always match: a prompt's "resource" block is gated by
+// embeddedContext.
+type parameterCapability struct {
+	kind       string
+	noun       string
+	capability string
+}
+
+func (c parameterCapability) unadvertised() *Error {
+	return newError(ErrorCodeInvalidParams,
+		"a %q %s was not advertised because %s is not set", c.kind, c.noun, c.capability)
+}
+
+const (
+	promptCapabilities = "agentCapabilities.promptCapabilities"
+	mcpCapabilities    = "agentCapabilities.mcpCapabilities"
+)
+
+var (
+	promptImage    = contentBlock("image", promptCapabilities+".image")
+	promptAudio    = contentBlock("audio", promptCapabilities+".audio")
+	promptResource = contentBlock("resource", promptCapabilities+".embeddedContext")
+
+	mcpHTTP = mcpServer("http", mcpCapabilities+".http")
+	mcpSse  = mcpServer("sse", mcpCapabilities+".sse")
+)
+
+func contentBlock(kind, capability string) parameterCapability {
+	return parameterCapability{kind: kind, noun: "content block", capability: capability}
+}
+
+func mcpServer(transport, capability string) parameterCapability {
+	return parameterCapability{kind: transport, noun: "MCP server", capability: capability}
+}
+
 // A methodGate is the authority check for one standard method.
 type methodGate struct {
 	gating gating

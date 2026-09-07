@@ -75,18 +75,17 @@ func (p PeerInfo) permits(method string) error {
 func (p PeerInfo) permitsSessionSetup(servers []McpServer, directories []string) error {
 	mcp := p.AgentCapabilities.McpCapabilities
 	for _, server := range servers {
-		transport, advertised, capability := "", true, ""
+		// A transport with no arm is one the schema does not gate — stdio, and
+		// whatever a later revision adds — so it passes by not being named.
 		switch server.(type) {
 		case *McpServerHTTP:
-			transport, advertised, capability =
-				"http", mcp.HTTP, "agentCapabilities.mcpCapabilities.http"
+			if !mcp.HTTP {
+				return mcpHTTP.unadvertised()
+			}
 		case *McpServerSse:
-			transport, advertised, capability =
-				"sse", mcp.Sse, "agentCapabilities.mcpCapabilities.sse"
-		}
-		if !advertised {
-			return newError(ErrorCodeInvalidParams,
-				"a %q MCP server was not advertised because %s is not set", transport, capability)
+			if !mcp.Sse {
+				return mcpSse.unadvertised()
+			}
 		}
 	}
 	if len(directories) > 0 &&
@@ -119,21 +118,21 @@ func (p PeerInfo) permitsSessionSetup(servers []McpServer, directories []string)
 func (p PeerInfo) permitsPromptContent(blocks []ContentBlock) error {
 	prompt := p.AgentCapabilities.PromptCapabilities
 	for _, block := range blocks {
-		kind, advertised, capability := "", true, ""
+		// Text and every future arm pass by not being named here; only the three
+		// the schema gates are refused.
 		switch block.(type) {
 		case *ImageContent:
-			kind, advertised, capability =
-				"image", prompt.Image, "agentCapabilities.promptCapabilities.image"
+			if !prompt.Image {
+				return promptImage.unadvertised()
+			}
 		case *AudioContent:
-			kind, advertised, capability =
-				"audio", prompt.Audio, "agentCapabilities.promptCapabilities.audio"
+			if !prompt.Audio {
+				return promptAudio.unadvertised()
+			}
 		case *EmbeddedResource:
-			kind, advertised, capability =
-				"resource", prompt.EmbeddedContext, "agentCapabilities.promptCapabilities.embeddedContext"
-		}
-		if !advertised {
-			return newError(ErrorCodeInvalidParams,
-				"a %q content block was not advertised because %s is not set", kind, capability)
+			if !prompt.EmbeddedContext {
+				return promptResource.unadvertised()
+			}
 		}
 	}
 	return nil
