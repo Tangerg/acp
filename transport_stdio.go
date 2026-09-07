@@ -21,6 +21,11 @@ import (
 // It accommodates prompts that carry embedded file contents.
 const maxMessageBytes = 64 << 20
 
+// readBufferBytes is where a line starts, not where it ends: readLine keeps
+// reading past a full buffer, so this trades a larger first read against the
+// memory a connection holds while idle.
+const readBufferBytes = 64 << 10
+
 // NewStdioTransport returns the agent's side of a local connection: this process's
 // own stdin and stdout.
 //
@@ -53,7 +58,7 @@ func (t *ioTransport) Connect(ctx context.Context) (Connection, error) {
 	if t.reader == nil || t.writer == nil {
 		return nil, errors.New("acp: IO transport requires non-nil reader and writer")
 	}
-	lines := bufio.NewReaderSize(t.reader, 64<<10)
+	lines := bufio.NewReaderSize(t.reader, readBufferBytes)
 	return &ioConnection{reader: t.reader, writer: t.writer, lines: lines}, nil
 }
 
@@ -241,7 +246,7 @@ func (t *commandTransport) Connect(ctx context.Context) (Connection, error) {
 		ioConnection: ioConnection{
 			reader: stdout,
 			writer: stdin,
-			lines:  bufio.NewReaderSize(stdout, 64<<10),
+			lines:  bufio.NewReaderSize(stdout, readBufferBytes),
 		},
 		cmd:   cmd,
 		grace: grace,

@@ -75,6 +75,10 @@ func (s *ClientSession) Prompt(ctx context.Context, params *PromptParams) (*Prom
 	}
 
 	result := new(PromptResponse)
+	// finish is the abandon callback as well as the accept one, which is what
+	// keeps the turn registered after this caller leaves: a call with somewhere to
+	// abandon to is one await declines to retire, so the answer that ends the turn
+	// is still observed when it arrives.
 	finish := func() { conn.turns.complete(s.id, generation) }
 	call, err := conn.send(ctx, methodSessionPrompt, request, func(response *jsonrpc.Response) error {
 		defer finish()
@@ -85,42 +89,10 @@ func (s *ClientSession) Prompt(ctx context.Context, params *PromptParams) (*Prom
 		return nil, err
 	}
 
-	select {
-	case answered := <-call.completed:
-		if answered != nil {
-			return nil, answered
-		}
-		return result, nil
-
-	case <-conn.over():
-		// An answer already in hand is an answer; see link.await.
-		select {
-		case answered := <-call.completed:
-			if answered != nil {
-				return nil, answered
-			}
-			return result, nil
-		default:
-		}
-		return nil, conn.failure()
-
-	case <-ctx.Done():
-		select {
-		case answered := <-call.completed:
-			if answered != nil {
-				return nil, answered
-			}
-			return result, nil
-		default:
-		}
-		// This caller has stopped waiting. The turn has not stopped running: the
-		// agent owes an answer and the protocol says what it is. Tell the agent,
-		// on a budget of its own, and leave a waiter behind — the session is free
-		// for the next prompt when that answer arrives and not before.
-		//nolint:contextcheck // deliberate; the notification has a budget of its own.
-		conn.cancelRemotely(call.id)
-		return nil, ctx.Err()
+	if awaitErr := conn.await(ctx, call); awaitErr != nil {
+		return nil, awaitErr
 	}
+	return result, nil
 }
 
 // Cancel ends the current turn.
@@ -286,20 +258,13 @@ func (s *AgentSession) RequestPermission(
 	if params == nil {
 		return nil, paramsRequired("RequestPermission", "ToolCall and Options")
 	}
-	if err := s.conn.awaitHandshake(ctx, methodSessionRequestPermission); err != nil {
-		return nil, err
-	}
 	request := &RequestPermissionRequest{
 		SessionID: s.id,
 		ToolCall:  params.ToolCall,
 		Options:   params.Options,
 		Meta:      params.Meta,
 	}
-	response := new(RequestPermissionResponse)
-	if err := s.conn.call(ctx, methodSessionRequestPermission, request, response); err != nil {
-		return nil, err
-	}
-	return response, nil
+	return callGated[RequestPermissionResponse](ctx, s.conn, methodSessionRequestPermission, request)
 }
 
 // CreateElicitation asks the user for structured input within this session.
@@ -317,7 +282,7 @@ func (s *AgentSession) CreateElicitation(
 		}
 		return mode, nil
 	}
-	return createElicitation(ctx, s.conn, params, scope)
+	return s.conn.createElicitation(ctx, params, scope)
 }
 
 // ReadTextFile reads a text file from the client's workspace.

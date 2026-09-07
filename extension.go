@@ -53,14 +53,14 @@ func validateExtensionMethod(method string) error {
 	return nil
 }
 
-func extensionCall(ctx context.Context, l *link, method string, params, result any) error {
+func (l *link) extensionCall(ctx context.Context, method string, params, result any) error {
 	if err := validateExtensionMethod(method); err != nil {
 		return err
 	}
 	return l.call(ctx, method, params, result)
 }
 
-func extensionNotify(ctx context.Context, l *link, method string, params any) error {
+func (l *link) extensionNotify(ctx context.Context, method string, params any) error {
 	if err := validateExtensionMethod(method); err != nil {
 		return err
 	}

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
-	"slices"
 
 	"github.com/Tangerg/acp/jsonrpc"
 )
@@ -135,22 +134,27 @@ func (t *TerminalHandlers) check() error {
 	if t == nil {
 		return nil
 	}
-	missing := make([]string, 0, 5)
-	for name, present := range map[string]bool{
-		"Create":      t.Create != nil,
-		"Kill":        t.Kill != nil,
-		"Output":      t.Output != nil,
-		"Release":     t.Release != nil,
-		"WaitForExit": t.WaitForExit != nil,
+	// Declared in the order the fields are, which a map cannot promise: the old
+	// one needed a sort afterwards to stop two runs of the same misconfiguration
+	// reporting it differently.
+	var missing []string
+	for _, handler := range []struct {
+		name string
+		set  bool
+	}{
+		{"Create", t.Create != nil},
+		{"Output", t.Output != nil},
+		{"WaitForExit", t.WaitForExit != nil},
+		{"Kill", t.Kill != nil},
+		{"Release", t.Release != nil},
 	} {
-		if !present {
-			missing = append(missing, name)
+		if !handler.set {
+			missing = append(missing, handler.name)
 		}
 	}
 	if len(missing) == 0 {
 		return nil
 	}
-	slices.Sort(missing)
 	return fmt.Errorf("acp: TerminalHandlers is incomplete; missing: %v", missing)
 }
 
@@ -172,7 +176,7 @@ func (c *ClientConfig) resolveCapabilities() (ClientCapabilities, error) {
 	// The elicitation modes are checked beside the methods rather than after them,
 	// because an advertisement is one promise: a mode with no handler is refused on
 	// its first use exactly as a method with no handler is.
-	exceeded = append(exceeded, exceededElicitationModes(stated, c.Elicitation)...)
+	exceeded = append(exceeded, c.Elicitation.exceeded(stated)...)
 	if len(exceeded) > 0 {
 		return ClientCapabilities{}, fmt.Errorf(
 			"acp: ClientConfig.Capabilities advertises what this client cannot serve: %v", exceeded)
@@ -480,13 +484,13 @@ func (c *ClientConn) DeleteSession(
 // it has exactly one path through the typed codec and the capability gate, and
 // this is not it.
 func (c *ClientConn) Call(ctx context.Context, method string, params, result any) error {
-	return extensionCall(ctx, c.link, method, params, result)
+	return c.extensionCall(ctx, method, params, result)
 }
 
 // Notify sends an extension notification. Extension methods only; see
 // [ClientConn.Call].
 func (c *ClientConn) Notify(ctx context.Context, method string, params any) error {
-	return extensionNotify(ctx, c.link, method, params)
+	return c.extensionNotify(ctx, method, params)
 }
 
 func (c *ClientConn) initialize(ctx context.Context) error {
@@ -638,7 +642,7 @@ func (c *ClientConn) createElicitation(ctx context.Context, request *jsonrpc.Req
 	switch mode := params.Value.(type) {
 	case *ElicitationFormMode:
 		if handlers.Form == nil {
-			return nil, unadvertisedMode(elicitationModeForm, "clientCapabilities.elicitation.form")
+			return nil, elicitationForm.unadvertised()
 		}
 		response, err = handlers.Form(ctx, params, mode)
 		if err == nil {
@@ -654,7 +658,7 @@ func (c *ClientConn) createElicitation(ctx context.Context, request *jsonrpc.Req
 
 	case *ElicitationURLMode:
 		if handlers.URL == nil {
-			return nil, unadvertisedMode(elicitationModeURL, "clientCapabilities.elicitation.url")
+			return nil, elicitationURL.unadvertised()
 		}
 		reservation, reserveErr := c.elicitations.reserve(mode.ElicitationID, c.limits.OutstandingElicitations)
 		if reserveErr != nil {

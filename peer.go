@@ -177,21 +177,9 @@ func (p PeerInfo) permitsConfigOptionValue(value SetSessionConfigOptionRequestVa
 // so a mode it did not advertise is work it cannot do rather than authority it
 // withheld. See [PeerInfo.permitsPromptContent] for why that decides the direction.
 func (p PeerInfo) permitsElicitationMode(mode CreateElicitationRequestValue) error {
-	elicitation, advertised := p.ClientCapabilities.Elicitation.Get()
-	if !advertised {
-		// Unreachable: the method gate refuses this first, and reaching it would
-		// mean the two disagree.
-		return unadvertisedMode("", "clientCapabilities.elicitation")
-	}
-	switch mode.(type) {
-	case *ElicitationFormMode:
-		if !hasCapability(elicitation.Form) {
-			return unadvertisedMode(elicitationModeForm, "clientCapabilities.elicitation.form")
-		}
-	case *ElicitationURLMode:
-		if !hasCapability(elicitation.URL) {
-			return unadvertisedMode(elicitationModeURL, "clientCapabilities.elicitation.url")
-		}
+	named, known := elicitationModeOf(mode)
+	if known && !named.advertisedBy(p.ClientCapabilities) {
+		return named.unadvertised()
 	}
 	return nil
 }

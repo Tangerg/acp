@@ -190,7 +190,7 @@ var gates = gateTable{
 	// only to finish a url elicitation, so the url mode gates the method itself.
 	methodElicitationCreate: {
 		gating:     gatingCapability,
-		capability: "clientCapabilities.elicitation",
+		capability: elicitationCapability,
 		owner:      sideClient,
 		advertised: func(peer PeerInfo) bool { return anyElicitationMode(peer.ClientCapabilities) },
 		why: `"Determines which elicitation modes the agent may use" — which is why a present ` +
@@ -198,9 +198,9 @@ var gates = gateTable{
 	},
 	methodElicitationComplete: {
 		gating:     gatingCapability,
-		capability: "clientCapabilities.elicitation.url",
+		capability: elicitationURL.capability,
 		owner:      sideClient,
-		advertised: elicitationURL,
+		advertised: func(peer PeerInfo) bool { return elicitationURL.advertisedBy(peer.ClientCapabilities) },
 		why:        "the completion notification for a URL elicitation, so the url mode gates it",
 	},
 }
@@ -215,11 +215,6 @@ func sessionCapability(name string, set func(SessionCapabilities) bool) methodGa
 	}
 }
 
-func elicitationURL(peer PeerInfo) bool {
-	elicitation, advertised := peer.ClientCapabilities.Elicitation.Get()
-	return advertised && hasCapability(elicitation.URL)
-}
-
 // anyElicitationMode reports whether the client can render anything at all.
 //
 // A present object advertising no mode is the case worth naming. The schema says
@@ -229,12 +224,10 @@ func elicitationURL(peer PeerInfo) bool {
 // method either: an agent permitted to call it would have every call refused for
 // its mode, which is a client saying yes and meaning no.
 func anyElicitationMode(client ClientCapabilities) bool {
-	elicitation, advertised := client.Elicitation.Get()
-	return advertised && (hasCapability(elicitation.Form) || hasCapability(elicitation.URL))
+	return elicitationForm.advertisedBy(client) || elicitationURL.advertisedBy(client)
 }
 
-// exceededElicitationModes reports the modes an advertisement claims that no
-// handler serves.
+// exceeded reports the modes an advertisement claims that no handler serves.
 //
 // The mode capabilities gate a parameter rather than a method, so
 // [gateTable.exceeded] cannot see them — it walks methods. The promise is the same
@@ -244,24 +237,22 @@ func anyElicitationMode(client ClientCapabilities) bool {
 //
 // Advertising fewer modes than the handlers implement is left alone. That is a
 // client choosing not to offer something, which is its own to decide.
-func exceededElicitationModes(stated ClientCapabilities, handlers *ElicitationHandlers) []string {
+func (e *ElicitationHandlers) exceeded(stated ClientCapabilities) []string {
 	elicitation, advertised := stated.Elicitation.Get()
 	if !advertised {
 		return nil
 	}
 	var exceeded []string
 	for _, mode := range []struct {
-		name       string
-		advertised bool
-		served     bool
+		elicitationMode
+		served bool
 	}{
-		{elicitationModeForm, hasCapability(elicitation.Form), handlers != nil && handlers.Form != nil},
-		{elicitationModeURL, hasCapability(elicitation.URL), handlers != nil && handlers.URL != nil},
+		{elicitationForm, e != nil && e.Form != nil},
+		{elicitationURL, e != nil && e.URL != nil},
 	} {
-		if mode.advertised && !mode.served {
+		if mode.advertised(elicitation) && !mode.served {
 			exceeded = append(exceeded,
-				"clientCapabilities.elicitation."+mode.name+
-					" advertises a mode with no handler that renders it")
+				mode.capability+" advertises a mode with no handler that renders it")
 		}
 	}
 	return exceeded

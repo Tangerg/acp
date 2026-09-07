@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 
 	"github.com/Tangerg/acp/internal/jsonrpc2"
@@ -133,7 +134,7 @@ func (x *Error) toWire() *jsonrpc2.WireError {
 }
 
 func errorFromWire(wire *jsonrpc2.WireError) error {
-	if wire.Code < -1<<31 || wire.Code > 1<<31-1 {
+	if wire.Code < math.MinInt32 || wire.Code > math.MaxInt32 {
 		return fmt.Errorf("acp: the peer returned JSON-RPC error code %d outside ACP's int32 range", wire.Code)
 	}
 	failure := &Error{Code: ErrorCode(wire.Code), Message: wire.Message}

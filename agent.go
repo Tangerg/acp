@@ -338,7 +338,7 @@ func (c *AgentConn) CreateElicitation(
 		}
 		return mode, nil
 	}
-	return createElicitation(ctx, c, params, scope)
+	return c.createElicitation(ctx, params, scope)
 }
 
 // CompleteElicitation says an accepted URL interaction is finished and the
@@ -393,7 +393,7 @@ func (c *AgentConn) Call(ctx context.Context, method string, params, result any)
 	if err := c.awaitHandshake(ctx, method); err != nil {
 		return err
 	}
-	return extensionCall(ctx, c.link, method, params, result)
+	return c.extensionCall(ctx, method, params, result)
 }
 
 // Notify sends an extension notification. Extension methods only, and not before
@@ -402,7 +402,7 @@ func (c *AgentConn) Notify(ctx context.Context, method string, params any) error
 	if err := c.awaitHandshake(ctx, method); err != nil {
 		return err
 	}
-	return extensionNotify(ctx, c.link, method, params)
+	return c.extensionNotify(ctx, method, params)
 }
 
 // initialize prepares the answer without publishing it.
