@@ -388,16 +388,9 @@ func dispatchSessionCall[Request sessionRequest, Response any](
 	if handle == nil {
 		return nil, methodNotImplemented(request.Method)
 	}
-	params, err := decodeParams[Request](request)
-	if err != nil {
-		return nil, err
-	}
-	response, err := handle(ctx, c.session((*params).sessionID()), *params)
-	if err != nil {
-		return nil, err
-	}
-	if response == nil {
-		return nil, nilHandlerResponse(request.Method)
-	}
-	return response, nil
+	// The session comes from the decoded params, so the handle is bound inside
+	// rather than chosen before the payload is known to name one.
+	return dispatchCall(ctx, request, func(ctx context.Context, params *Request) (*Response, error) {
+		return handle(ctx, c.session((*params).sessionID()), *params)
+	})
 }

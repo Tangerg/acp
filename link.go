@@ -377,13 +377,20 @@ func (l *link) over() <-chan struct{} { return l.life.delivered }
 const cancelRequestTimeout = 5 * time.Second
 
 func (l *link) call(ctx context.Context, method string, params, result any) error {
-	call, err := l.send(ctx, method, params, func(response *jsonrpc.Response) error {
-		return decodeResponse(response, result)
-	}, nil)
+	call, err := l.sendInto(ctx, method, params, result)
 	if err != nil {
 		return err
 	}
 	return l.await(ctx, call)
+}
+
+// sendInto is send with the ordinary answer: whatever the peer returns is decoded
+// into result. It hands the call back rather than waiting, because a caller that
+// must decide something before waiting — a gate, a rollback — needs it.
+func (l *link) sendInto(ctx context.Context, method string, params, result any) (outboundCall, error) {
+	return l.send(ctx, method, params, func(response *jsonrpc.Response) error {
+		return decodeResponse(response, result)
+	}, nil)
 }
 
 // Separate from await because a prompt remains a live turn after its original

@@ -2,10 +2,13 @@ package acp_test
 
 import (
 	"context"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Tangerg/acp"
+	"github.com/Tangerg/acp/jsonrpc"
 )
 
 // The session lifecycle beyond a turn: logout, list, delete, resume, close, and
@@ -309,4 +312,73 @@ func lifecycleAgent(t *testing.T, served chan<- string) *acp.Agent {
 func hasValue[T any](option acp.Opt[T]) bool {
 	_, present := option.Get()
 	return present
+}
+
+// The outbound gate is not the same claim as the refusal above. An agent that
+// never advertised a method refuses it too, with the same message, so that test
+// passes whether the client asked the gate or the agent did. What the outbound
+// half promises is that the call is never sent — client.go says so, and says the
+// round trip is the reason — and only the wire can say whether it was.
+func TestAnUnadvertisedCallIsNotSent(t *testing.T) {
+	clientSide, agentSide := acp.NewInMemoryTransports()
+	ctx := context.Background()
+
+	agentConn, err := testAgent(t, nil).Connect(ctx, agentSide)
+	if err != nil {
+		t.Fatalf("Agent.Connect: %v", err)
+	}
+	t.Cleanup(func() { _ = agentConn.Close() })
+
+	recorder := &recordingTransport{Transport: clientSide}
+	conn, err := testClient(t).Connect(ctx, recorder)
+	if err != nil {
+		t.Fatalf("Client.Connect: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	// Without this the test could pass by recording nothing at all.
+	if !recorder.sent("initialize") {
+		t.Fatal("the recorder saw no initialize, so it would not have seen logout either")
+	}
+
+	if _, err := conn.Logout(ctx, nil); err == nil {
+		t.Fatal("logout was allowed although the agent never advertised it")
+	}
+	if recorder.sent("logout") {
+		t.Error("a refused call still reached the agent, which is the round trip the gate saves")
+	}
+}
+
+type recordingTransport struct {
+	acp.Transport
+	mu      sync.Mutex
+	methods []string
+}
+
+func (r *recordingTransport) Connect(ctx context.Context) (acp.Connection, error) {
+	connection, err := r.Transport.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &recordingConnection{Connection: connection, transport: r}, nil
+}
+
+func (r *recordingTransport) sent(method string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Contains(r.methods, method)
+}
+
+type recordingConnection struct {
+	acp.Connection
+	transport *recordingTransport
+}
+
+func (c *recordingConnection) Write(ctx context.Context, message jsonrpc.Message) error {
+	if request, ok := message.(*jsonrpc.Request); ok {
+		c.transport.mu.Lock()
+		c.transport.methods = append(c.transport.methods, request.Method)
+		c.transport.mu.Unlock()
+	}
+	return c.Connection.Write(ctx, message)
 }

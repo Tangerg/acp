@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"sync/atomic"
-
-	"github.com/Tangerg/acp/jsonrpc"
 )
 
 // The operations an agent performs on a client's workspace: the filesystem, and
@@ -207,9 +205,7 @@ func beginGatedCall[Response any](
 		return nil, outboundCall{}, err
 	}
 	response := new(Response)
-	call, err := c.send(ctx, method, request, func(answer *jsonrpc.Response) error {
-		return decodeResponse(answer, response)
-	}, nil)
+	call, err := c.sendInto(ctx, method, request, response)
 	if err != nil {
 		return nil, outboundCall{}, err
 	}

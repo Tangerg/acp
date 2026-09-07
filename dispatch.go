@@ -9,7 +9,13 @@ import (
 	"github.com/Tangerg/acp/jsonrpc"
 )
 
-// These helpers keep decoding and handler failures identical across methods.
+// dispatchCall is the shape every inbound handler call has: a method with no
+// handler is not implemented, params are decoded into the handler's own type,
+// and a handler that returns neither a response nor an error is a bug this side
+// reports rather than a response it invents.
+//
+// The scoped dispatchers below hand the handler the handle its method belongs
+// to. That is all they add, so they add it and defer to this.
 func dispatchCall[Request, Response any](
 	ctx context.Context,
 	request *jsonrpc.Request,
@@ -37,6 +43,9 @@ func dispatchCall[Request, Response any](
 // on this side: one hands the handler an [AgentSession] and the other an
 // [AgentConn]. Both hand it the handle its method belongs to, so that a handler
 // can act within its own scope without re-deriving it.
+//
+// The nil check is here rather than inside, because the closure below is never
+// nil however absent the handler it wraps is.
 func dispatchConnCall[Request, Response any](
 	ctx context.Context,
 	conn *AgentConn,
@@ -46,18 +55,9 @@ func dispatchConnCall[Request, Response any](
 	if handle == nil {
 		return nil, methodNotImplemented(request.Method)
 	}
-	params, err := decodeParams[Request](request)
-	if err != nil {
-		return nil, err
-	}
-	response, err := handle(ctx, conn, params)
-	if err != nil {
-		return nil, err
-	}
-	if response == nil {
-		return nil, nilHandlerResponse(request.Method)
-	}
-	return response, nil
+	return dispatchCall(ctx, request, func(ctx context.Context, params *Request) (*Response, error) {
+		return handle(ctx, conn, params)
+	})
 }
 
 func dispatchNotificationContext[Params any](
