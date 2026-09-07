@@ -4,6 +4,58 @@ This file records caller-visible changes, newest first. The module is pre-1.0, s
 a minor release may change its public API. Each released entry will include
 migration instructions.
 
+## v0.2.4 — 2026-09-07
+
+Nothing here is caller-visible: `gorelease` reports the exported surface
+identical to v0.2.3, no exported signature changed, every refusal message is
+byte-identical to the one it replaced, and the protocol target has not moved.
+What changed is that several rules the code stated more than once now have one
+statement each, and one promise the code made in prose is now held to by a test.
+
+### Changed
+
+- **An operation that duplicated the one it should have composed.**
+  `ClientSession.Prompt` re-implemented `link.await`: the same three-way select
+  over the answer, the connection ending and the caller's context, with the same
+  branch for each. Its context arm was `await`'s arm for a call whose abandon
+  callback is set — which a prompt's is, because that callback is what keeps the
+  turn registered after the caller stops waiting. It composes `await` now.
+
+- **The two elicitation modes were four loose strings.**
+  `clientCapabilities.elicitation.form` and `.url` appeared as literals in three
+  files and were built by concatenation in a fourth: one schema path, two
+  spellings, nothing holding them together. A mode is one value that knows its
+  wire spelling, its capability path and how to read it out of an advertisement,
+  and the path is written once.
+
+- **"Parameter capability" had a name in the prose and no type.** Each check
+  spelled the concept out as three loose values assigned inside a switch and
+  tested after it, where the default `true` — a content block with no arm must
+  pass — was invisible. It is a type now, each arm answers where it decides, and
+  an unnamed arm passes by not being named.
+
+- **Three dispatchers had one body.** `dispatchCall`, `dispatchConnCall` and
+  `dispatchSessionCall` differed by one line: which handle the scope hands over.
+  The other two are adapters over the first.
+
+- **Smaller ones of the same kind.** `deliverRequest` took two
+  `context.Context` parameters that are never both used, so swapping them
+  compiled; the delivery that already carries one now chooses. `publish` was one
+  rule written twice. `authenticationMethod` returned two positional booleans.
+  `TerminalHandlers.check` iterated a map keyed by its own field names and sorted
+  afterwards to undo the iteration order. `link.call` and `beginGatedCall` both
+  spelled out send-and-decode.
+
+### Verification
+
+- **The outbound capability gate is now tested for what it promises.** The
+  existing test drove five gated operations against an agent that advertised
+  nothing — but that agent refuses them too, with the same message, so it passed
+  whether the client asked the gate or the agent did. Deleting the check from
+  `ClientConn.Logout` left it green. `client.go` claims the call is never sent
+  and that the round trip is the reason; a recording transport now holds it to
+  that, and fails when the check is removed.
+
 ## v0.2.3 — 2026-09-05
 
 Nothing here is caller-visible: `gorelease` reports the exported surface
