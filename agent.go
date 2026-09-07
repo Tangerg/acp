@@ -155,29 +155,29 @@ func NewAgent(config *AgentConfig) (*Agent, error) {
 	return &Agent{config: cloned, capabilities: capabilities, auth: auth}, nil
 }
 
-func (config *AgentConfig) resolveCapabilities() (AgentCapabilities, error) {
-	derived := AgentCapabilities{LoadSession: config.LoadSession != nil}
-	if config.Logout != nil {
+func (a *AgentConfig) resolveCapabilities() (AgentCapabilities, error) {
+	derived := AgentCapabilities{LoadSession: a.LoadSession != nil}
+	if a.Logout != nil {
 		derived.Auth.Logout = OptValue(LogoutCapabilities{})
 	}
-	if config.ListSessions != nil {
+	if a.ListSessions != nil {
 		derived.SessionCapabilities.List = OptValue(SessionListCapabilities{})
 	}
-	if config.DeleteSession != nil {
+	if a.DeleteSession != nil {
 		derived.SessionCapabilities.Delete = OptValue(SessionDeleteCapabilities{})
 	}
-	if config.ResumeSession != nil {
+	if a.ResumeSession != nil {
 		derived.SessionCapabilities.Resume = OptValue(SessionResumeCapabilities{})
 	}
-	if config.CloseSession != nil {
+	if a.CloseSession != nil {
 		derived.SessionCapabilities.Close = OptValue(SessionCloseCapabilities{})
 	}
-	if config.Capabilities == nil {
+	if a.Capabilities == nil {
 		return derived, nil
 	}
 
-	stated := deepCopy(*config.Capabilities)
-	exceeded := gates.exceeded(PeerInfo{AgentCapabilities: stated}, sideAgent, config.implements)
+	stated := deepCopy(*a.Capabilities)
+	exceeded := gates.exceeded(PeerInfo{AgentCapabilities: stated}, sideAgent, a.implements)
 	if len(exceeded) > 0 {
 		return AgentCapabilities{}, fmt.Errorf(
 			"acp: AgentConfig.Capabilities advertises unsupported methods: %v", exceeded)
@@ -186,38 +186,38 @@ func (config *AgentConfig) resolveCapabilities() (AgentCapabilities, error) {
 }
 
 // See [ClientConfig.implements].
-func (config *AgentConfig) implements(method string) bool {
+func (a *AgentConfig) implements(method string) bool {
 	switch method {
 	case methodInitialize, methodSessionNew, methodSessionPrompt, methodSessionCancel:
 		return true // baseline, and NewAgent has already refused a nil handler
 	case methodAuthenticate:
-		return config.Authenticate != nil
+		return a.Authenticate != nil
 	case methodSessionLoad:
-		return config.LoadSession != nil
+		return a.LoadSession != nil
 	case methodSessionSetMode:
-		return config.SetMode != nil
+		return a.SetMode != nil
 	case methodSessionSetConfigOption:
-		return config.SetConfigOption != nil
+		return a.SetConfigOption != nil
 	case methodLogout:
-		return config.Logout != nil
+		return a.Logout != nil
 	case methodSessionList:
-		return config.ListSessions != nil
+		return a.ListSessions != nil
 	case methodSessionDelete:
-		return config.DeleteSession != nil
+		return a.DeleteSession != nil
 	case methodSessionResume:
-		return config.ResumeSession != nil
+		return a.ResumeSession != nil
 	case methodSessionClose:
-		return config.CloseSession != nil
+		return a.CloseSession != nil
 	default:
 		return false
 	}
 }
 
-func (config *AgentConfig) clone() AgentConfig {
-	copied := *config
-	copied.Info = deepCopy(config.Info)
-	copied.Meta = deepCopy(config.Meta)
-	copied.Capabilities = deepCopy(config.Capabilities)
+func (a *AgentConfig) clone() AgentConfig {
+	copied := *a
+	copied.Info = deepCopy(a.Info)
+	copied.Meta = deepCopy(a.Meta)
+	copied.Capabilities = deepCopy(a.Capabilities)
 	return copied
 }
 
@@ -263,11 +263,11 @@ func (a *Agent) Run(ctx context.Context, transport Transport) error {
 	go func() { ended <- connection.Wait() }()
 
 	select {
-	case err := <-ended:
-		return err
+	case endErr := <-ended:
+		return endErr
 	case <-ctx.Done():
-		if err := connection.Close(); err != nil {
-			return err
+		if closeErr := connection.Close(); closeErr != nil {
+			return closeErr
 		}
 		<-ended
 		return ctx.Err()

@@ -131,17 +131,17 @@ func NewClient(config *ClientConfig) (*Client, error) {
 // check refuses a partial handler set, because the capability that gates them is
 // one boolean covering all five methods: a client with four of them would refuse a
 // method it had advertised.
-func (handlers *TerminalHandlers) check() error {
-	if handlers == nil {
+func (t *TerminalHandlers) check() error {
+	if t == nil {
 		return nil
 	}
 	missing := make([]string, 0, 5)
 	for name, present := range map[string]bool{
-		"Create":      handlers.Create != nil,
-		"Kill":        handlers.Kill != nil,
-		"Output":      handlers.Output != nil,
-		"Release":     handlers.Release != nil,
-		"WaitForExit": handlers.WaitForExit != nil,
+		"Create":      t.Create != nil,
+		"Kill":        t.Kill != nil,
+		"Output":      t.Output != nil,
+		"Release":     t.Release != nil,
+		"WaitForExit": t.WaitForExit != nil,
 	} {
 		if !present {
 			missing = append(missing, name)
@@ -154,25 +154,25 @@ func (handlers *TerminalHandlers) check() error {
 	return fmt.Errorf("acp: TerminalHandlers is incomplete; missing: %v", missing)
 }
 
-func (config *ClientConfig) resolveCapabilities() (ClientCapabilities, error) {
+func (c *ClientConfig) resolveCapabilities() (ClientCapabilities, error) {
 	derived := ClientCapabilities{
 		Fs: FileSystemCapabilities{
-			ReadTextFile:  config.ReadTextFile != nil,
-			WriteTextFile: config.WriteTextFile != nil,
+			ReadTextFile:  c.ReadTextFile != nil,
+			WriteTextFile: c.WriteTextFile != nil,
 		},
-		Terminal:    config.Terminal != nil,
-		Elicitation: config.Elicitation.capabilities(),
+		Terminal:    c.Terminal != nil,
+		Elicitation: c.Elicitation.capabilities(),
 	}
-	if config.Capabilities == nil {
+	if c.Capabilities == nil {
 		return derived, nil
 	}
 
-	stated := deepCopy(*config.Capabilities)
-	exceeded := gates.exceeded(PeerInfo{ClientCapabilities: stated}, sideClient, config.implements)
+	stated := deepCopy(*c.Capabilities)
+	exceeded := gates.exceeded(PeerInfo{ClientCapabilities: stated}, sideClient, c.implements)
 	// The elicitation modes are checked beside the methods rather than after them,
 	// because an advertisement is one promise: a mode with no handler is refused on
 	// its first use exactly as a method with no handler is.
-	exceeded = append(exceeded, exceededElicitationModes(stated, config.Elicitation)...)
+	exceeded = append(exceeded, exceededElicitationModes(stated, c.Elicitation)...)
 	if len(exceeded) > 0 {
 		return ClientCapabilities{}, fmt.Errorf(
 			"acp: ClientConfig.Capabilities advertises what this client cannot serve: %v", exceeded)
@@ -183,28 +183,28 @@ func (config *ClientConfig) resolveCapabilities() (ClientCapabilities, error) {
 // The other half of the capability table: the table says which capability gates
 // which method, this says which methods a configuration can actually serve, and
 // neither is derivable from the other. Construction checks their intersection.
-func (config *ClientConfig) implements(method string) bool {
+func (c *ClientConfig) implements(method string) bool {
 	switch method {
 	case methodSessionUpdate, methodSessionRequestPermission:
 		return true // baseline, and NewClient has already refused a nil handler
 	case methodFsReadTextFile:
-		return config.ReadTextFile != nil
+		return c.ReadTextFile != nil
 	case methodFsWriteTextFile:
-		return config.WriteTextFile != nil
+		return c.WriteTextFile != nil
 	case methodTerminalCreate, methodTerminalOutput, methodTerminalWaitForExit,
 		methodTerminalKill, methodTerminalRelease:
-		return config.Terminal != nil
+		return c.Terminal != nil
 	case methodElicitationCreate:
 		// Either mode serves the method; which modes it can render is the parameter
 		// capability, and the handler group has already refused serving neither.
-		return config.Elicitation != nil
+		return c.Elicitation != nil
 	case methodElicitationComplete:
 		// Serving the url mode is what makes a client able to accept completions.
 		// Whether one reaches the application is Complete's business: the protocol
 		// makes sending optional and requires a client to ignore a completion it
 		// does not recognise, so a client with no Complete handler is not one that
 		// cannot serve the method.
-		return config.Elicitation != nil && config.Elicitation.URL != nil
+		return c.Elicitation != nil && c.Elicitation.URL != nil
 	default:
 		return false
 	}
@@ -214,21 +214,21 @@ func (config *ClientConfig) implements(method string) bool {
 // afterwards would change what this client advertises, or what it serves, without
 // going back through the check that made it valid — and would race a connection
 // already reading it.
-func (config *ClientConfig) clone() ClientConfig {
-	copied := *config
-	copied.Info = deepCopy(config.Info)
-	copied.Meta = deepCopy(config.Meta)
-	copied.Capabilities = deepCopy(config.Capabilities)
+func (c *ClientConfig) clone() ClientConfig {
+	copied := *c
+	copied.Info = deepCopy(c.Info)
+	copied.Meta = deepCopy(c.Meta)
+	copied.Capabilities = deepCopy(c.Capabilities)
 	// Every handler group is copied, not aliased. A caller who kept a pointer
 	// could otherwise swap a handler after NewClient validated the set, changing
 	// what a running client serves without going back through the check that
 	// made it valid — and racing the dispatcher that reads it.
-	if config.Terminal != nil {
-		handlers := *config.Terminal
+	if c.Terminal != nil {
+		handlers := *c.Terminal
 		copied.Terminal = &handlers
 	}
-	if config.Elicitation != nil {
-		handlers := *config.Elicitation
+	if c.Elicitation != nil {
+		handlers := *c.Elicitation
 		copied.Elicitation = &handlers
 	}
 	return copied
@@ -261,11 +261,11 @@ func (c *Client) Connect(ctx context.Context, transport Transport) (*ClientConn,
 	conn.link = newLink(stream, conn, c.config.Logger, c.config.Limits)
 	conn.run()
 
-	if err := conn.initialize(ctx); err != nil {
+	if initErr := conn.initialize(ctx); initErr != nil {
 		// Close before returning: a half-initialized connection is not something to
 		// hand back and hope nobody uses.
 		_ = conn.Close()
-		return nil, err
+		return nil, initErr
 	}
 
 	c.conns.add(conn)
@@ -528,8 +528,8 @@ func (c *ClientConn) accept(request *InitializeRequest, response *InitializeResp
 	if err != nil {
 		return fmt.Errorf("acp: initialize response contains invalid authentication methods: %w", err)
 	}
-	if err := auth.validateOffer(request.ClientCapabilities); err != nil {
-		return err
+	if invalid := auth.validateOffer(request.ClientCapabilities); invalid != nil {
+		return invalid
 	}
 	response.AuthMethods = auth
 

@@ -27,9 +27,9 @@ func UnmarshalMapFunc[T any](
 	}
 	out := make(map[string]T, len(object))
 	for _, key := range slices.Sorted(mapKeys(object)) {
-		value, err := decode(object[key])
-		if err != nil {
-			return nil, At(key, err)
+		value, decodeErr := decode(object[key])
+		if decodeErr != nil {
+			return nil, At(key, decodeErr)
 		}
 		out[key] = value
 	}

@@ -134,8 +134,8 @@ func (c *ioConnection) Write(ctx context.Context, message jsonrpc.Message) error
 
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	if _, err := c.writer.Write(data); err != nil {
-		return fmt.Errorf("acp: writing a message: %w", err)
+	if _, writeErr := c.writer.Write(data); writeErr != nil {
+		return fmt.Errorf("acp: writing a message: %w", writeErr)
 	}
 	return nil
 }
@@ -222,12 +222,12 @@ func (t *commandTransport) Connect(ctx context.Context) (Connection, error) {
 			stdin.Close(),
 		)
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, errors.Join(err, stdin.Close(), stdout.Close())
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, errors.Join(ctxErr, stdin.Close(), stdout.Close())
 	}
-	if err := cmd.Start(); err != nil {
+	if startErr := cmd.Start(); startErr != nil {
 		return nil, errors.Join(
-			fmt.Errorf("acp: starting the agent: %w", err),
+			fmt.Errorf("acp: starting the agent: %w", startErr),
 			stdin.Close(),
 			stdout.Close(),
 		)

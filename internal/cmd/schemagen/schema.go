@@ -90,9 +90,9 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 	}
 	s.Keywords = top
 	if raw, ok := rawProperty(data, "properties"); ok {
-		order, err := objectKeys(raw)
-		if err != nil {
-			return err
+		order, keysErr := objectKeys(raw)
+		if keysErr != nil {
+			return keysErr
 		}
 		s.PropertyOrder = order
 	}
@@ -237,17 +237,17 @@ func objectKeys(data []byte) ([]string, error) {
 	}
 	var keys []string
 	for dec.More() {
-		tok, err := dec.Token()
-		if err != nil {
-			return nil, err
+		name, nameErr := dec.Token()
+		if nameErr != nil {
+			return nil, nameErr
 		}
-		key, ok := tok.(string)
+		key, ok := name.(string)
 		if !ok {
-			return nil, fmt.Errorf("expected a property name, got %v", tok)
+			return nil, fmt.Errorf("expected a property name, got %v", name)
 		}
 		keys = append(keys, key)
-		if err := skipValue(dec); err != nil {
-			return nil, err
+		if skipErr := skipValue(dec); skipErr != nil {
+			return nil, skipErr
 		}
 	}
 	return keys, nil

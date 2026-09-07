@@ -46,15 +46,15 @@ type ElicitationHandlers struct {
 
 // check refuses at construction a group that advertises elicitation and renders
 // no mode, and one whose completion handler no mode could ever reach.
-func (handlers *ElicitationHandlers) check() error {
-	if handlers == nil {
+func (e *ElicitationHandlers) check() error {
+	if e == nil {
 		return nil
 	}
-	if handlers.Form == nil && handlers.URL == nil {
+	if e.Form == nil && e.URL == nil {
 		return errors.New(
 			"acp: ElicitationHandlers serves neither mode; set Form, URL, or both")
 	}
-	if handlers.URL == nil && handlers.Complete != nil {
+	if e.URL == nil && e.Complete != nil {
 		return errors.New(
 			"acp: ElicitationHandlers.Complete is set without URL, so it could never run")
 	}
@@ -63,15 +63,15 @@ func (handlers *ElicitationHandlers) check() error {
 
 // A mode with no handler is left absent rather than set false: the schema's
 // capability objects use a present `{}` as the only yes.
-func (handlers *ElicitationHandlers) capabilities() Opt[ElicitationCapabilities] {
-	if handlers == nil {
+func (e *ElicitationHandlers) capabilities() Opt[ElicitationCapabilities] {
+	if e == nil {
 		return Opt[ElicitationCapabilities]{}
 	}
 	var advertised ElicitationCapabilities
-	if handlers.Form != nil {
+	if e.Form != nil {
 		advertised.Form = OptValue(ElicitationFormCapabilities{})
 	}
-	if handlers.URL != nil {
+	if e.URL != nil {
 		advertised.URL = OptValue(ElicitationURLCapabilities{})
 	}
 	return OptValue(advertised)
@@ -158,8 +158,8 @@ func createElicitation(
 			reservation.reject()
 			return nil, err
 		}
-		if err := conn.await(ctx, call); err != nil {
-			return nil, err
+		if awaitErr := conn.await(ctx, call); awaitErr != nil {
+			return nil, awaitErr
 		}
 		return response, nil
 	}

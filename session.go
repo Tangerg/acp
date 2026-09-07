@@ -86,18 +86,18 @@ func (s *ClientSession) Prompt(ctx context.Context, params *PromptParams) (*Prom
 	}
 
 	select {
-	case err := <-call.completed:
-		if err != nil {
-			return nil, err
+	case answered := <-call.completed:
+		if answered != nil {
+			return nil, answered
 		}
 		return result, nil
 
 	case <-conn.over():
 		// An answer already in hand is an answer; see link.await.
 		select {
-		case err := <-call.completed:
-			if err != nil {
-				return nil, err
+		case answered := <-call.completed:
+			if answered != nil {
+				return nil, answered
 			}
 			return result, nil
 		default:
@@ -106,9 +106,9 @@ func (s *ClientSession) Prompt(ctx context.Context, params *PromptParams) (*Prom
 
 	case <-ctx.Done():
 		select {
-		case err := <-call.completed:
-			if err != nil {
-				return nil, err
+		case answered := <-call.completed:
+			if answered != nil {
+				return nil, answered
 			}
 			return result, nil
 		default:

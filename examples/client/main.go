@@ -214,7 +214,7 @@ func (w *workspace) writeTextFile(
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(path, []byte(request.Content), 0o600); err != nil {
+	if writeErr := os.WriteFile(path, []byte(request.Content), 0o600); writeErr != nil {
 		return nil, &acp.Error{Code: acp.ErrorCodeInternalError, Message: "cannot write " + request.Path}
 	}
 	return &acp.WriteTextFileResponse{}, nil

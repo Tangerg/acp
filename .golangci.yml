@@ -86,9 +86,18 @@ linters:
 
   settings:
     govet:
-      # Includes shadow, so the zero-shadowing property is enforced rather than
-      # periodically restored.
       enable-all: true
+      settings:
+        shadow:
+          # shadow's default only reports a shadow whose outer variable is read
+          # again afterwards — the shape that is already a bug. Strict reports the
+          # shape that merely reads like one: two `err` in a function, where which
+          # one a line means depends on the brace it is inside. Every production
+          # site now names the second, which is what the rest of this repository
+          # already did with decodeErr, scopeErr and reserveErr. One of them was
+          # load-bearing: objectKeys asserted on the inner token while appearing
+          # to assert on the outer delimiter.
+          strict: true
       disable:
         # Field order in the protocol types is chosen to read as documentation and
         # to match the published schema's own ordering, so a reader can hold one
@@ -168,6 +177,16 @@ linters:
           - gocognit
           - gocyclo
           - maintidx
+
+      # Strict shadow reports `if err := f(); err != nil` inside a function that
+      # already has an err, which is worth renaming where a reader is tracing an
+      # invariant and pure noise in a test that checks a call and moves on. The
+      # non-strict rule still applies here, so a shadow that hides a later read is
+      # still a failure in a test.
+      - path: _test\.go
+        text: 'declaration of "(err|ok)" shadows'
+        linters:
+          - govet
 
       # revive's exported rule asks every exported identifier for a doc comment.
       # That is the right default and it stays on, but it cannot tell a comment

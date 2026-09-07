@@ -121,12 +121,12 @@ func NewCall(id ID, method string, params any) (*Request, error) {
 	return &Request{ID: id, Method: method, Params: p}, merr
 }
 
-func (msg *Request) IsCall() bool { return msg.ID.IsValid() }
+func (r *Request) IsCall() bool { return r.ID.IsValid() }
 
-func (msg *Request) marshal(to *wireCombined) {
-	to.ID = msg.ID
-	to.Method = &msg.Method
-	to.Params = msg.Params
+func (r *Request) marshal(to *wireCombined) {
+	to.ID = r.ID
+	to.Method = &r.Method
+	to.Params = r.Params
 }
 
 // NewResponse constructs a response with exactly one of result or rerr.
@@ -139,27 +139,27 @@ func NewResponse(id ID, result any, rerr *WireError) (*Response, error) {
 		return nil, err
 	}
 	response := &Response{ID: id, Result: r, Error: rerr}
-	if err := response.validate(); err != nil {
-		return nil, fmt.Errorf("jsonrpc: construct response: %w", err)
+	if invalid := response.validate(); invalid != nil {
+		return nil, fmt.Errorf("jsonrpc: construct response: %w", invalid)
 	}
 	return response, nil
 }
 
-func (msg *Response) marshal(to *wireCombined) {
-	to.ID = msg.ID
-	to.Error = msg.Error
-	to.Result = msg.Result
+func (r *Response) marshal(to *wireCombined) {
+	to.ID = r.ID
+	to.Error = r.Error
+	to.Result = r.Result
 }
 
-func (msg *Response) validate() error {
+func (r *Response) validate() error {
 	switch {
-	case msg == nil:
+	case r == nil:
 		return errors.New("nil response")
-	case !msg.ID.IsValid():
+	case !r.ID.IsValid():
 		return errors.New("response has no request id")
-	case msg.Error != nil && len(msg.Result) > 0:
+	case r.Error != nil && len(r.Result) > 0:
 		return errors.New("response has both result and error")
-	case msg.Error == nil && len(msg.Result) == 0:
+	case r.Error == nil && len(r.Result) == 0:
 		return errors.New("response has neither result nor error")
 	default:
 		return nil

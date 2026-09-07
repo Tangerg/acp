@@ -45,9 +45,9 @@ func UnmarshalSliceFunc[T any](data []byte, decode func(json.RawMessage) (T, err
 	}
 	out := make([]T, 0, len(items))
 	for i, item := range items {
-		v, err := decode(item)
-		if err != nil {
-			return nil, Index(i, err)
+		v, decodeErr := decode(item)
+		if decodeErr != nil {
+			return nil, Index(i, decodeErr)
 		}
 		out = append(out, v)
 	}
@@ -63,8 +63,8 @@ func UnmarshalSliceFuncSkippingInvalid[T any](data []byte, decode func(json.RawM
 	}
 	out := make([]T, 0, len(items))
 	for _, item := range items {
-		v, err := decode(item)
-		if err != nil {
+		v, decodeErr := decode(item)
+		if decodeErr != nil {
 			continue
 		}
 		out = append(out, v)

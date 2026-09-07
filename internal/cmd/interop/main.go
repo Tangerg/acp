@@ -86,8 +86,8 @@ func run(agentCommand []string, dir string, provenance Provenance) error {
 			return err
 		}
 		path := filepath.Join(dir, scenario.file)
-		if err := os.WriteFile(path, append(encoded, '\n'), 0o600); err != nil {
-			return err
+		if writeErr := os.WriteFile(path, append(encoded, '\n'), 0o600); writeErr != nil {
+			return writeErr
 		}
 		fmt.Printf("interop: %s → %s (%d messages)\n", scenario.name, path, len(transcript.Messages))
 	}
@@ -339,11 +339,11 @@ func playCancel(ctx context.Context, conn *acp.ClientConn, seen *observations) e
 	prompted := make(chan error, 1)
 	var response *acp.PromptResponse
 	go func() {
-		var err error
-		response, err = session.Prompt(ctx, &acp.PromptParams{
+		var promptErr error
+		response, promptErr = session.Prompt(ctx, &acp.PromptParams{
 			Prompt: []acp.ContentBlock{&acp.TextContent{Text: "cancel"}},
 		})
-		prompted <- err
+		prompted <- promptErr
 	}()
 
 	// Wait for the first update, which is how this side knows the turn is under
@@ -357,11 +357,11 @@ func playCancel(ctx context.Context, conn *acp.ClientConn, seen *observations) e
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if err := session.Cancel(ctx, nil); err != nil {
-		return err
+	if cancelErr := session.Cancel(ctx, nil); cancelErr != nil {
+		return cancelErr
 	}
-	if err := <-prompted; err != nil {
-		return err
+	if promptErr := <-prompted; promptErr != nil {
+		return promptErr
 	}
 
 	seen.mu.Lock()
@@ -379,11 +379,11 @@ func playAuth(ctx context.Context, conn *acp.ClientConn, seen *observations) err
 	seen.AuthRequired = true
 	seen.mu.Unlock()
 
-	if _, err := conn.Authenticate(ctx, &acp.AuthenticateRequest{MethodID: "interop"}); err != nil {
-		return err
+	if _, authErr := conn.Authenticate(ctx, &acp.AuthenticateRequest{MethodID: "interop"}); authErr != nil {
+		return authErr
 	}
-	if _, _, err := conn.NewSession(ctx, &acp.NewSessionRequest{Cwd: "/auth"}); err != nil {
-		return err
+	if _, _, sessionErr := conn.NewSession(ctx, &acp.NewSessionRequest{Cwd: "/auth"}); sessionErr != nil {
+		return sessionErr
 	}
 	seen.mu.Lock()
 	seen.Authenticated = true

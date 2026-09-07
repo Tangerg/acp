@@ -171,8 +171,8 @@ func (t *TerminalHandle) Release(
 		}
 		return nil, err
 	}
-	if err := conn.await(ctx, call); err != nil {
-		return nil, err
+	if awaitErr := conn.await(ctx, call); awaitErr != nil {
+		return nil, awaitErr
 	}
 	return response, nil
 }
@@ -185,8 +185,8 @@ func callGated[Response any](ctx context.Context, c *AgentConn, method string, r
 	if err != nil {
 		return nil, err
 	}
-	if err := c.await(ctx, call); err != nil {
-		return nil, err
+	if awaitErr := c.await(ctx, call); awaitErr != nil {
+		return nil, awaitErr
 	}
 	return response, nil
 }

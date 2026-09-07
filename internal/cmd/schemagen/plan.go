@@ -572,8 +572,8 @@ func (p *planner) Plan(manifest *Manifest, schemaTag string) (*Plan, error) {
 		return nil, err
 	}
 	for _, name := range closure {
-		if _, err := p.plan(name); err != nil {
-			return nil, fmt.Errorf("#/$defs/%s: %w", name, err)
+		if _, planErr := p.plan(name); planErr != nil {
+			return nil, fmt.Errorf("#/$defs/%s: %w", name, planErr)
 		}
 	}
 
@@ -582,8 +582,8 @@ func (p *planner) Plan(manifest *Manifest, schemaTag string) (*Plan, error) {
 		return nil, specErr
 	}
 	for _, name := range sortedKeys(specs) {
-		if err := p.planProjection(name, specs[name]); err != nil {
-			return nil, fmt.Errorf("projection %s: %w", name, err)
+		if projectionErr := p.planProjection(name, specs[name]); projectionErr != nil {
+			return nil, fmt.Errorf("projection %s: %w", name, projectionErr)
 		}
 	}
 
@@ -598,8 +598,8 @@ func (p *planner) Plan(manifest *Manifest, schemaTag string) (*Plan, error) {
 	slices.SortFunc(defs, func(left, right *Def) int {
 		return strings.Compare(left.GoName, right.GoName)
 	})
-	if err := p.checkVisibility(defs); err != nil {
-		return nil, err
+	if visibilityErr := p.checkVisibility(defs); visibilityErr != nil {
+		return nil, visibilityErr
 	}
 	return &Plan{Defs: defs, Closure: closure, SchemaTag: schemaTag}, nil
 }
@@ -622,8 +622,8 @@ func (p *planner) planProjection(name string, spec *ProjectionSpec) error {
 	if source.Kind != kindStruct {
 		return fmt.Errorf("%s is not a struct, so there is nothing to project", spec.From)
 	}
-	if err := p.names.claim(name, "projection of #/$defs/"+spec.From); err != nil {
-		return err
+	if claimErr := p.names.claim(name, "projection of #/$defs/"+spec.From); claimErr != nil {
+		return claimErr
 	}
 
 	def := &Def{
@@ -790,8 +790,8 @@ func (p *planner) planField(jsonName string, schema *Schema, required bool) (*Fi
 	if err != nil {
 		return nil, err
 	}
-	if err := checkUnionIsRouted(value); err != nil {
-		return nil, err
+	if routingErr := checkUnionIsRouted(value); routingErr != nil {
+		return nil, routingErr
 	}
 	field := &Field{
 		JSONName: jsonName,
@@ -830,14 +830,14 @@ func (p *planner) planField(jsonName string, schema *Schema, required bool) (*Fi
 	// property also recovers from a malformed one, so the literal is resolved
 	// from the presence of `default` alone.
 	if hasDefault {
-		literal, err := p.defaultLiteral(value, schema.Default)
-		if err != nil {
-			return nil, err
+		literal, literalErr := p.defaultLiteral(value, schema.Default)
+		if literalErr != nil {
+			return nil, literalErr
 		}
 		field.DefaultLit = literal
 	}
-	if err := p.planFallback(field, schema, hasDefault); err != nil {
-		return nil, err
+	if fallbackErr := p.planFallback(field, schema, hasDefault); fallbackErr != nil {
+		return nil, fallbackErr
 	}
 	return field, nil
 }
@@ -1158,8 +1158,8 @@ func (p *planner) planObjectUnion(def *Def, schema *Schema) error {
 			if err != nil {
 				return fmt.Errorf("arm %d: #/$defs/%s: %w", i, payload, err)
 			}
-			if err := p.checkArmPayload(target, def.Discriminant); err != nil {
-				return fmt.Errorf("arm %d: %w", i, err)
+			if payloadErr := p.checkArmPayload(target, def.Discriminant); payloadErr != nil {
+				return fmt.Errorf("arm %d: %w", i, payloadErr)
 			}
 		default:
 			wrapper, err := p.planWrapperArm(goType, arm, def, payload)
@@ -1208,8 +1208,8 @@ func (p *planner) planWrapperArm(goType string, arm *Schema, union *Def, payload
 		if err != nil {
 			return nil, fmt.Errorf("#/$defs/%s: %w", payload, err)
 		}
-		if err := p.checkArmPayload(target, union.Discriminant); err != nil {
-			return nil, err
+		if payloadErr := p.checkArmPayload(target, union.Discriminant); payloadErr != nil {
+			return nil, payloadErr
 		}
 		if len(def.Fields) > 0 {
 			return nil, fmt.Errorf(

@@ -47,8 +47,8 @@ type WireError struct {
 	Data json.RawMessage `json:"data,omitempty"`
 }
 
-func (err *WireError) UnmarshalJSON(data []byte) error {
-	if err == nil {
+func (w *WireError) UnmarshalJSON(data []byte) error {
+	if w == nil {
 		return errors.New("jsonrpc: decode error into nil target")
 	}
 	var members map[string]json.RawMessage
@@ -75,7 +75,7 @@ func (err *WireError) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("jsonrpc: decode error message: %w", decodeErr)
 	}
 	decoded.Data = members["data"]
-	*err = decoded
+	*w = decoded
 	return nil
 }
 
@@ -90,14 +90,14 @@ func NewError(code int64, message string) *WireError {
 	}
 }
 
-func (err *WireError) Error() string {
-	return err.Message
+func (w *WireError) Error() string {
+	return w.Message
 }
 
-func (err *WireError) Is(other error) bool {
-	w, ok := other.(*WireError)
+func (w *WireError) Is(other error) bool {
+	target, ok := other.(*WireError)
 	if !ok {
 		return false
 	}
-	return err.Code == w.Code
+	return w.Code == target.Code
 }

@@ -13,8 +13,8 @@ import (
 // JSON Schema semantics to the same maintained validator used by the official
 // MCP Go SDK. Both peers call it: clients check the answer they are about to send,
 // and agents check the answer they received as defense in depth.
-func (schema ElicitationSchema) validate(content map[string]ElicitationContentValue) error {
-	compiled, err := schema.validationSchema()
+func (e ElicitationSchema) validate(content map[string]ElicitationContentValue) error {
+	compiled, err := e.validationSchema()
 	if err != nil {
 		return fmt.Errorf("acp: invalid elicitation schema: %w", err)
 	}
@@ -26,23 +26,23 @@ func (schema ElicitationSchema) validate(content map[string]ElicitationContentVa
 	if err != nil {
 		return fmt.Errorf("acp: invalid form answer: %w", err)
 	}
-	if err := resolved.Validate(instance); err != nil {
-		return fmt.Errorf("acp: form answer does not match requested schema: %w", err)
+	if invalid := resolved.Validate(instance); invalid != nil {
+		return fmt.Errorf("acp: form answer does not match requested schema: %w", invalid)
 	}
 	return nil
 }
 
-func (schema ElicitationSchema) validationSchema() (*jsonschema.Schema, error) {
-	data, err := json.Marshal(schema)
+func (e ElicitationSchema) validationSchema() (*jsonschema.Schema, error) {
+	data, err := json.Marshal(e)
 	if err != nil {
 		return nil, err
 	}
 	var compiled jsonschema.Schema
-	if err := json.Unmarshal(data, &compiled); err != nil {
-		return nil, err
+	if decodeErr := json.Unmarshal(data, &compiled); decodeErr != nil {
+		return nil, decodeErr
 	}
 
-	for name, property := range schema.Properties {
+	for name, property := range e.Properties {
 		compiledProperty := compiled.Properties[name]
 		switch property := property.(type) {
 		case *ElicitationPropertySchemaOther:
@@ -52,7 +52,7 @@ func (schema ElicitationSchema) validationSchema() (*jsonschema.Schema, error) {
 			compiled.Properties[name] = &jsonschema.Schema{}
 		case *StringPropertySchema:
 			if pattern, ok := property.Pattern.Get(); ok {
-				if _, err := regexp.Compile(pattern); err != nil {
+				if _, unsupported := regexp.Compile(pattern); unsupported != nil {
 					// JSON Schema patterns use the ECMA-262 dialect. The validator uses
 					// Go regular expressions, so a valid upstream pattern such as a
 					// lookahead must not make the entire elicitation schema invalid.
@@ -80,34 +80,34 @@ func elicitationContentInstance(content map[string]ElicitationContentValue) (any
 		return nil, err
 	}
 	var instance any
-	if err := json.Unmarshal(data, &instance); err != nil {
-		return nil, err
+	if decodeErr := json.Unmarshal(data, &instance); decodeErr != nil {
+		return nil, decodeErr
 	}
 	return instance, nil
 }
 
-func (response *CreateElicitationResponse) accepted() bool {
-	_, accepted := response.acceptedAction()
+func (c *CreateElicitationResponse) accepted() bool {
+	_, accepted := c.acceptedAction()
 	return accepted
 }
 
 // acceptedContent distinguishes an accepted form with no content from responses
 // whose action does not claim that the user answered the form.
-func (response *CreateElicitationResponse) acceptedContent() (
+func (c *CreateElicitationResponse) acceptedContent() (
 	map[string]ElicitationContentValue,
 	bool,
 ) {
-	action, accepted := response.acceptedAction()
+	action, accepted := c.acceptedAction()
 	if !accepted {
 		return nil, false
 	}
 	return action.Content.Get()
 }
 
-func (response *CreateElicitationResponse) acceptedAction() (*ElicitationAcceptAction, bool) {
-	if response == nil {
+func (c *CreateElicitationResponse) acceptedAction() (*ElicitationAcceptAction, bool) {
+	if c == nil {
 		return nil, false
 	}
-	action, accepted := response.Value.(*ElicitationAcceptAction)
+	action, accepted := c.Value.(*ElicitationAcceptAction)
 	return action, accepted && action != nil
 }

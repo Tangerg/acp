@@ -130,7 +130,7 @@ func (e *emitter) stringUnion(def *Def) {
 	e.printf("\tvalue, err := wire.UnmarshalValue[string](data)\n")
 	e.printf("\tif err != nil {\n\t\treturn err\n\t}\n")
 	e.printf("\tparsed := %s(value)\n", def.GoName)
-	e.printf("\tif err := parsed.validate(); err != nil {\n\t\treturn err\n\t}\n")
+	e.printf("\tif invalid := parsed.validate(); invalid != nil {\n\t\treturn invalid\n\t}\n")
 	e.printf("\t*x = parsed\n\treturn nil\n}\n\n")
 
 	e.printf("func (x %s) validate() error {\n", def.GoName)
@@ -267,7 +267,7 @@ func (e *emitter) numberUnion(def *Def) {
 	e.printf("\tvalue, err := wire.UnmarshalValue[%s](data)\n", def.GoBase)
 	e.printf("\tif err != nil {\n\t\treturn err\n\t}\n")
 	e.printf("\tparsed := %s(value)\n", def.GoName)
-	e.printf("\tif err := parsed.validate(); err != nil {\n\t\treturn err\n\t}\n")
+	e.printf("\tif invalid := parsed.validate(); invalid != nil {\n\t\treturn invalid\n\t}\n")
 	e.printf("\t*x = parsed\n\treturn nil\n}\n\n")
 
 	e.printf("func (x %s) validate() error {\n", def.GoName)

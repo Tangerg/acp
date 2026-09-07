@@ -407,9 +407,9 @@ func (l *link) send(
 		l.calls.retire(call.id)
 		return call, err
 	}
-	if err := l.transport.Write(ctx, request); err != nil {
+	if writeErr := l.transport.Write(ctx, request); writeErr != nil {
 		l.calls.retire(call.id)
-		return call, l.writeFailure(ctx, err)
+		return call, l.writeFailure(ctx, writeErr)
 	}
 	return call, nil
 }
@@ -476,8 +476,8 @@ func (l *link) notify(ctx context.Context, method string, params any) error {
 		return l.life.failure()
 	default:
 	}
-	if err := l.transport.Write(ctx, request); err != nil {
-		return l.writeFailure(ctx, err)
+	if writeErr := l.transport.Write(ctx, request); writeErr != nil {
+		return l.writeFailure(ctx, writeErr)
 	}
 	return nil
 }
@@ -544,9 +544,9 @@ func (l *link) writeResponse(id jsonrpc.ID, result any, handlerErr error) bool {
 
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(l.life.ctx), responseWriteTimeout)
 	defer cancel()
-	if err := l.transport.Write(ctx, response); err != nil {
-		l.logger.Error("acp: writing a response failed", slog.Any("error", err))
-		l.endReading(err)
+	if writeErr := l.transport.Write(ctx, response); writeErr != nil {
+		l.logger.Error("acp: writing a response failed", slog.Any("error", writeErr))
+		l.endReading(writeErr)
 		return false
 	}
 	return true

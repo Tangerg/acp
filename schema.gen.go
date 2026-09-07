@@ -3947,8 +3947,8 @@ func (x *ElicitationSchemaType) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	parsed := ElicitationSchemaType(value)
-	if err := parsed.validate(); err != nil {
-		return err
+	if invalid := parsed.validate(); invalid != nil {
+		return invalid
 	}
 	*x = parsed
 	return nil
@@ -7075,8 +7075,8 @@ func (x *PermissionOptionKind) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	parsed := PermissionOptionKind(value)
-	if err := parsed.validate(); err != nil {
-		return err
+	if invalid := parsed.validate(); invalid != nil {
+		return invalid
 	}
 	*x = parsed
 	return nil
@@ -7282,8 +7282,8 @@ func (x *PlanEntryPriority) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	parsed := PlanEntryPriority(value)
-	if err := parsed.validate(); err != nil {
-		return err
+	if invalid := parsed.validate(); invalid != nil {
+		return invalid
 	}
 	*x = parsed
 	return nil
@@ -7332,8 +7332,8 @@ func (x *PlanEntryStatus) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	parsed := PlanEntryStatus(value)
-	if err := parsed.validate(); err != nil {
-		return err
+	if invalid := parsed.validate(); invalid != nil {
+		return invalid
 	}
 	*x = parsed
 	return nil
@@ -8744,8 +8744,8 @@ func (x *Role) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	parsed := Role(value)
-	if err := parsed.validate(); err != nil {
-		return err
+	if invalid := parsed.validate(); invalid != nil {
+		return invalid
 	}
 	*x = parsed
 	return nil
@@ -11002,8 +11002,8 @@ func (x *StopReason) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	parsed := StopReason(value)
-	if err := parsed.validate(); err != nil {
-		return err
+	if invalid := parsed.validate(); invalid != nil {
+		return invalid
 	}
 	*x = parsed
 	return nil
@@ -11052,8 +11052,8 @@ func (x *StringFormat) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	parsed := StringFormat(value)
-	if err := parsed.validate(); err != nil {
-		return err
+	if invalid := parsed.validate(); invalid != nil {
+		return invalid
 	}
 	*x = parsed
 	return nil
@@ -12246,8 +12246,8 @@ func (x *ToolCallStatus) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	parsed := ToolCallStatus(value)
-	if err := parsed.validate(); err != nil {
-		return err
+	if invalid := parsed.validate(); invalid != nil {
+		return invalid
 	}
 	*x = parsed
 	return nil
@@ -12498,8 +12498,8 @@ func (x *ToolKind) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	parsed := ToolKind(value)
-	if err := parsed.validate(); err != nil {
-		return err
+	if invalid := parsed.validate(); invalid != nil {
+		return invalid
 	}
 	*x = parsed
 	return nil

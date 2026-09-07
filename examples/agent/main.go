@@ -61,8 +61,8 @@ func run(logger *slog.Logger) error {
 
 	// Run serves one connection until the client hangs up or the process is
 	// signalled. A clean end of stream is not a failure, and neither is the signal.
-	if err := agent.Run(ctx, acp.NewStdioTransport()); err != nil && !errors.Is(err, context.Canceled) {
-		return err
+	if runErr := agent.Run(ctx, acp.NewStdioTransport()); runErr != nil && !errors.Is(runErr, context.Canceled) {
+		return runErr
 	}
 	return nil
 }
@@ -143,17 +143,17 @@ func (s *sessions) prompt(
 		return &acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
 	}
 	if selected.OptionID != "allow" {
-		if err := say(ctx, session, "Left it alone."); err != nil {
-			return nil, err
+		if sayErr := say(ctx, session, "Left it alone."); sayErr != nil {
+			return nil, sayErr
 		}
 		return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 	}
 
-	if err := appendNote(ctx, session, notes, note); err != nil {
-		return nil, err
+	if appendErr := appendNote(ctx, session, notes, note); appendErr != nil {
+		return nil, appendErr
 	}
-	if err := say(ctx, session, "Done."); err != nil {
-		return nil, err
+	if sayErr := say(ctx, session, "Done."); sayErr != nil {
+		return nil, sayErr
 	}
 	return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 }
