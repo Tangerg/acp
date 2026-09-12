@@ -1,4 +1,4 @@
-# Report a security vulnerability
+# Security policy
 
 Report vulnerabilities privately so a fix can be prepared before public details
 make users easier to attack. Do not include exploit details in a public issue.
@@ -14,7 +14,7 @@ This module is pre-1.0. Security fixes target the latest release only:
 
 Upgrade before reporting a problem that may already be fixed.
 
-## Send a private report
+## Report a vulnerability
 
 Use [GitHub private vulnerability
 reporting](https://github.com/Tangerg/acp/security/advisories/new).
@@ -29,7 +29,7 @@ Include enough information to reproduce and bound the issue:
 Maintainers triage the report privately. After confirming the impact and fix,
 they coordinate publication, credit, and release timing in the advisory.
 
-## Security scope
+## Scope
 
 An agent reads and writes a user's workspace on a model's instructions. Security
 boundaries therefore include:
