@@ -13,5 +13,7 @@ for this repository, and each one resolves a question `AGENTS.md` deliberately l
   code in this repository does or does not call them.
 - **Use explicit `Config` structs** for related construction settings, and give optional fields useful zero
   meanings. Do not introduce functional-options APIs.
+- **The pinned schema owns the wire types.** `schema/schema.json` is the only representation that may change them;
+  `schema.gen.go` and `schema/exported.txt` are generated projections and are never edited by hand.
 - **The wire grammar is not ours to design.** Where this repository disagrees with the published Agent Client
   Protocol schema, the schema wins; propose changes upstream rather than encoding a local dialect.
