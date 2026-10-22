@@ -4,7 +4,7 @@ This file records caller-visible changes, newest first. The module is pre-1.0, s
 a minor release may change its public API. Each released entry will include
 migration instructions.
 
-## Unreleased
+## v0.3.0 — 2026-10-22
 
 ### Fixed
 
