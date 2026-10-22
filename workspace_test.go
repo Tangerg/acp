@@ -308,7 +308,7 @@ func TestAReleasedTerminalHandleRefusesEverything(t *testing.T) {
 		t.Fatalf("NewClient: %v", err)
 	}
 
-	refusals := make(chan error, 4)
+	refusals := make(chan error, 8)
 	agent := testAgent(t, func(
 		ctx context.Context,
 		session *acp.AgentSession,
@@ -318,18 +318,21 @@ func TestAReleasedTerminalHandleRefusesEverything(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
+		copied := *terminal
 		if _, released := terminal.Release(ctx, nil); released != nil {
 			return nil, released
 		}
 
-		_, err = terminal.Output(ctx, nil)
-		refusals <- err
-		_, err = terminal.WaitForExit(ctx, nil)
-		refusals <- err
-		_, err = terminal.Kill(ctx, nil)
-		refusals <- err
-		_, err = terminal.Release(ctx, nil)
-		refusals <- err
+		for _, handle := range []*acp.TerminalHandle{terminal, &copied} {
+			_, err = handle.Output(ctx, nil)
+			refusals <- err
+			_, err = handle.WaitForExit(ctx, nil)
+			refusals <- err
+			_, err = handle.Kill(ctx, nil)
+			refusals <- err
+			_, err = handle.Release(ctx, nil)
+			refusals <- err
+		}
 		return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 	})
 

@@ -164,9 +164,13 @@ twice.
 | --- | --- |
 | `acp.NewCommandTransport` | Start an agent subprocess and own its pipes with bounded shutdown |
 | `acp.NewStdioTransport` | Serve ACP from an agent's stdin and stdout |
-| `acp.NewIOTransport` | Use any closeable reader and writer |
+| `acp.NewIOTransport` | Frame byte streams with one explicit release owner in `acp.IOConfig` |
 | `acp.NewInMemoryTransports` | Connect two peers in one process |
 | `acp.Transport` | Implement another message transport under the documented concurrency contract |
+
+`IOConfig.Reader` and `Writer` provide I/O; `Close` alone releases their resources
+and must unblock pending reads and writes. For a shared `net.Conn`, set both
+streams to that connection and `Close` to its `Close` method.
 
 ## Protocol coverage
 

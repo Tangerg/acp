@@ -28,19 +28,24 @@ type calls struct {
 	waiting map[jsonrpc.ID]*pendingCall
 }
 
-// outboundCall is the handle returned to the goroutine waiting for one call. The
-// response is interpreted before completed is signalled, so state derived from a
-// response changes in the same ordered delivery step that observed it.
+// outboundCall is the handle returned to the goroutine waiting for one call.
+// Connection-owned state is published before completed is signalled; decoding
+// into a caller-owned result belongs to the waiting goroutine after that handoff.
 type outboundCall struct {
 	id                  jsonrpc.ID
-	completed           <-chan error
+	completed           <-chan callResult
 	observeLateResponse bool
 }
 
 type pendingCall struct {
-	completed chan error
+	completed chan callResult
 	accept    func(*jsonrpc.Response) error
 	abandon   func()
+}
+
+type callResult struct {
+	response *jsonrpc.Response
+	err      error
 }
 
 func newCalls() *calls {
@@ -52,7 +57,7 @@ func (c *calls) begin(
 	abandon func(),
 ) (outboundCall, bool) {
 	id := jsonrpc2.Int64ID(c.next.Add(1))
-	completed := make(chan error, 1)
+	completed := make(chan callResult, 1)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -63,7 +68,7 @@ func (c *calls) begin(
 	return outboundCall{
 		id:                  id,
 		completed:           completed,
-		observeLateResponse: abandon != nil,
+		observeLateResponse: accept != nil,
 	}, true
 }
 
@@ -85,7 +90,7 @@ func (c *calls) deliver(response *jsonrpc.Response) {
 	if pending.accept != nil {
 		err = pending.accept(response)
 	}
-	pending.completed <- err
+	pending.completed <- callResult{response: response, err: err}
 }
 
 func (c *calls) retire(id jsonrpc.ID) {

@@ -63,7 +63,7 @@ func (s *ClientSession) Prompt(ctx context.Context, params *PromptParams) (*Prom
 			return nil, err
 		}
 	}
-	generation, claimed := conn.turns.begin(s.id)
+	turn, claimed := conn.turns.begin(s.id)
 	if !claimed {
 		return nil, ErrPromptInProgress
 	}
@@ -74,22 +74,21 @@ func (s *ClientSession) Prompt(ctx context.Context, params *PromptParams) (*Prom
 		request.Meta = params.Meta
 	}
 
-	result := new(PromptResponse)
-	// finish is the abandon callback as well as the accept one, which is what
-	// keeps the turn registered after this caller leaves: a call with somewhere to
-	// abandon to is one await declines to retire, so the answer that ends the turn
-	// is still observed when it arrives.
-	finish := func() { conn.turns.complete(s.id, generation) }
-	call, err := conn.send(ctx, methodSessionPrompt, request, func(response *jsonrpc.Response) error {
-		defer finish()
-		return decodeResponse(response, result)
+	// The response observer ends the turn even when this caller has left. Losing
+	// the connection without an answer discharges the same obligation.
+	finish := turn.complete
+	call, err := conn.send(ctx, methodSessionPrompt, request, func(*jsonrpc.Response) error {
+		finish()
+		return nil
 	}, finish)
+	turn.finishSending()
 	if err != nil {
 		finish()
 		return nil, err
 	}
 
-	if awaitErr := conn.await(ctx, call); awaitErr != nil {
+	result := new(PromptResponse)
+	if awaitErr := conn.awaitInto(ctx, call, result); awaitErr != nil {
 		return nil, awaitErr
 	}
 	return result, nil
@@ -106,27 +105,30 @@ func (s *ClientSession) Prompt(ctx context.Context, params *PromptParams) (*Prom
 // JSON-RPC request and stops this side waiting; this cancels a turn and leaves the
 // request outstanding, on purpose, so that the agent can answer it.
 func (s *ClientSession) Cancel(ctx context.Context, params *CancelParams) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// The pending permission requests are claimed and answered first — before the
 	// notification goes out and before this returns. See cancel.go.
 	cancellation := s.conn.turns.beginCancellation(s.id)
-	for _, id := range cancellation.pending {
-		settled := s.conn.requests.settlement(id)
+	defer cancellation.finish()
+	for _, call := range cancellation.pending {
 		//nolint:contextcheck // the answer is the connection's obligation, not this caller's.
-		if write := s.conn.answerCancelled(id); write != nil {
+		if write := s.conn.answerCancelled(call); write != nil {
 			write()
 			continue
 		}
 		// The permission handler may have won the answer claim immediately before
 		// cancellation. Its response still has to reach the wire before
 		// session/cancel; a claimed answer is not yet an observed one.
-		if settled != nil {
-			<-settled
-		}
+		<-call.settled
 	}
 	// And the turn is held until the notification is on the wire. It names only
 	// the session, so a prompt that started before it went out would be the turn
 	// the agent applies it to.
-	defer s.conn.turns.finishCancellation(s.id, cancellation.generation)
+	if err := cancellation.awaitPrompt(ctx); err != nil {
+		return err
+	}
 
 	notification := &CancelNotification{SessionID: s.id}
 	if params != nil {
@@ -197,10 +199,15 @@ func (s *ClientSession) Close(ctx context.Context, params *CloseParams) (*CloseS
 		request.Meta = params.Meta
 	}
 	response := new(CloseSessionResponse)
-	if err := s.conn.call(ctx, methodSessionClose, request, response); err != nil {
+	if err := s.conn.callObserved(ctx, methodSessionClose, request, func(answer *jsonrpc.Response) error {
+		if decodeErr := decodeResponse(answer, response); decodeErr != nil {
+			return decodeErr
+		}
+		s.conn.sessions.forget(s.id)
+		return nil
+	}); err != nil {
 		return nil, err
 	}
-	s.conn.sessions.forget(s.id)
 	return response, nil
 }
 
@@ -282,7 +289,7 @@ func (s *AgentSession) CreateElicitation(
 		}
 		return mode, nil
 	}
-	return s.conn.createElicitation(ctx, params, scope)
+	return s.conn.createElicitation(ctx, params, scope, nil)
 }
 
 // ReadTextFile reads a text file from the client's workspace.
@@ -365,7 +372,10 @@ func (s *AgentSession) CreateTerminal(
 	if err != nil {
 		return nil, nil, err
 	}
-	return &TerminalHandle{id: response.TerminalID, session: s}, response, nil
+	return &TerminalHandle{
+		id: response.TerminalID, session: s,
+		state: &terminalState{sending: make(chan struct{}, 1)},
+	}, response, nil
 }
 
 // A sessionRequest is a request that names the session it belongs to, which is

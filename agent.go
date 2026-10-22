@@ -295,19 +295,20 @@ type AgentConn struct {
 //
 // It must be called from a handler, on the context that handler was given: the
 // scope is the request being served and nothing else identifies one. Called
-// anywhere else it fails rather than inventing a scope.
+// on another connection or after that request has been answered, it fails rather
+// than reusing the request's identifier.
 func (c *AgentConn) CreateElicitation(
 	ctx context.Context,
 	params *CreateElicitationParams,
 ) (*CreateElicitationResponse, error) {
+	call, method, serving := servingRequest(ctx)
 	scope := func(mode CreateElicitationRequestValue) (CreateElicitationRequestValue, error) {
 		if !params.ToolCallID.IsZero() {
 			return nil, errors.New(
 				"acp: CreateElicitationParams.ToolCallID names a tool call within a session, " +
 					"and a request-scoped elicitation has no session; use AgentSession.CreateElicitation")
 		}
-		id, method, serving := servingRequest(ctx)
-		if !serving {
+		if !serving || call.owner != c.requests {
 			return nil, errors.New(
 				"acp: AgentConn.CreateElicitation is scoped to the request being served, so it " +
 					"must be called from a handler with the context that handler was given")
@@ -329,7 +330,7 @@ func (c *AgentConn) CreateElicitation(
 						"use AgentSession.CreateElicitation", method)
 			}
 		}
-		within := elicitationRequestScope{RequestID: id}
+		within := elicitationRequestScope{RequestID: requestIDOf(call.id)}
 		switch mode := mode.(type) {
 		case *ElicitationFormMode:
 			mode.Value = &ElicitationFormModeRequest{elicitationRequestScope: within}
@@ -338,7 +339,7 @@ func (c *AgentConn) CreateElicitation(
 		}
 		return mode, nil
 	}
-	return c.createElicitation(ctx, params, scope)
+	return c.createElicitation(ctx, params, scope, call)
 }
 
 // CompleteElicitation says an accepted URL interaction is finished and the
@@ -587,16 +588,17 @@ func (c *AgentConn) closeSession(ctx context.Context, request *jsonrpc.Request) 
 	if c.agent.config.CloseSession == nil {
 		return nil, methodNotImplemented(request.Method)
 	}
-	c.cancelTurn(params.SessionID)
+	session := c.session(params.SessionID)
+	c.cancelTurn(session.id)
 
-	response, err := c.agent.config.CloseSession(ctx, c.session(params.SessionID), params)
+	response, err := c.agent.config.CloseSession(ctx, session, params)
 	if err != nil {
 		return nil, err
 	}
 	if response == nil {
 		return nil, nilHandlerResponse(request.Method)
 	}
-	c.sessions.forget(params.SessionID)
+	c.sessions.forget(session.id)
 	return response, nil
 }
 
@@ -613,14 +615,15 @@ func (c *AgentConn) deleteSession(ctx context.Context, request *jsonrpc.Request)
 	if err != nil {
 		return nil, err
 	}
-	response, err := handle(ctx, c.session(params.SessionID), params)
+	session := c.session(params.SessionID)
+	response, err := handle(ctx, session, params)
 	if err != nil {
 		return nil, err
 	}
 	if response == nil {
 		return nil, nilHandlerResponse(request.Method)
 	}
-	c.sessions.forget(params.SessionID)
+	c.sessions.forget(session.id)
 	return response, nil
 }
 
@@ -633,7 +636,7 @@ func (c *AgentConn) deleteSession(ctx context.Context, request *jsonrpc.Request)
 // already in progress, and doing it here would let it overtake every message read
 // before it — including the responses the peer sent first, which is exactly the
 // order a cancelled turn depends on.
-func (c *AgentConn) register(request *jsonrpc.Request) registration {
+func (c *AgentConn) register(request *jsonrpc.Request, call *inboundRequest) registration {
 	switch request.Method {
 	case methodInitialize:
 		// The attempt is queued in wire order, not claimed in a concurrent handler.
@@ -653,24 +656,21 @@ func (c *AgentConn) register(request *jsonrpc.Request) registration {
 			// It will fail its own decode in the handler, with a better message.
 			return registration{dispatch: true}
 		}
-		if !c.turns.claim(session, request.ID) {
+		if !c.turns.claim(session, call) {
 			// Refused here rather than in the handler, because the handler is not
 			// where the ordering is intact. The rule is the one the client handle
 			// keeps locally, kept here against any peer.
 			refusal := newError(ErrorCodeInvalidRequest,
 				"session %s already has a prompt in flight, and session/cancel names no turn", session)
-			if c.claimAnswer(request.ID) {
-				c.spawn(func() { c.writeResponse(request.ID, nil, refusal) })
-			}
-			return registration{}
+			return registration{err: refusal}
 		}
-		// Released only after the answer write settles. The peer may send the next
-		// prompt after it reads that answer, while one it pipelines before then must
-		// still find this turn in flight.
+		// Commit before writing because the peer can receive the answer and start
+		// its next prompt before Write returns. Settlement retires only this
+		// record, so it cannot release that successor.
 		return registration{
 			dispatch: true,
-			served:   func() { c.turns.commit(session, request.ID) },
-			settled:  func() { c.turns.release(session, request.ID) },
+			served:   func() { c.turns.commit(session, call) },
+			settled:  func() { c.turns.release(session, call) },
 		}
 
 	default:
@@ -681,18 +681,20 @@ func (c *AgentConn) register(request *jsonrpc.Request) registration {
 // The turn was claimed in wire order and is released by the request lifecycle,
 // so what is left here is the handler.
 func (c *AgentConn) prompt(ctx context.Context, request *jsonrpc.Request) (any, error) {
+	call, _, _ := servingRequest(ctx)
 	params, err := decodeParams[PromptRequest](request)
 	if err != nil {
 		// Ordered admission may have claimed the session from the small prefix it
 		// could decode. Once the full payload is known invalid, commit that failure
 		// so a later cancellation cannot reinterpret it as a valid cancelled turn.
 		if session, ok := sessionOf(request); ok {
-			c.turns.commit(session, request.ID)
+			c.turns.commit(session, call)
 		}
 		return nil, err
 	}
-	response, err := c.agent.config.Prompt(ctx, c.session(params.SessionID), params)
-	if c.turns.commit(params.SessionID, request.ID) {
+	session := c.session(params.SessionID)
+	response, err := c.agent.config.Prompt(ctx, session, params)
+	if c.turns.commit(session.id, call) {
 		// session/cancel is a semantic turn result, not a failed JSON-RPC call.
 		// This boundary catches abort errors from model and tool libraries so they
 		// cannot leak as -32603, which the protocol explicitly warns against.
@@ -730,7 +732,7 @@ func (c *AgentConn) cancel(ctx context.Context, request *jsonrpc.Request) error 
 // has to solve: the request's context is created when the request is read, so
 // cancelling it now means the handler starts already cancelled.
 func (c *AgentConn) cancelTurn(session SessionID) {
-	id, cancellable := c.turns.cancel(session)
+	call, cancellable := c.turns.cancel(session)
 	if !cancellable {
 		// Nothing to interrupt: either no turn is on record, or its handler already
 		// committed the result. The turn is claimed in wire order, so a prompt this
@@ -738,5 +740,5 @@ func (c *AgentConn) cancelTurn(session SessionID) {
 		// started.
 		return
 	}
-	c.interruptRequest(id)
+	call.cancel()
 }

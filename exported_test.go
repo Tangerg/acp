@@ -63,7 +63,8 @@ var handWritten = map[string]string{
 	"Connection":            "transport.go — an established bidirectional message stream",
 	"NewInMemoryTransports": "transport_memory.go — two transports connected to each other",
 	"NewStdioTransport":     "transport_stdio.go — the agent's side of a local connection",
-	"NewIOTransport":        "transport_stdio.go — newline-delimited JSON over a closeable stream pair",
+	"NewIOTransport":        "transport_stdio.go — newline-delimited JSON over configured byte streams",
+	"IOConfig":              "transport_stdio.go — read and write views with one explicit resource-release owner",
 	"NewCommandTransport":   "transport_stdio.go — the client's side: it starts the agent as a subprocess",
 	"CommandConfig":         "transport_stdio.go — the command to run and how long it is given to stop",
 

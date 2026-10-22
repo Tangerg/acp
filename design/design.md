@@ -201,7 +201,23 @@ bytes. Four implementations ship:
 | `NewCommandTransport` | spawns an agent and owns its pipes for a client |
 | `NewStdioTransport` | uses an agent's own stdin and stdout |
 | `NewInMemoryTransports` | two peers in one process; what this package's tests run over |
-| `NewIOTransport` | any closeable pair of streams |
+| `NewIOTransport` | byte streams with one explicit release owner in `IOConfig` |
+
+`Close` unblocks both reads and writes. A queued byte-stream write can return its
+exact context error without committing bytes. Once writing starts, cancellation
+closes the streams and returns a wrapped error: commitment is uncertain, so the
+connection must end. `IOConfig.Close` must unblock I/O on both configured streams.
+A short write is also a failure, never a successful message.
+
+The reader and writer are I/O views; only the configured close callback owns
+release. The connection invokes it once, including when cancellation and explicit
+close race, and shares its error with every closer. This avoids closing a shared
+read/write resource twice. Separate pipes use a callback that closes both and
+joins their errors. Failed connection setup leaves ownership with the caller.
+
+An outbound operation returns its own write error. Closing the stream may wake
+the reader first, so the connection's first terminal error can differ; that error
+belongs to `Wait` and cannot replace the operation's deadline or write failure.
 
 Shutdown of a spawned agent is bounded rather than best-effort: closing the
 connection closes the pipes, waits, asks the process to stop, waits again, and
@@ -408,6 +424,15 @@ Operations return both the response and the handle when the response contains
 more than an identifier. For example, `session/new` also returns modes,
 configuration options, and `_meta`.
 
+The connection publishes session handles in response order, including responses
+received after the original caller stopped waiting. Successful close and delete
+responses retire the cached handle at that same ordered boundary. The caller's
+return order cannot create or retire session identity.
+
+Agent handlers receive a handle bound before dispatch. Prompt completion and
+session retirement use that handle's identity after the handler returns; changes
+to its request object cannot redirect those transitions to another session.
+
 ### One prompt at a time
 
 A second overlapping prompt on one session returns `ErrPromptInProgress`.
@@ -420,6 +445,16 @@ pending permission requests by session.
 A session is safe for concurrent use. That is a different question from whether
 two prompts may overlap, and the answer to the first is yes while the answer to
 the second is no.
+
+Each active turn has its own record. Delayed completion and permission cleanup
+retain that record rather than looking up a possibly newer turn by session ID.
+Completed turns leave the connection's index after their cancellation writes
+finish; no historical generation counter remains for every session ever seen.
+The prompt sender alone closes the turn's send-completion channel. Cancellation
+waits for that boundary before sending its notification, so a locally registered
+turn cannot be cancelled on the wire before its prompt arrives. A cancelled
+`Cancel` context returns without claiming the turn when it is already done on
+entry.
 
 ### Two cancellations, which are not the same thing
 
@@ -436,7 +471,8 @@ the connection takes them:
   includes a handler blocked on a dialog and a request that arrives while
   cancellation is still running. The connection claims those requests before
   sending the notification. A later user decision then finds the request already
-  answered and is discarded.
+  answered and is discarded. Concurrent cancellations retain the same pending
+  response obligations until settlement, so one cannot overtake another's writes.
 - An agent whose turn is cancelled must still answer the prompt. The handler is
   free to return its context error, as model and tool libraries commonly do. The
   connection turns a committed cancellation into
@@ -471,19 +507,40 @@ combining them behind unrelated mutexes would hide the ordering relationships:
 
 | Collaborator | Responsibility |
 | --- | --- |
-| `lifetime` | when reading stopped, when everything accepted had been delivered, and why it ended |
+| `lifetime` | transport release, reader exit, delivery completion, and the terminal error |
 | `queue` | the ordered stage: nothing is dispatched before the messages that preceded it |
 | `calls` | the outbound half: requests sent and not yet answered |
-| `requests` | the inbound half: who holds the right to answer each request being served |
+| `requests` | each inbound request's identity, response claim, settlement, and retained handler work |
 
-The two lifetime moments remain separate because an accepted response may already
-be queued when the peer closes. A caller waiting for that response must receive it
-instead of a connection error.
+Only the reader can signal that no more messages will enter the queue. Closing
+the transport may race a successful read whose response has not yet been queued.
+Delivery ends after reader exit and queue drainage, so a waiting caller receives
+that response before observing connection closure. Notifications started during
+drainage use an uncancelled context regardless of their batch. Requests retain
+their own cancellation, and notification handlers already running at shutdown
+receive the connection's cancellation as before.
 
-The right to answer a request is a claim rather than an ownership, because two
-parties race for it: a cancelled turn answering pending permission requests, and
-the application's handler returning. Whoever claims first answers; the loser is
-dropped rather than sending a second response for one request.
+The request record owns the right to answer. Turn cancellation and the returning
+handler ask that same owner to claim it; only one succeeds. Automatic refusals
+use this path too. The claim removes the record from the unanswered map before
+writing, because the peer may receive the response and reuse its ID before the
+write returns. Response delivery and handler work retain the original record and
+count against the in-flight bound until both finish. Old work cannot answer or
+remove a newer request that reuses the ID.
+
+The response writer makes the final error decision after attempting result
+encoding. For a request cancelled through `$/cancel_request`, both handler and
+encoding failures become `-32800`; a valid completed result may still be sent.
+
+A request-scoped elicitation holds its parent's send gate during the write. The
+response claim closes admission through the unanswered map, then waits for any
+admitted write before answering. This wait and the response write share one
+deadline, so a peer that stops reading cannot hold the parent indefinitely.
+Waiting for the elicitation's response does not hold the gate.
+
+Response delivery updates connection-owned state and hands the response to its
+waiter. The waiter decodes caller-owned result objects, so a custom decoder can
+make another call and cannot keep modifying a result after its call returns.
 
 ## Workspace access
 
@@ -523,6 +580,11 @@ an operation on a stale handle is not merely pointless: it may name a terminal
 that now belongs to something else, and the client would serve it. A refusal
 before the request reaches the transport rolls the claim back, so a caller can
 correct a context and retry.
+
+The handle serializes admission and sending with release, preventing an earlier
+operation from being sent after release. It unlocks before waiting for responses,
+so a pending `WaitForExit` does not prevent `Kill` or `Release`. Handle copies
+share one state record; copying a value cannot create a second release right.
 
 ## Safe extension methods
 
@@ -631,9 +693,18 @@ travels on, and the arms that carry it are exported types wrapping an unexported
 one. A client can tell a request-scoped elicitation from a session-scoped one by
 its arm; neither side is handed the identifier.
 
+The context retains the original inbound request record. The operation checks
+that the record belongs to this connection. The unanswered map owns both send
+admission and the response claim; copying a context or reusing a wire ID cannot
+give another request that scope. The send gate orders admitted writes before the
+response.
+
 The mode is deep-copied before the scope is written into it. The value is the
 caller's, and an agent holding one prepared schema and eliciting with it twice
 would otherwise find the second call carrying the first call's scope.
+
+The client validates a form answer against its private snapshot of the received
+schema. Edits to the handler's form model do not change the peer's constraints.
 
 ### Two modes, two capabilities, one method
 
@@ -698,12 +769,18 @@ could not reach it either: a zero value's map is nil. `wire` now has
 emits them when a map's values are a union.
 
 Form-answer semantics are delegated to
-`github.com/google/jsonschema-go/jsonschema`, the maintained validator used by
-the official MCP Go SDK, rather than mirrored in a second handwritten validator.
-The adapter keeps two ACP-specific forward-compatibility rules: a catch-all schema
-arm is not partially interpreted, and an ECMA-262 pattern that Go's regexp dialect
-cannot compile is left uninterpreted. Patterns the validator can represent are
-enforced; `format` remains an annotation in that library.
+`github.com/santhosh-tekuri/jsonschema/v6`. Both schema bounds and answer numbers
+retain their exact JSON representation, including adjacent integers beyond
+float precision. The generator uses the same validator for schema structure,
+references, and defaults. External schema loading is disabled in both paths.
+
+The form adapter compiles a private projection: a catch-all arm is not partially
+interpreted, and optional nulls become omissions as ACP requires. Counts larger
+than Go can represent become equivalent constraints: a larger maximum cannot
+exclude any string or slice, and a larger minimum cannot admit one. Metadata and
+the source wire model remain unchanged. Patterns that the validator cannot
+compile produce an explicit schema error; they are never silently discarded.
+`format` remains an annotation.
 
 The URL field itself follows the published `format: "uri"` grammar. That is not
 the same language as the TypeScript reference's WHATWG-style URL helper: values

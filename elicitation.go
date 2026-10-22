@@ -107,6 +107,7 @@ func (c *AgentConn) createElicitation(
 	ctx context.Context,
 	params *CreateElicitationParams,
 	scope func(CreateElicitationRequestValue) (CreateElicitationRequestValue, error),
+	parent *inboundRequest,
 ) (*CreateElicitationResponse, error) {
 	if params == nil {
 		return nil, paramsRequired("CreateElicitation", "Message and Mode")
@@ -141,7 +142,7 @@ func (c *AgentConn) createElicitation(
 		if err != nil {
 			return nil, err
 		}
-		call, err := c.send(ctx, methodElicitationCreate, request, func(answer *jsonrpc.Response) error {
+		call, err := c.sendElicitation(ctx, request, parent, func(answer *jsonrpc.Response) error {
 			if decodeErr := decodeResponse(answer, response); decodeErr != nil {
 				reservation.reject()
 				return decodeErr
@@ -157,16 +158,20 @@ func (c *AgentConn) createElicitation(
 			reservation.reject()
 			return nil, err
 		}
-		if awaitErr := c.await(ctx, call); awaitErr != nil {
+		if _, awaitErr := c.await(ctx, call); awaitErr != nil {
 			return nil, awaitErr
 		}
 		return response, nil
 	}
 
-	if err := c.call(ctx, methodElicitationCreate, request, response); err != nil {
+	call, err := c.sendElicitation(ctx, request, parent, nil, nil)
+	if err != nil {
 		return nil, err
 	}
-	if form, isForm := mode.(*ElicitationFormMode); isForm {
+	if awaitErr := c.awaitInto(ctx, call, response); awaitErr != nil {
+		return nil, awaitErr
+	}
+	if form, isForm := scoped.(*ElicitationFormMode); isForm {
 		if content, answered := response.acceptedContent(); answered {
 			if bad := form.RequestedSchema.validate(content); bad != nil {
 				return nil, bad
@@ -174,6 +179,22 @@ func (c *AgentConn) createElicitation(
 		}
 	}
 	return response, nil
+}
+
+func (c *AgentConn) sendElicitation(
+	ctx context.Context,
+	request *CreateElicitationRequest,
+	parent *inboundRequest,
+	accept func(*jsonrpc.Response) error,
+	abandon func(),
+) (outboundCall, error) {
+	if parent != nil {
+		if err := parent.beginSending(ctx); err != nil {
+			return outboundCall{}, err
+		}
+		defer parent.finishSending()
+	}
+	return c.send(ctx, methodElicitationCreate, request, accept, abandon)
 }
 
 // The catch-all arm exists so a mode this package does not know survives being
@@ -291,15 +312,15 @@ type servingRequestKey struct{}
 // whether the request has a session, and a request-scoped elicitation is defined
 // as one outside a session.
 type servedRequest struct {
-	id     requestID
-	method string
+	request *inboundRequest
+	method  string
 }
 
-func withServingRequest(ctx context.Context, id jsonrpc.ID, method string) context.Context {
-	return context.WithValue(ctx, servingRequestKey{}, servedRequest{requestIDOf(id), method})
+func withServingRequest(ctx context.Context, request *inboundRequest, method string) context.Context {
+	return context.WithValue(ctx, servingRequestKey{}, servedRequest{request, method})
 }
 
-func servingRequest(ctx context.Context) (requestID, string, bool) {
+func servingRequest(ctx context.Context) (*inboundRequest, string, bool) {
 	served, serving := ctx.Value(servingRequestKey{}).(servedRequest)
-	return served.id, served.method, serving
+	return served.request, served.method, serving
 }

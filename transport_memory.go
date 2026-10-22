@@ -26,8 +26,11 @@ type inMemoryTransport struct {
 	write *messagePipe
 }
 
-func (t *inMemoryTransport) Connect(context.Context) (Connection, error) {
+func (t *inMemoryTransport) Connect(ctx context.Context) (Connection, error) {
 	if err := t.claim(); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	return &inMemoryConnection{read: t.read, write: t.write}, nil
@@ -77,6 +80,14 @@ func newMessagePipe() *messagePipe {
 }
 
 func (p *messagePipe) send(ctx context.Context, message jsonrpc.Message) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case <-p.closed:
+		return ErrConnectionClosed
+	default:
+	}
 	select {
 	case p.messages <- message:
 		return nil
@@ -88,6 +99,14 @@ func (p *messagePipe) send(ctx context.Context, message jsonrpc.Message) error {
 }
 
 func (p *messagePipe) receive(ctx context.Context) (jsonrpc.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case <-p.closed:
+		return nil, io.EOF
+	default:
+	}
 	select {
 	case message := <-p.messages:
 		return message, nil

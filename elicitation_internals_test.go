@@ -7,11 +7,194 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/Tangerg/acp/internal/jsonrpc2"
 	"github.com/Tangerg/acp/internal/wire"
 	"github.com/Tangerg/acp/jsonrpc"
 )
+
+func TestAScopedElicitationWriteSharesItsParentsResponseDeadline(t *testing.T) {
+	for _, readElicitation := range []bool{false, true} {
+		t.Run(map[bool]string{false: "blocked elicitation", true: "blocked response"}[readElicitation], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				conn := newTestAgentConn()
+				conn.handshake.begin()
+				conn.handshake.accept(PeerInfo{ClientCapabilities: ClientCapabilities{
+					Elicitation: OptValue(ElicitationCapabilities{Form: OptValue(ElicitationFormCapabilities{})}),
+				}})
+				conn.handshake.publish(nil)
+				transport, peerTransport := NewInMemoryTransports()
+				stream, err := transport.Connect(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				peer, err := peerTransport.Connect(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				blocked := &blockedElicitationStream{Connection: stream, entered: make(chan struct{})}
+				conn.transport = blocked
+				conn.run()
+				defer conn.endReading(nil)
+				parent, err := conn.requests.accept(conn.life.ctx, jsonrpc2.Int64ID(9))
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx := withServingRequest(context.WithoutCancel(parent.ctx), parent, methodAuthenticate)
+				elicited := make(chan error, 1)
+				go func() {
+					_, err := conn.CreateElicitation(ctx, &CreateElicitationParams{
+						Message: "?", Mode: &ElicitationFormMode{RequestedSchema: ElicitationSchema{
+							Type: ElicitationSchemaTypeObject, Properties: map[string]ElicitationPropertySchema{},
+						}},
+					})
+					elicited <- err
+				}()
+				<-blocked.entered
+				answered := make(chan bool, 1)
+				go func() {
+					defer parent.finish()
+					answered <- conn.respond(parent, &AuthenticateResponse{}, nil)
+				}()
+				synctest.Wait()
+				remaining := responseWriteTimeout
+				if readElicitation {
+					remaining /= 2
+					time.Sleep(responseWriteTimeout - remaining)
+					if _, err := peer.Read(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+					synctest.Wait()
+				}
+				time.Sleep(remaining)
+				synctest.Wait()
+				select {
+				case written := <-answered:
+					if written {
+						t.Error("the response was written although the peer did not read it")
+					}
+				default:
+					t.Error("the response deadline did not bound both the scoped write and its response")
+					conn.endReading(nil)
+					<-answered
+				}
+				if err := <-elicited; err == nil {
+					t.Error("the unanswered elicitation reported success")
+				}
+				if err := conn.Wait(); !errors.Is(err, context.DeadlineExceeded) {
+					t.Errorf("Wait = %v, want the response deadline", err)
+				}
+				synctest.Wait()
+				if conn.requests.inflight != 0 {
+					t.Errorf("shutdown retained %d request obligations", conn.requests.inflight)
+				}
+			})
+		})
+	}
+}
+
+type blockedElicitationStream struct {
+	Connection
+	entered chan struct{}
+}
+
+func (s *blockedElicitationStream) Write(ctx context.Context, message jsonrpc.Message) error {
+	if request, ok := message.(*jsonrpc.Request); ok && request.Method == methodElicitationCreate {
+		close(s.entered)
+	}
+	return s.Connection.Write(ctx, message)
+}
+
+func TestARequestAnswerCannotOvertakeItsScopedElicitationWrite(t *testing.T) {
+	for name, mode := range map[string]CreateElicitationRequestValue{
+		"form": &ElicitationFormMode{RequestedSchema: ElicitationSchema{
+			Type: ElicitationSchemaTypeObject, Properties: map[string]ElicitationPropertySchema{},
+		}},
+		"url": &ElicitationURLMode{ElicitationID: "login", URL: "https://example.invalid/login"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				conn := newTestAgentConn()
+				conn.handshake.begin()
+				conn.handshake.accept(PeerInfo{ClientCapabilities: ClientCapabilities{
+					Elicitation: OptValue(ElicitationCapabilities{
+						Form: OptValue(ElicitationFormCapabilities{}), URL: OptValue(ElicitationURLCapabilities{}),
+					}),
+				}})
+				conn.handshake.publish(nil)
+				stream := &scopedElicitationStream{
+					entered: make(chan struct{}), resume: make(chan struct{}), messages: make(chan jsonrpc.Message, 2),
+				}
+				conn.transport = stream
+				parent, err := conn.requests.accept(t.Context(), jsonrpc2.Int64ID(9))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer parent.finish()
+				ctx := withServingRequest(context.WithoutCancel(parent.ctx), parent, methodAuthenticate)
+				elicited := make(chan error, 1)
+				go func() {
+					_, err := conn.CreateElicitation(ctx, &CreateElicitationParams{Message: "?", Mode: mode})
+					elicited <- err
+				}()
+				select {
+				case <-stream.entered:
+				case err := <-elicited:
+					t.Fatalf("elicitation returned before writing: %v", err)
+				}
+				answered := make(chan bool, 1)
+				go func() { answered <- conn.respond(parent, &AuthenticateResponse{}, nil) }()
+				synctest.Wait()
+				if len(stream.messages) != 0 {
+					t.Error("the parent response overtook its request-scoped elicitation")
+				}
+				close(stream.resume)
+				if !<-answered {
+					t.Error("the parent response failed")
+				}
+				for range 2 {
+					if request, ok := (<-stream.messages).(*jsonrpc.Request); ok {
+						conn.calls.deliver(&jsonrpc.Response{ID: request.ID, Result: json.RawMessage(`{"action":"decline"}`)})
+					}
+				}
+				if err := <-elicited; err != nil {
+					t.Fatal(err)
+				}
+				if _, err := conn.CreateElicitation(ctx, &CreateElicitationParams{Message: "?", Mode: mode}); err == nil {
+					t.Error("an answered request admitted another scoped elicitation")
+				}
+			})
+		})
+	}
+}
+
+type scopedElicitationStream struct {
+	entered  chan struct{}
+	resume   chan struct{}
+	messages chan jsonrpc.Message
+}
+
+func (*scopedElicitationStream) Read(ctx context.Context) (jsonrpc.Message, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (s *scopedElicitationStream) Write(ctx context.Context, message jsonrpc.Message) error {
+	if _, request := message.(*jsonrpc.Request); request {
+		close(s.entered)
+		select {
+		case <-s.resume:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	s.messages <- message
+	return nil
+}
+
+func (*scopedElicitationStream) Close() error { return nil }
 
 // The inbound half of elicitation, which no agent built on this package can
 // produce: the outbound gate refuses a mode the client did not advertise before
@@ -71,6 +254,33 @@ func TestAnUnadvertisedModeIsRefusedInbound(t *testing.T) {
 
 	if served != 0 {
 		t.Error("a refused elicitation still reached a handler")
+	}
+}
+
+func TestAFormHandlerCannotRewriteTheSchemaUsedToValidateItsAnswer(t *testing.T) {
+	client, err := NewClient(&ClientConfig{
+		SessionUpdate:     func(context.Context, *SessionNotification) {},
+		RequestPermission: denyingPermissionInternal,
+		Elicitation: &ElicitationHandlers{Form: func(
+			_ context.Context, _ *CreateElicitationRequest, mode *ElicitationFormMode,
+		) (*CreateElicitationResponse, error) {
+			mode.RequestedSchema.Required = OptValue([]string{})
+			return &CreateElicitationResponse{Value: &ElicitationAcceptAction{
+				Content: OptValue(map[string]ElicitationContentValue{}),
+			}}, nil
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, _ := connectRawClient(t, client)
+	params := `{"message":"?","mode":"form","sessionId":"session",` +
+		`"requestedSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}`
+	if err := stream.Write(t.Context(), rawCall(7, methodElicitationCreate, params)); err != nil {
+		t.Fatal(err)
+	}
+	if code := readRawErrorCode(t, stream); code != ErrorCodeInternalError {
+		t.Errorf("invalid answer returned %v, want internal error", code)
 	}
 }
 

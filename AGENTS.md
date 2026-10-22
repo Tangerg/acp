@@ -142,6 +142,7 @@ Respect known scale and resource limits during design.
   precise; do not rewrite policy during unrelated coding work.
 - Enforce mechanical requirements through formatters, linters, hooks, and CI rather than repeated prose. Never
   weaken instructions or checks to excuse a noncompliant change.
+
 ## Project-specific rules
 
 Rules that apply only to this repository live in [`PROJECT_RULES.md`](PROJECT_RULES.md).

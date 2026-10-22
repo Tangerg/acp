@@ -13,7 +13,7 @@ import (
 // x-deserialize-skip-invalid-items: one fails the message and the other drops the
 // element.
 func TestSliceDecodingSalvagesOnlyWhenAsked(t *testing.T) {
-	const data = `["a",7,"b"]`
+	const data = `["a",7,null,"b"]`
 
 	if _, err := wire.UnmarshalSlice[string]([]byte(data)); err == nil {
 		t.Error("UnmarshalSlice accepted an array with an element of the wrong type")

@@ -7,14 +7,12 @@ import (
 	"sync"
 )
 
-// A lifetime is a connection's own: when it stopped reading, when everything it
-// had already accepted had been delivered, and why it ended.
+// A lifetime owns shutdown: transport release, reader exit, delivery completion,
+// and the terminal error. These are separate moments because closing a stream
+// may race a successful Read that has not yet queued its last response.
 //
-// The two moments are separate on purpose, and were once one channel. A response
-// the read side has accepted and queued is an answer this connection holds, and a
-// call waiting for it must not be told the connection ended instead — which is
-// what happened when the peer hung up in the same breath as answering, because
-// both facts were ready at once and select chose between them at random.
+// Only the reader signals its exit, and only delivery signals that every queued
+// response has reached its waiter. Transport release cannot stand in for either.
 type lifetime struct {
 	// ctx scopes everything the connection owns: the read loop, and every inbound
 	// request's context.
@@ -28,9 +26,10 @@ type lifetime struct {
 	cancel context.CancelFunc
 
 	endOnce   sync.Once
+	released  chan struct{}
 	readEnded chan struct{}
 	delivered chan struct{}
-	// terminal is written before readEnded closes and read only after, so every
+	// terminal is written before released closes and read only after, so every
 	// caller sees the same value without holding a lock.
 	terminal error
 
@@ -47,6 +46,7 @@ func newLifetime() *lifetime {
 	return &lifetime{
 		ctx:       ctx,
 		cancel:    cancel,
+		released:  make(chan struct{}),
 		readEnded: make(chan struct{}),
 		delivered: make(chan struct{}),
 	}
@@ -75,7 +75,7 @@ func (l *lifetime) endReading(cause error, release func() error) {
 		}
 		l.terminal = cause
 
-		close(l.readEnded)
+		close(l.released)
 	})
 }
 
@@ -107,12 +107,11 @@ func (l *lifetime) spawn(fn func()) {
 
 func (l *lifetime) run(fn func()) { l.work.Go(fn) }
 
-// Over means the read side has finished, not that the queue has drained: a
-// connection that will accept nothing further is not open, however much is still
-// being handed to callers already waiting.
+// Releasing the transport ends the connection even while its reader is handing
+// off a final message and the delivery queue still holds work.
 func (l *lifetime) ended() bool {
 	select {
-	case <-l.readEnded:
+	case <-l.released:
 		return true
 	default:
 		return false
@@ -122,14 +121,15 @@ func (l *lifetime) ended() bool {
 func (l *lifetime) wait() error {
 	<-l.delivered
 	l.work.Wait()
+	<-l.released
 	return l.terminal
 }
 
 func (l *lifetime) failure() error {
-	// terminal is final before readEnded closes. Waiting for delivery here would
+	// terminal is final before released closes. Waiting for delivery here would
 	// let an unrelated slow notification handler hold a failed write — and its
 	// caller's deadline — after the transport is already irrecoverably closed.
-	<-l.readEnded
+	<-l.released
 	if l.terminal != nil {
 		return l.terminal
 	}

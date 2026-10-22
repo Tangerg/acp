@@ -3,12 +3,119 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Tangerg/acp/internal/jsonrpc2"
 	"github.com/Tangerg/acp/jsonrpc"
 )
+
+func TestSessionCancellationCannotOvertakeItsPromptWrite(t *testing.T) {
+	for _, deadline := range []bool{false, true} {
+		t.Run(map[bool]string{false: "ordered", true: "deadline"}[deadline], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				conn := newTestClientConn()
+				stream := &promptOrderStream{
+					calls: conn.calls, entered: make(chan struct{}), resume: make(chan struct{}),
+					written: make(chan string, 2),
+				}
+				conn.transport = stream
+				session := &ClientSession{id: "session", conn: conn}
+				prompt := make(chan error, 1)
+				go func() { _, err := session.Prompt(t.Context(), nil); prompt <- err }()
+				<-stream.entered
+				ctx := t.Context()
+				if deadline {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, time.Second)
+					defer cancel()
+				}
+				cancelled := make(chan error, 1)
+				go func() { cancelled <- session.Cancel(ctx, nil) }()
+				synctest.Wait()
+				select {
+				case method := <-stream.written:
+					t.Errorf("%s overtook its prompt", method)
+				default:
+				}
+				if deadline {
+					if err := <-cancelled; !errors.Is(err, context.DeadlineExceeded) {
+						t.Errorf("Cancel returned %v, want its deadline", err)
+					}
+				}
+				close(stream.resume)
+				if err := <-prompt; err != nil {
+					t.Fatal(err)
+				}
+				if !deadline {
+					if err := <-cancelled; err != nil {
+						t.Fatal(err)
+					}
+				}
+				want := []string{methodSessionPrompt}
+				if !deadline {
+					want = append(want, methodSessionCancel)
+				}
+				for _, expected := range want {
+					select {
+					case got := <-stream.written:
+						if got != expected {
+							t.Fatalf("wrote %s, want %s", got, expected)
+						}
+					default:
+						t.Fatalf("did not write %s", expected)
+					}
+				}
+				select {
+				case extra := <-stream.written:
+					t.Fatalf("unexpected write after cancellation: %s", extra)
+				default:
+				}
+			})
+		})
+	}
+}
+
+func TestAlreadyCancelledCancelContextDoesNotChangeTheTurn(t *testing.T) {
+	conn := newTestClientConn()
+	turn, _ := conn.turns.begin("session")
+	defer turn.complete()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	session := &ClientSession{id: "session", conn: conn}
+	if err := session.Cancel(ctx, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Cancel returned %v", err)
+	}
+	if admission, _ := conn.turns.registerPermission(session.id, &inboundRequest{}); admission != permissionOwned {
+		t.Fatal("a cancelled call changed the turn's permission decisions")
+	}
+}
+
+type promptOrderStream struct {
+	calls   *calls
+	entered chan struct{}
+	resume  chan struct{}
+	written chan string
+}
+
+func (*promptOrderStream) Read(context.Context) (jsonrpc.Message, error) { return nil, io.EOF }
+func (*promptOrderStream) Close() error                                  { return nil }
+
+func (s *promptOrderStream) Write(_ context.Context, message jsonrpc.Message) error {
+	request := message.(*jsonrpc.Request)
+	if request.Method == methodSessionPrompt {
+		close(s.entered)
+		<-s.resume
+	}
+	s.written <- request.Method
+	if request.IsCall() {
+		s.calls.deliver(&jsonrpc.Response{ID: request.ID, Result: json.RawMessage(`{"stopReason":"end_turn"}`)})
+	}
+	return nil
+}
 
 // The three races turn cancellation used to have, each made deterministic.
 //
@@ -26,13 +133,13 @@ import (
 func TestAPermissionRequestArrivingDuringCancellationIsAnsweredCancelled(t *testing.T) {
 	conn := newTestClientConn()
 	const session SessionID = "sess-1"
-	generation, claimed := conn.turns.begin(session)
+	turn, claimed := conn.turns.begin(session)
 	if !claimed {
 		t.Fatal("the turn was already claimed")
 	}
 
-	first := jsonrpc2.Int64ID(1)
-	if got := conn.turns.registerPermission(session, first); got != permissionOwned {
+	first := &inboundRequest{id: jsonrpc2.Int64ID(1)}
+	if got, _ := conn.turns.registerPermission(session, first); got != permissionOwned {
 		t.Fatal("the first registration was refused before any cancellation")
 	}
 
@@ -40,23 +147,23 @@ func TestAPermissionRequestArrivingDuringCancellationIsAnsweredCancelled(t *test
 	// next is refused registration and answered by the caller.
 	cancellation := conn.turns.beginCancellation(session)
 
-	if got := conn.turns.registerPermission(session, jsonrpc2.Int64ID(2)); got != permissionCancelled {
+	if got, _ := conn.turns.registerPermission(session, &inboundRequest{id: jsonrpc2.Int64ID(2)}); got != permissionCancelled {
 		t.Fatal("a permission request registered while the session was cancelling, so it would " +
 			"have reached the application and its answer would then have been thrown away")
 	}
 
 	// The cancellation being on the wire is not the turn being over: until the
 	// agent answers the prompt it may still ask, and the answer is still cancelled.
-	conn.turns.finishCancellation(session, cancellation.generation)
-	if got := conn.turns.registerPermission(session, jsonrpc2.Int64ID(3)); got != permissionCancelled {
+	cancellation.finish()
+	if got, _ := conn.turns.registerPermission(session, &inboundRequest{id: jsonrpc2.Int64ID(3)}); got != permissionCancelled {
 		t.Fatal("a permission request reached the application after the cancellation was sent " +
 			"but before the turn it cancelled had ended")
 	}
 
 	// And the session reopens when the turn ends, because a session is not
 	// cancelled for ever: the next prompt is a new turn.
-	conn.turns.complete(session, generation)
-	if got := conn.turns.registerPermission(session, jsonrpc2.Int64ID(4)); got != permissionUnowned {
+	turn.complete()
+	if got, _ := conn.turns.registerPermission(session, &inboundRequest{id: jsonrpc2.Int64ID(4)}); got != permissionUnowned {
 		t.Fatal("a permission request outside a turn was incorrectly attached to one")
 	}
 }
@@ -66,10 +173,10 @@ func TestACancellationOutsideATurnDoesNotClaimPermissionRequests(t *testing.T) {
 	const session SessionID = "sess-1"
 
 	cancellation := conn.turns.beginCancellation(session)
-	if got := conn.turns.registerPermission(session, jsonrpc2.Int64ID(1)); got != permissionUnowned {
+	if got, _ := conn.turns.registerPermission(session, &inboundRequest{id: jsonrpc2.Int64ID(1)}); got != permissionUnowned {
 		t.Fatal("session/cancel claimed a permission request although there was no prompt turn")
 	}
-	conn.turns.finishCancellation(session, cancellation.generation)
+	cancellation.finish()
 }
 
 // A cancellation that arrives before the turn's handler has started is applied to
@@ -90,18 +197,19 @@ func TestACancellationBeforeTheHandlerStartsIsNotLost(t *testing.T) {
 	id := jsonrpc2.Int64ID(1)
 
 	// What ordered admission does before spawning anything to serve the request.
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	if err := conn.requests.accept(id, cancel); err != nil {
+	call, err := conn.requests.accept(ctx, id)
+	if err != nil {
 		t.Fatalf("accepting the request: %v", err)
 	}
-	if entry := conn.register(rawRequest(id, methodSessionPrompt, promptParams)); !entry.dispatch {
+	if entry := conn.register(rawRequest(id, methodSessionPrompt, promptParams), call); !entry.dispatch {
 		t.Fatal("the prompt was refused although the session had no turn")
 	}
 
 	conn.cancelTurn(session)
 	select {
-	case <-ctx.Done():
+	case <-call.ctx.Done():
 	default:
 		t.Fatal("the cancellation arrived before the handler and was lost; the turn would have run " +
 			"to completion having never been told")
@@ -120,18 +228,19 @@ func TestACancellationDoesNotOvertakeTheAnswersSentBeforeIt(t *testing.T) {
 	conn := newTestAgentConn()
 	id := jsonrpc2.Int64ID(1)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	if err := conn.requests.accept(id, cancel); err != nil {
+	call, err := conn.requests.accept(ctx, id)
+	if err != nil {
 		t.Fatalf("accepting the request: %v", err)
 	}
-	conn.register(rawRequest(id, methodSessionPrompt, promptParams))
+	conn.register(rawRequest(id, methodSessionPrompt, promptParams), call)
 
 	// Registration has now seen the cancellation. Nothing may have happened to
 	// the turn yet: the queue in front of it has not been served.
-	conn.register(rawNotification(methodSessionCancel, `{"sessionId":"sess-1"}`))
+	conn.register(rawNotification(methodSessionCancel, `{"sessionId":"sess-1"}`), nil)
 	select {
-	case <-ctx.Done():
+	case <-call.ctx.Done():
 		t.Fatal("the cancellation was applied before ordered delivery, so it overtook every response the " +
 			"client had already sent for this turn")
 	default:
@@ -147,8 +256,8 @@ func TestASecondPromptForOneSessionIsRefused(t *testing.T) {
 	conn := newTestAgentConn()
 	const session SessionID = "sess-1"
 
-	first := jsonrpc2.Int64ID(1)
-	second := jsonrpc2.Int64ID(2)
+	first := &inboundRequest{id: jsonrpc2.Int64ID(1)}
+	second := &inboundRequest{id: jsonrpc2.Int64ID(2)}
 	if !conn.turns.claim(session, first) {
 		t.Fatal("the first prompt did not claim the turn")
 	}
@@ -175,10 +284,10 @@ func TestASecondPromptForOneSessionIsRefused(t *testing.T) {
 func TestAPromptReopensOnlyAfterResultCommit(t *testing.T) {
 	conn := newTestAgentConn()
 	const session SessionID = "sess-1"
-	first := jsonrpc2.Int64ID(1)
-	second := jsonrpc2.Int64ID(2)
+	first := &inboundRequest{id: jsonrpc2.Int64ID(1)}
+	second := &inboundRequest{id: jsonrpc2.Int64ID(2)}
 
-	entry := conn.register(rawRequest(first, methodSessionPrompt, promptParams))
+	entry := conn.register(rawRequest(first.id, methodSessionPrompt, promptParams), first)
 	if !entry.dispatch || entry.served == nil || entry.settled == nil {
 		t.Fatal("the first prompt did not retain its commit and settlement obligations")
 	}
@@ -198,8 +307,8 @@ func TestAPromptReopensOnlyAfterResultCommit(t *testing.T) {
 
 func TestAgentTurnCompletionAndCancellationHaveOneWinner(t *testing.T) {
 	const session SessionID = "sess-1"
-	first := jsonrpc2.Int64ID(1)
-	second := jsonrpc2.Int64ID(2)
+	first := &inboundRequest{id: jsonrpc2.Int64ID(1)}
+	second := &inboundRequest{id: jsonrpc2.Int64ID(2)}
 	var turns agentTurns
 
 	if !turns.claim(session, first) {

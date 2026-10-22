@@ -2,14 +2,91 @@ package acp_test
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 
 	"github.com/Tangerg/acp"
 	"github.com/Tangerg/acp/jsonrpc"
 )
+
+func TestSessionRetirementBelongsToTheResponseRatherThanItsWaiter(t *testing.T) {
+	for _, operation := range []string{"close", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				entered := make(chan struct{})
+				retired := make(chan *acp.AgentSession, 1)
+				reopened := make(chan *acp.AgentSession, 1)
+				release := make(chan struct{})
+				agent, err := acp.NewAgent(&acp.AgentConfig{
+					NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+						return &acp.NewSessionResponse{SessionID: "session"}, nil
+					},
+					Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
+						return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+					},
+					Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
+					CloseSession: func(_ context.Context, session *acp.AgentSession, request *acp.CloseSessionRequest) (*acp.CloseSessionResponse, error) {
+						retired <- session
+						request.SessionID = "handler-edited-session"
+						close(entered)
+						<-release
+						return &acp.CloseSessionResponse{}, nil
+					},
+					DeleteSession: func(_ context.Context, session *acp.AgentSession, request *acp.DeleteSessionRequest) (*acp.DeleteSessionResponse, error) {
+						retired <- session
+						request.SessionID = "handler-edited-session"
+						close(entered)
+						<-release
+						return &acp.DeleteSessionResponse{}, nil
+					},
+					ResumeSession: func(_ context.Context, session *acp.AgentSession, _ *acp.ResumeSessionRequest) (*acp.ResumeSessionResponse, error) {
+						reopened <- session
+						return &acp.ResumeSessionResponse{}, nil
+					},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				session := connectAndOpen(t, testClient(t), agent)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				returned := make(chan error, 1)
+				go func() {
+					var callErr error
+					if operation == "close" {
+						_, callErr = session.Close(ctx, nil)
+					} else {
+						_, callErr = session.Conn().DeleteSession(ctx, &acp.DeleteSessionRequest{SessionID: session.ID()})
+					}
+					returned <- callErr
+				}()
+				<-entered
+				cancel()
+				if err := <-returned; !errors.Is(err, context.Canceled) {
+					t.Fatalf("%s returned %v, want cancellation", operation, err)
+				}
+				close(release)
+				synctest.Wait()
+				resumed, _, err := session.Conn().ResumeSession(t.Context(), &acp.ResumeSessionRequest{
+					SessionID: session.ID(), Cwd: "/w",
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if <-retired == <-reopened {
+					t.Error("editing the handler's request kept the retired agent handle alive")
+				}
+				if resumed == session {
+					t.Fatal("the late successful response did not retire the old handle")
+				}
+			})
+		})
+	}
+}
 
 // The session lifecycle beyond a turn: logout, list, delete, resume, close, and
 // the configuration options an agent offers.

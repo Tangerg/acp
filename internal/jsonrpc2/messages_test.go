@@ -162,6 +162,8 @@ func TestDecodeMessageRefusesMalformedResponses(t *testing.T) {
 		`{"jsonrpc":"2.0","id":1,"error":null}`,
 		`{"jsonrpc":"2.0","id":1,"error":{"message":"failed"}}`,
 		`{"jsonrpc":"2.0","id":1,"error":{"code":-32603}}`,
+		`{"jsonrpc":"2.0","id":1,"error":{"code":null,"message":"failed"}}`,
+		`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":null}}`,
 	} {
 		if _, err := DecodeMessage([]byte(input)); err == nil {
 			t.Errorf("DecodeMessage(%s) accepted a malformed response", input)

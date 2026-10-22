@@ -6,10 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"slices"
 	"strings"
 
-	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 // A Schema is one JSON Schema node, holding every keyword the published Agent
@@ -26,8 +27,8 @@ type Schema struct {
 	Const   json.RawMessage   `json:"const"`
 	Enum    []json.RawMessage `json:"enum"`
 	Default json.RawMessage   `json:"default"`
-	Minimum *float64          `json:"minimum"`
-	Maximum *float64          `json:"maximum"`
+	Minimum *json.Number      `json:"minimum"`
+	Maximum *json.Number      `json:"maximum"`
 
 	Properties map[string]*Schema `json:"properties"`
 	Required   []string           `json:"required"`
@@ -204,20 +205,45 @@ type Document struct {
 }
 
 func loadDocument(data []byte) (*Document, error) {
-	var standard jsonschema.Schema
-	if err := json.Unmarshal(data, &standard); err != nil {
+	standard, err := jsonschema.UnmarshalJSON(bytes.NewReader(data))
+	if err != nil {
 		return nil, fmt.Errorf("decode JSON Schema: %w", err)
 	}
-	// ACP owns the extension keywords and this generator owns their code-generation
-	// policy, but neither is a reason to duplicate the standard's structural,
-	// reference, and default validation here.
-	if _, err := standard.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true}); err != nil {
-		return nil, fmt.Errorf("resolve JSON Schema: %w", err)
+	compiler := jsonschema.NewCompiler()
+	compiler.DefaultDraft(jsonschema.Draft2020)
+	compiler.UseLoader(jsonschema.SchemeURLLoader{})
+	const resource = "urn:acp:protocol"
+	if addErr := compiler.AddResource(resource, standard); addErr != nil {
+		return nil, fmt.Errorf("load JSON Schema: %w", addErr)
+	}
+	if _, compileErr := compiler.Compile(resource); compileErr != nil {
+		return nil, fmt.Errorf("compile JSON Schema: %w", compileErr)
+	}
+	// Definitions need checking even when no root references them. Defaults are
+	// annotations in JSON Schema, but become executable values in generated code.
+	if validationErr := visitDefinitions(data, func(path string, node map[string]json.RawMessage) error {
+		fragment := (&url.URL{Fragment: strings.TrimPrefix(path, "#")}).String()
+		compiled, compileErr := compiler.Compile(resource + fragment)
+		if compileErr != nil {
+			return compileErr
+		}
+		if raw, present := node["default"]; present {
+			value, decodeErr := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+			if decodeErr != nil {
+				return decodeErr
+			}
+			if defaultErr := compiled.Validate(value); defaultErr != nil {
+				return fmt.Errorf("%s: invalid default: %w", path, defaultErr)
+			}
+		}
+		return nil
+	}); validationErr != nil {
+		return nil, fmt.Errorf("validate JSON Schema: %w", validationErr)
 	}
 
 	var doc Document
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, err
+	if decodeErr := json.Unmarshal(data, &doc); decodeErr != nil {
+		return nil, decodeErr
 	}
 	if len(doc.Defs) == 0 {
 		return nil, errors.New("the schema has no $defs")
@@ -293,6 +319,17 @@ func rawProperty(data []byte, name string) (json.RawMessage, bool) {
 // not enforce it. This is the difference between a generator that is behind and
 // a generator that is wrong.
 func checkKnownKeywords(raw []byte) error {
+	return visitDefinitions(raw, func(path string, node map[string]json.RawMessage) error {
+		for _, key := range sortedKeys(node) {
+			if !knownKeywords[key] {
+				return fmt.Errorf("%s: unimplemented schema keyword %q", path, key)
+			}
+		}
+		return nil
+	})
+}
+
+func visitDefinitions(raw []byte, visit func(string, map[string]json.RawMessage) error) error {
 	var top struct {
 		Defs map[string]json.RawMessage `json:"$defs"`
 	}
@@ -303,14 +340,14 @@ func checkKnownKeywords(raw []byte) error {
 	// drops what it does not name, and what it drops is exactly what this exists
 	// to find.
 	for _, name := range sortedKeys(top.Defs) {
-		if err := checkNode("#/$defs/"+name, top.Defs[name]); err != nil {
+		if err := visitNode("#/$defs/"+escapePointer(name), top.Defs[name], visit); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func checkNode(path string, node json.RawMessage) error {
+func visitNode(path string, node json.RawMessage, visit func(string, map[string]json.RawMessage) error) error {
 	if kind(node) != '{' {
 		return nil // a boolean or a scalar subschema has no keywords to check
 	}
@@ -318,18 +355,18 @@ func checkNode(path string, node json.RawMessage) error {
 	if err := json.Unmarshal(node, &obj); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
+	if err := visit(path, obj); err != nil {
+		return err
+	}
 	for _, key := range sortedKeys(obj) {
-		if !knownKeywords[key] {
-			return fmt.Errorf("%s: unimplemented schema keyword %q", path, key)
-		}
-		if err := checkChildren(path, key, obj[key]); err != nil {
+		if err := visitChildren(path, key, obj[key], visit); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func checkChildren(path, key string, value json.RawMessage) error {
+func visitChildren(path, key string, value json.RawMessage, visit func(string, map[string]json.RawMessage) error) error {
 	switch key {
 	case "properties":
 		var props map[string]json.RawMessage
@@ -337,7 +374,7 @@ func checkChildren(path, key string, value json.RawMessage) error {
 			return fmt.Errorf("%s/properties: %w", path, err)
 		}
 		for _, name := range sortedKeys(props) {
-			if err := checkNode(path+"/properties/"+name, props[name]); err != nil {
+			if err := visitNode(path+"/properties/"+escapePointer(name), props[name], visit); err != nil {
 				return err
 			}
 		}
@@ -347,14 +384,18 @@ func checkChildren(path, key string, value json.RawMessage) error {
 			return fmt.Errorf("%s/%s: %w", path, key, err)
 		}
 		for i, arm := range list {
-			if err := checkNode(fmt.Sprintf("%s/%s/%d", path, key, i), arm); err != nil {
+			if err := visitNode(fmt.Sprintf("%s/%s/%d", path, key, i), arm, visit); err != nil {
 				return err
 			}
 		}
 	case "items", "not", "additionalProperties", "unevaluatedProperties":
-		return checkNode(path+"/"+key, value)
+		return visitNode(path+"/"+key, value, visit)
 	}
 	return nil
+}
+
+func escapePointer(value string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(value, "~", "~0"), "/", "~1")
 }
 
 // kind returns the first significant byte of a JSON value, which is enough to

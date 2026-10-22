@@ -2,33 +2,34 @@ package acp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/Tangerg/acp/jsonrpc"
 )
 
-// requests is the inbound half of a link: the calls this side is serving, and who
-// holds the right to answer each one.
-//
-// The right is a claim rather than an ownership, because two things race for it.
-// A cancelled turn must answer its pending permission requests with the cancelled
-// outcome while the user's handler may still be blocked on a dialog; whoever
-// claims first answers, and the loser is dropped rather than sending a second
-// response for one request.
+// requests owns admission, cancellation and the right to answer each inbound
+// call. The serving map indexes unanswered obligations; inflight also counts
+// handlers still unwinding after their answer was sent by turn cancellation.
 type requests struct {
-	mu      sync.Mutex
-	serving map[jsonrpc.ID]*inboundRequest
-	limit   int
+	mu       sync.Mutex
+	serving  map[jsonrpc.ID]*inboundRequest
+	inflight int
+	limit    int
 }
 
-// inboundRequest keeps the right to answer and the work it controls together.
-// Splitting them across maps allowed cancellation to change the context without
-// leaving the fact needed to choose the protocol-mandated response.
+// A request record retains its identity after its wire ID becomes reusable.
+// Every participant holds this record, so a late handler cannot affect a newer
+// request that happens to use the same ID.
 type inboundRequest struct {
+	owner     *requests
+	id        jsonrpc.ID
+	ctx       context.Context //nolint:containedctx // this record owns the inbound request's lifetime.
 	cancel    context.CancelFunc
 	settled   chan struct{}
-	answered  bool
+	sending   chan struct{}
+	remaining int
 	cancelled bool
 }
 
@@ -40,53 +41,57 @@ func newRequests(limit int) *requests {
 	return &requests{serving: make(map[jsonrpc.ID]*inboundRequest), limit: limit}
 }
 
-// Both refusals are terminal: an answer written under a reused identifier would
-// be ambiguous, and a peer past the in-flight bound is one this side cannot
-// follow.
-func (r *requests) accept(id jsonrpc.ID, cancel context.CancelFunc) error {
+func (r *requests) accept(ctx context.Context, id jsonrpc.ID) (*inboundRequest, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, occupied := r.serving[id]; occupied {
-		cancel()
-		return fmt.Errorf("acp: the peer reused active request id %v", id.Raw())
+		return nil, fmt.Errorf("acp: the peer reused active request id %v", id.Raw())
 	}
-	if len(r.serving) >= r.limit {
-		cancel()
-		return fmt.Errorf("%w (limit %d)", errTooManyInflight, r.limit)
+	if r.inflight >= r.limit {
+		return nil, fmt.Errorf("%w (limit %d)", errTooManyInflight, r.limit)
 	}
-	r.serving[id] = &inboundRequest{cancel: cancel, settled: make(chan struct{})}
-	return nil
+	ctx, cancel := context.WithCancel(ctx)
+	request := &inboundRequest{
+		owner: r, id: id, ctx: ctx, cancel: cancel,
+		settled: make(chan struct{}), sending: make(chan struct{}, 1), remaining: 2,
+	}
+	r.serving[id] = request
+	r.inflight++
+	return request, nil
 }
 
-// The last step of serving a request and not the first: the right to answer is
-// held on this record, so releasing it before the answer is written would throw
-// the answer away.
-func (r *requests) release(id jsonrpc.ID) {
-	r.mu.Lock()
-	request := r.serving[id]
-	delete(r.serving, id)
-	r.mu.Unlock()
+// Handler work and response delivery can finish independently: turn cancellation
+// may answer while a permission handler is still unwinding. Both retain this
+// record and count against the bound until they finish.
+func (r *inboundRequest) finish() {
+	r.cancel()
+	r.owner.mu.Lock()
+	defer r.owner.mu.Unlock()
+	r.release()
+}
 
-	if request != nil {
-		request.cancel()
-		close(request.settled)
+// Only the response writer settles the answer. A late handler retains its
+// original record, so it cannot answer or remove a later reuse of the wire ID.
+func (r *inboundRequest) settle() {
+	r.cancel()
+	r.owner.mu.Lock()
+	defer r.owner.mu.Unlock()
+	if r.owner.serving[r.id] == r {
+		delete(r.owner.serving, r.id)
+	}
+	close(r.settled)
+	r.release()
+}
+
+func (r *inboundRequest) release() {
+	r.remaining--
+	if r.remaining == 0 {
+		r.owner.inflight--
 	}
 }
 
-// A claim says who will answer; this says the answer's write has settled, which
-// is what cancellation needs to preserve peer-visible ordering.
-func (r *requests) settlement(id jsonrpc.ID) <-chan struct{} {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if request := r.serving[id]; request != nil {
-		return request.settled
-	}
-	return nil
-}
-
-// cancel marks a $/cancel_request as well as stopping its work. If the handler
-// cannot produce a valid response, that fact makes -32800 mandatory instead of
-// letting an ordinary Go context error escape as -32603.
+// Protocol request cancellation is distinct from interrupting work for an ACP
+// turn: only $/cancel_request changes which error the answer must carry.
 func (r *requests) cancel(id jsonrpc.ID) {
 	r.mu.Lock()
 	request := r.serving[id]
@@ -94,35 +99,54 @@ func (r *requests) cancel(id jsonrpc.ID) {
 		request.cancelled = true
 	}
 	r.mu.Unlock()
-
 	if request != nil {
 		request.cancel()
 	}
 }
 
-// interrupt is cancellation of work required by a higher-level ACP operation.
-// session/cancel still requires a valid PromptResponse, so it must not be
-// mistaken for the protocol-level request cancellation above.
-func (r *requests) interrupt(id jsonrpc.ID) {
-	r.mu.Lock()
-	request := r.serving[id]
-	r.mu.Unlock()
-
-	if request != nil {
-		request.cancel()
-	}
-}
-
-// The claim carries the wire fact needed to choose the answer, so that no caller
-// has to read mutable request state to make that choice.
-func (r *requests) claim(id jsonrpc.ID) (requestClaim, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	request := r.serving[id]
-	if request == nil || request.answered {
-		// Already finished, or never ours.
+func (r *inboundRequest) claim() (requestClaim, bool) {
+	r.owner.mu.Lock()
+	defer r.owner.mu.Unlock()
+	if r.owner.serving[r.id] != r {
 		return requestClaim{}, false
 	}
-	request.answered = true
-	return requestClaim{cancelled: request.cancelled}, true
+	// Commit the answer before writing it: the peer can receive the response and
+	// reuse its ID before Write returns. The record still retains the write and
+	// handler work, but only the serving map owns the right to answer.
+	delete(r.owner.serving, r.id)
+	return requestClaim{cancelled: r.cancelled}, true
+}
+
+// A request-scoped send must commit before its parent's answer, or the peer may
+// already have reused the scope's ID. The serving map owns admission; the gate
+// lets a claimed answer wait for an admitted write under its response deadline.
+func (r *inboundRequest) beginSending(ctx context.Context) error {
+	select {
+	case r.sending <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	r.owner.mu.Lock()
+	serving := r.owner.serving[r.id] == r
+	r.owner.mu.Unlock()
+	if !serving {
+		r.finishSending()
+		return errors.New("acp: the request-scoped elicitation's request has already been answered")
+	}
+	return nil
+}
+
+func (r *inboundRequest) finishSending() { <-r.sending }
+
+// Only the response claimant waits here. Its claim has closed admission, so
+// taking the gate proves that every admitted write has finished. The response
+// deadline bounds this wait as well as its own transport write.
+func (r *inboundRequest) awaitSending(ctx context.Context) error {
+	select {
+	case r.sending <- struct{}{}:
+		r.finishSending()
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

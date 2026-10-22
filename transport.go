@@ -25,9 +25,8 @@ type Transport interface {
 //   - Read may run concurrently with Close. It is not called concurrently with
 //     itself: one goroutine owns reading.
 //   - Close is idempotent and safe to call concurrently, and it unblocks a
-//     pending Read. Without that last part, a Read and the goroutine blocked in
-//     it cannot be stopped, which is why this interface takes a closeable stream
-//     pair rather than a bare reader and writer.
+//     pending Read and Write. Otherwise the connection cannot stop its I/O or
+//     the goroutines blocked in it.
 //   - A failed read ends the logical connection. A failed write does too, except
 //     when it returns exactly ctx.Err: that is the transport's promise that it
 //     committed no part of the message and the connection remains usable. A
@@ -43,7 +42,7 @@ type Connection interface {
 	// message was committed; all other errors may be terminal.
 	Write(ctx context.Context, message jsonrpc.Message) error
 
-	// Close releases the stream and unblocks a pending Read.
+	// Close releases the stream and unblocks pending I/O.
 	Close() error
 }
 

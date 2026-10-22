@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/Tangerg/acp/internal/wire"
 )
 
 // The form answer, checked against the form that asked for it.
@@ -47,13 +49,13 @@ func TestAFormAnswerIsCheckedAgainstItsSchema(t *testing.T) {
 			name:    "a required property left out",
 			schema:  schema(map[string]ElicitationPropertySchema{"branch": &StringPropertySchema{}}, "branch"),
 			content: map[string]ElicitationContentValue{},
-			wants:   "required",
+			wants:   "missing property",
 		},
 		{
 			name:    "a string where a number was asked for",
 			schema:  schema(map[string]ElicitationPropertySchema{"count": &IntegerPropertySchema{}}),
 			content: map[string]ElicitationContentValue{"count": text("three")},
-			wants:   "type",
+			wants:   "want integer",
 		},
 		{
 			name: "a whole number answering a form that asked for a number",
@@ -70,7 +72,7 @@ func TestAFormAnswerIsCheckedAgainstItsSchema(t *testing.T) {
 				"count": &IntegerPropertySchema{},
 			}),
 			content: map[string]ElicitationContentValue{"count": fractional(3.5)},
-			wants:   "type",
+			wants:   "want integer",
 		},
 		{
 			name: "a number below the form's minimum",
@@ -81,12 +83,42 @@ func TestAFormAnswerIsCheckedAgainstItsSchema(t *testing.T) {
 			wants:   "minimum",
 		},
 		{
+			name: "an integer beyond float precision exceeds the maximum",
+			schema: schema(map[string]ElicitationPropertySchema{
+				"count": &IntegerPropertySchema{Maximum: OptValue(int64(9007199254740992))},
+			}),
+			content: map[string]ElicitationContentValue{"count": whole(9007199254740993)},
+			wants:   "maximum",
+		},
+		{
+			name: "an integer beyond float precision is below the minimum",
+			schema: schema(map[string]ElicitationPropertySchema{
+				"count": &IntegerPropertySchema{Minimum: OptValue(int64(9007199254740993))},
+			}),
+			content: map[string]ElicitationContentValue{"count": whole(9007199254740992)},
+			wants:   "minimum",
+		},
+		{
+			name: "the largest integer stays within its exact bound",
+			schema: schema(map[string]ElicitationPropertySchema{
+				"count": &IntegerPropertySchema{Maximum: OptValue(int64(9223372036854775807))},
+			}),
+			content: map[string]ElicitationContentValue{"count": whole(9223372036854775807)},
+		},
+		{
+			name: "the smallest integer stays within its exact bound",
+			schema: schema(map[string]ElicitationPropertySchema{
+				"count": &IntegerPropertySchema{Minimum: OptValue(int64(-9223372036854775808))},
+			}),
+			content: map[string]ElicitationContentValue{"count": whole(-9223372036854775808)},
+		},
+		{
 			name: "a string outside the choices offered",
 			schema: schema(map[string]ElicitationPropertySchema{
 				"branch": &StringPropertySchema{Enum: OptValue([]string{"main", "next"})},
 			}),
 			content: map[string]ElicitationContentValue{"branch": text("other")},
-			wants:   "enum",
+			wants:   "one of",
 		},
 		{
 			name: "a string longer than the form allows, counted in characters",
@@ -104,16 +136,36 @@ func TestAFormAnswerIsCheckedAgainstItsSchema(t *testing.T) {
 				},
 			}),
 			content: map[string]ElicitationContentValue{"tags": list("a", "c")},
-			wants:   "enum",
+			wants:   "one of",
 		},
 		{
-			name: "an ECMA pattern the Go validator cannot read",
+			name: "an unrepresentable selection minimum cannot wrap around",
+			schema: schema(map[string]ElicitationPropertySchema{
+				"tags": &MultiSelectPropertySchema{
+					MinItems: OptValue(^uint64(0)),
+					Items:    &StringMultiSelectItems{Enum: []string{"a"}},
+				},
+			}),
+			content: map[string]ElicitationContentValue{"tags": list("a")},
+			wants:   "'not'",
+		},
+		{
+			name: "a selection maximum above the address space admits a short list",
+			schema: schema(map[string]ElicitationPropertySchema{
+				"tags": &MultiSelectPropertySchema{
+					MaxItems: OptValue(^uint64(0)),
+					Items:    &StringMultiSelectItems{Enum: []string{"a"}},
+				},
+			}),
+			content: map[string]ElicitationContentValue{"tags": list("a")},
+		},
+		{
+			name: "an unsupported pattern is reported instead of discarded",
 			schema: schema(map[string]ElicitationPropertySchema{
 				"branch": &StringPropertySchema{Pattern: OptValue(`^(?=.*x)`)},
 			}),
 			content: map[string]ElicitationContentValue{"branch": text("anything")},
-			why: "an ECMA-262 lookahead does not compile as RE2, and refusing an answer " +
-				"because this package could not read the pattern would be worse than not reading it",
+			wants:   "pattern",
 		},
 		{
 			name: "a supported pattern that does not match",
@@ -157,6 +209,55 @@ func TestAFormAnswerIsCheckedAgainstItsSchema(t *testing.T) {
 				t.Fatalf("refused with %q, which does not mention %q", err, test.wants)
 			}
 		})
+	}
+}
+
+func TestNullFormOptionsMeanNoConstraint(t *testing.T) {
+	const encoded = `{
+		"type":"object","title":null,"description":null,"required":null,
+		"_meta":{"nested":{"pattern":null}},
+		"properties":{
+			"text":{"type":"string","title":null,"description":null,"minLength":null,"maxLength":null,
+				"pattern":null,"format":null,"default":null,"enum":null,"oneOf":null,"_meta":null},
+			"count":{"type":"integer","minimum":null,"maximum":null,"default":null},
+			"ratio":{"type":"number","minimum":null,"maximum":null,"default":null},
+			"enabled":{"type":"boolean","default":null},
+			"tags":{"type":"array","minItems":null,"maxItems":null,"default":null,
+				"items":{"type":"string","enum":["a","b"],"_meta":null}},
+			"titled":{"type":"array","items":{"anyOf":[{"const":"a","title":"A","description":null}]}},
+			"choice":{"type":"string","oneOf":[{"const":"a","title":"A","description":null}]},
+			"_meta":{"type":"string","pattern":null}
+		}
+	}`
+	var schema ElicitationSchema
+	if err := json.Unmarshal([]byte(encoded), &schema); err != nil {
+		t.Fatal(err)
+	}
+	before, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := wire.UnmarshalMapFunc([]byte(`{
+		"text":"anything","count":1,"ratio":1.5,"enabled":true,
+		"tags":["a"],"titled":["a"],"choice":"a","_meta":"text"
+	}`), unmarshalElicitationContentValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.validate(content); err != nil {
+		t.Fatalf("null options constrained the answer: %v", err)
+	}
+	invalid := ElicitationContentValueInteger(1)
+	content["text"] = &invalid
+	if err := schema.validate(content); err == nil {
+		t.Fatal("normalizing schema options removed the string type constraint")
+	}
+	after, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("validation changed the wire schema's null options")
 	}
 }
 

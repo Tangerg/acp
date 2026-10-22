@@ -4,6 +4,99 @@ This file records caller-visible changes, newest first. The module is pre-1.0, s
 a minor release may change its public API. Each released entry will include
 migration instructions.
 
+## Unreleased
+
+### Fixed
+
+- Inbound requests retain one identity through response settlement and handler
+  completion. Automatic refusals use the same response path, remain bounded,
+  and cannot release a reused request ID. Concurrent turn cancellations wait
+  for the same pending permission responses before sending `session/cancel`.
+- A peer may reuse a request ID as soon as it receives the response, even if the
+  local write has not returned. Response claims own that transition; old handler
+  and write completion cannot affect the successor.
+- Turn cancellation waits for its prompt write to finish, so the notification
+  cannot reach the agent before the prompt it cancels. An already-cancelled
+  cancellation context does not change the turn or its pending permissions.
+- Completed client turns release their records. Session handles follow ordered
+  responses even after a caller stops waiting, including late close and delete
+  successes. A handler editing its request cannot redirect prompt cancellation
+  or session retirement to a different session.
+- Extension result decoding runs in the waiting caller. A custom decoder can
+  call the same connection, and cancellation cannot return its result object
+  while that decoder is still modifying it.
+- Shutdown drains the reader's final response before ending delivery. Nil
+  messages from custom transports end the connection with an error. Notifications
+  queued before shutdown drain without inheriting its cancelled context; queued
+  requests retain cancellation, regardless of which batch delivers them.
+- Byte-stream transports have one explicit release owner. A shared read/write
+  resource is closed once, so normal shutdown no longer reports a second close
+  as a failure. Concurrent closers observe the same release result.
+- A failed outbound write returns its own error even when releasing the stream
+  makes the read loop fail first. An interrupted call or notification retains
+  its context error; `Wait` still reports the connection's first terminal error.
+- Terminal operations serialize admission and sending with release. Waiting for
+  an exit still permits kill and release; copied handles share the same release
+  state. Request-scoped elicitations reject a context from another connection or
+  an already answered request, and their writes complete before the parent
+  response can release their scope. Form answers are validated against the
+  original request even if a handler edits its form.
+- Waiting for an admitted request-scoped elicitation write shares the parent's
+  response deadline. A peer that stops reading cannot keep the parent blocked
+  outside that deadline; shutdown settles the response and releases its records.
+- A request cancelled through `$/cancel_request` still returns `-32800` when its
+  handler's result cannot be encoded. Response construction applies cancellation
+  after detecting result failures, while preserving valid completed results.
+- Non-nullable array items and JSON-RPC error members reject `null` instead of
+  silently becoming zero values. Error data preserves explicit null regardless
+  of whitespace.
+- Form validation and schema generation retain exact JSON numbers. Adjacent
+  integers beyond float precision no longer collapse onto the same bound, and
+  generation refuses narrower ranges that a Go scalar cannot enforce. Defaults
+  are checked at every schema location with the same validator. The private form
+  projection preserves ACP's null-as-absent options and the meaning of
+  cardinalities beyond Go's address space without changing the wire model.
+- Markdown checks use the maintained core API with Git's tracked file list,
+  removing the CLI's vulnerable glob dependency chain while retaining the rule
+  configuration. The math renderer is upgraded to KaTeX 0.19.0 throughout the
+  dependency graph, fixing inherited trust settings rather than filtering the
+  audit findings. The audit gate now rejects low-severity findings too, and
+  executable regression checks cover renderer trust, math parsing, and Markdown
+  violations in tracked hidden paths.
+
+### Form validation contract
+
+Patterns that the validator cannot compile now return a schema error. Previously
+they were silently removed, allowing answers that violated the requested form.
+Callers using unsupported patterns must supply a supported expression before
+accepting an answer; no expression is weakened or accepted without validation.
+`format` remains a JSON Schema annotation.
+
+### Transport contract
+
+**Breaking:** `NewIOTransport` now takes `*IOConfig` with required `Reader`,
+`Writer`, and `Close` fields. The old two-argument constructor is removed. For a
+shared connection or file, migrate to:
+
+```go
+transport := acp.NewIOTransport(&acp.IOConfig{
+	Reader: stream,
+	Writer: stream,
+	Close:  stream.Close,
+})
+```
+
+For separate streams, use `Close: func() error { return errors.Join(reader.Close(), writer.Close()) }`.
+The configuration is copied. The callback owns release and runs once during
+connection shutdown; setup failure leaves resource ownership with the caller.
+
+`Connection.Close` must unblock pending reads and writes. Byte-stream writes now
+honor cancellation while queued and close their owned streams when interrupted
+after writing starts; that failure ends the connection because commitment is
+uncertain. Already closed streams refuse further I/O, and short writes are
+reported. `IOConfig.Close` must support this close behavior; a no-op callback is
+suitable only when I/O cannot remain blocked.
+
 ## v0.2.4 — 2026-09-07
 
 Nothing here is caller-visible: `gorelease` reports the exported surface

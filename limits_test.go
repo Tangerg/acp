@@ -68,22 +68,21 @@ func TestTooManyInflightRequestsIsRefused(t *testing.T) {
 	conn := newTestAgentConnWith(Limits{InflightRequests: testBound})
 
 	for id := range testBound {
-		_, cancel := context.WithCancel(context.Background())
-		if err := conn.requests.accept(jsonrpcTestID(id), cancel); err != nil {
+		if _, err := conn.requests.accept(t.Context(), jsonrpcTestID(id)); err != nil {
 			t.Fatalf("request %d was refused below the bound: %v", id, err)
 		}
 	}
 
-	_, cancel := context.WithCancel(context.Background())
-	err := conn.requests.accept(jsonrpcTestID(testBound), cancel)
+	_, err := conn.requests.accept(t.Context(), jsonrpcTestID(testBound))
 	if !errors.Is(err, errTooManyInflight) {
 		t.Fatalf("the request past the bound was answered %v, want the in-flight bound", err)
 	}
 
 	// And finishing one makes room, so a peer that keeps up is never refused.
-	conn.requests.release(jsonrpcTestID(0))
-	_, cancel = context.WithCancel(context.Background())
-	if err := conn.requests.accept(jsonrpcTestID(testBound), cancel); err != nil {
+	completed := conn.requests.serving[jsonrpcTestID(0)]
+	completed.settle()
+	completed.finish()
+	if _, err := conn.requests.accept(t.Context(), jsonrpcTestID(testBound)); err != nil {
 		t.Fatalf("a request was refused after one finished: %v", err)
 	}
 }

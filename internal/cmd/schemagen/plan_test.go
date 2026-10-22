@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -118,6 +120,24 @@ func TestThePlannerRefusesPropertyShapesItDoesNotImplement(t *testing.T) {
 			why: "every bound in the schema is one the chosen Go type gives for free, and the " +
 				"generator asserts that rather than assuming it",
 		},
+		{
+			name:   "an int64 minimum adjacent to its native bound",
+			schema: `{"type":"integer","format":"int64","minimum":-9223372036854775807}`,
+			wants:  "is not the low bound of",
+			why:    "float rounding must not erase the schema's narrower range",
+		},
+		{
+			name:   "a uint64 maximum adjacent to its native bound",
+			schema: `{"type":"integer","format":"uint64","maximum":18446744073709551614}`,
+			wants:  "is not the high bound of",
+			why:    "the Go type permits one more value than this schema",
+		},
+		{
+			name:   "a bounded floating point value",
+			schema: `{"type":"number","format":"double","minimum":0}`,
+			wants:  "is not the low bound of",
+			why:    "zero is not a bound supplied by float64",
+		},
 	}
 
 	for _, test := range tests {
@@ -134,6 +154,23 @@ func TestThePlannerRefusesPropertyShapesItDoesNotImplement(t *testing.T) {
 				t.Fatalf("refused with %q, which does not mention %q (%s)", err, test.wants, test.why)
 			}
 		})
+	}
+}
+
+func TestNativeIntegerBoundsRemainExact(t *testing.T) {
+	planner := newPlanner(loadSchema(t))
+	for _, definition := range []string{
+		`{"type":"integer","format":"int64","minimum":-9223372036854775808,"maximum":9223372036854775807}`,
+		`{"type":"integer","format":"uint64","minimum":0,"maximum":18446744073709551615}`,
+		`{"type":"integer","format":"int64","minimum":-9.223372036854775808e18,"maximum":9.223372036854775807e18}`,
+	} {
+		var schema Schema
+		if err := schema.UnmarshalJSON([]byte(definition)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := planner.valueType(&schema); err != nil {
+			t.Fatalf("native bounds rejected for %s: %v", definition, err)
+		}
 	}
 }
 
@@ -193,6 +230,14 @@ func TestLoadDocumentRejectsInvalidJSONSchema(t *testing.T) {
 			name: "default outside its schema",
 			doc:  `{"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"Thing":{"type":"string","default":42}}}`,
 		},
+		{
+			name: "integer default just beyond an exact maximum",
+			doc:  `{"$defs":{"Thing":{"type":"integer","maximum":9007199254740992,"default":9007199254740993}}}`,
+		},
+		{
+			name: "nested default with an escaped property name",
+			doc:  `{"$defs":{"Thing":{"type":"object","properties":{"~/%":{"type":"integer","minimum":9007199254740993,"default":9007199254740992}}}}}`,
+		},
 	}
 
 	for _, test := range tests {
@@ -201,6 +246,30 @@ func TestLoadDocumentRejectsInvalidJSONSchema(t *testing.T) {
 				t.Fatalf("loadDocument accepted %s", test.doc)
 			}
 		})
+	}
+}
+
+func TestLoadDocumentChecksEscapedSchemaLocations(t *testing.T) {
+	const document = `{"$defs":{"Thing":{"type":"object","properties":{"~/%":{"type":"integer","default":9007199254740993}}}}}`
+	if _, err := loadDocument([]byte(document)); err != nil {
+		t.Fatalf("valid default at an escaped location rejected: %v", err)
+	}
+}
+
+func TestLoadDocumentDoesNotLoadExternalReferences(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "external.json")
+	if err := os.WriteFile(file, []byte(`{"type":"string"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	location := (&url.URL{Scheme: "file", Path: filepath.ToSlash(file)}).String()
+	document, err := json.Marshal(map[string]any{
+		"$defs": map[string]any{"Thing": map[string]string{"$ref": location}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadDocument(document); err == nil || !strings.Contains(err.Error(), "no URLLoader registered") {
+		t.Fatalf("external reference returned %v, want loading disabled", err)
 	}
 }
 

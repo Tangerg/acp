@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -22,6 +23,18 @@ func TestWireErrorCodeMustFitThePublishedInt32Union(t *testing.T) {
 			err.Error(), "outside ACP's int32 range",
 		) {
 			t.Errorf("code %d returned %v, want an int32 range error", code, err)
+		}
+	}
+}
+
+func TestWireErrorDataKeepsNullIndependentOfWhitespace(t *testing.T) {
+	for _, data := range []json.RawMessage{json.RawMessage("null"), json.RawMessage(" \nnull\t")} {
+		var failure *Error
+		if err := errorFromWire(&jsonrpc2.WireError{Code: -32000, Data: data}); !errors.As(err, &failure) {
+			t.Fatalf("wire error = %v", err)
+		}
+		if !failure.Data.IsNull() {
+			t.Errorf("data %q lost its null state", data)
 		}
 	}
 }

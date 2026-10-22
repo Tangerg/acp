@@ -101,9 +101,7 @@ func MarshalSliceFunc[T any](values []T, encode func(T) ([]byte, error)) ([]byte
 }
 
 func decodeValue[T any](data json.RawMessage) (T, error) {
-	var v T
-	err := json.Unmarshal(data, &v)
-	return v, err
+	return UnmarshalValue[T](data)
 }
 
 func encodeValue[T any](v T) ([]byte, error) {

@@ -5,6 +5,7 @@ package acp
 // usable as a Go error and what keeps its code comparable.
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -141,7 +142,7 @@ func errorFromWire(wire *jsonrpc2.WireError) error {
 	switch {
 	case len(wire.Data) == 0:
 		// Absent, which is the zero value and needs saying no other way.
-	case string(wire.Data) == "null":
+	case bytes.Equal(bytes.TrimSpace(wire.Data), []byte("null")):
 		failure.Data = OptNull[json.RawMessage]()
 	default:
 		failure.Data = OptValue(wire.Data)

@@ -361,11 +361,9 @@ func (c *ClientConn) NewSession(
 	if err := c.checkSessionSetup(params.Cwd, params.McpServers, params.AdditionalDirectories); err != nil {
 		return nil, nil, err
 	}
-	response := new(NewSessionResponse)
-	if err := c.call(ctx, methodSessionNew, params, response); err != nil {
-		return nil, nil, err
-	}
-	return c.session(response.SessionID), response, nil
+	return openClientSession(ctx, c, methodSessionNew, params, func(response *NewSessionResponse) SessionID {
+		return response.SessionID
+	})
 }
 
 // LoadSession reopens a conversation the agent already has, replaying its history
@@ -393,11 +391,10 @@ func (c *ClientConn) LoadSession(
 	if err := c.checkSessionSetup(params.Cwd, params.McpServers, params.AdditionalDirectories); err != nil {
 		return nil, nil, err
 	}
-	response := new(LoadSessionResponse)
-	if err := c.call(ctx, methodSessionLoad, params, response); err != nil {
-		return nil, nil, err
-	}
-	return c.session(params.SessionID), response, nil
+	id := params.SessionID
+	return openClientSession(ctx, c, methodSessionLoad, params, func(*LoadSessionResponse) SessionID {
+		return id
+	})
 }
 
 // ResumeSession reopens a session the agent still has, without replaying it.
@@ -420,11 +417,34 @@ func (c *ClientConn) ResumeSession(
 	if err := c.checkSessionSetup(params.Cwd, params.McpServers, params.AdditionalDirectories); err != nil {
 		return nil, nil, err
 	}
-	response := new(ResumeSessionResponse)
-	if err := c.call(ctx, methodSessionResume, params, response); err != nil {
+	id := params.SessionID
+	return openClientSession(ctx, c, methodSessionResume, params, func(*ResumeSessionResponse) SessionID {
+		return id
+	})
+}
+
+// Opening a session publishes its handle in response order, even if the caller
+// stopped waiting. Every opening operation uses this observer; the waiter only
+// receives the already-published handle and its private decoded response.
+func openClientSession[Response any](
+	ctx context.Context,
+	c *ClientConn,
+	method string,
+	params any,
+	identify func(*Response) SessionID,
+) (*ClientSession, *Response, error) {
+	response := new(Response)
+	var session *ClientSession
+	if err := c.callObserved(ctx, method, params, func(answer *jsonrpc.Response) error {
+		if decodeErr := decodeResponse(answer, response); decodeErr != nil {
+			return decodeErr
+		}
+		session = c.session(identify(response))
+		return nil
+	}); err != nil {
 		return nil, nil, err
 	}
-	return c.session(params.SessionID), response, nil
+	return session, response, nil
 }
 
 // ListSessions reports the sessions the agent has stored.
@@ -471,10 +491,16 @@ func (c *ClientConn) DeleteSession(
 		return nil, err
 	}
 	response := new(DeleteSessionResponse)
-	if err := c.call(ctx, methodSessionDelete, params, response); err != nil {
+	id := params.SessionID
+	if err := c.callObserved(ctx, methodSessionDelete, params, func(answer *jsonrpc.Response) error {
+		if decodeErr := decodeResponse(answer, response); decodeErr != nil {
+			return decodeErr
+		}
+		c.sessions.forget(id)
+		return nil
+	}); err != nil {
 		return nil, err
 	}
-	c.sessions.forget(params.SessionID)
 	return response, nil
 }
 
@@ -510,8 +536,8 @@ func (c *ClientConn) initialize(ctx context.Context) error {
 
 	// The answer is checked and published from the delivery loop, so that anything
 	// the agent sent after answering is served by a connection that already knows
-	// what was agreed. See link.handshake.
-	return c.callHandshake(ctx, methodInitialize, request, func(answer *jsonrpc.Response) error {
+	// what was agreed. See link.callObserved.
+	return c.callObserved(ctx, methodInitialize, request, func(answer *jsonrpc.Response) error {
 		var response InitializeResponse
 		if err := decodeResponse(answer, &response); err != nil {
 			return err
@@ -644,10 +670,13 @@ func (c *ClientConn) createElicitation(ctx context.Context, request *jsonrpc.Req
 		if handlers.Form == nil {
 			return nil, elicitationForm.unadvertised()
 		}
+		// The handler may edit its form model; the peer's original constraints
+		// still own what constitutes a valid answer.
+		schema := deepCopy(mode.RequestedSchema)
 		response, err = handlers.Form(ctx, params, mode)
 		if err == nil {
 			if content, answered := response.acceptedContent(); answered {
-				if bad := mode.RequestedSchema.validate(content); bad != nil {
+				if bad := schema.validate(content); bad != nil {
 					// The client's own form and the client's own answer disagree, so
 					// this is a bug on this side and the agent is told so rather than
 					// handed a value its schema does not describe.
@@ -744,7 +773,7 @@ func (c *ClientConn) requestPermission(ctx context.Context, request *jsonrpc.Req
 	return response, nil
 }
 
-func (c *ClientConn) register(request *jsonrpc.Request) registration {
+func (c *ClientConn) register(request *jsonrpc.Request, call *inboundRequest) registration {
 	if request.Method != methodSessionRequestPermission {
 		return registration{dispatch: true}
 	}
@@ -754,16 +783,16 @@ func (c *ClientConn) register(request *jsonrpc.Request) registration {
 		return registration{dispatch: true}
 	}
 
-	switch c.turns.registerPermission(session, request.ID) {
+	admission, turn := c.turns.registerPermission(session, call)
+	switch admission {
 	case permissionOwned:
 	case permissionCancelled:
 		// The turn is being cancelled. Answering here rather than dispatching is
 		// the difference between a dialog the user never sees and one they see and
 		// whose answer is then thrown away.
-		if write := c.answerCancelled(request.ID); write != nil {
-			c.spawn(write)
-		}
-		return registration{}
+		return registration{result: &RequestPermissionResponse{
+			Outcome: &RequestPermissionOutcomeCancelled{},
+		}}
 	case permissionUnowned:
 		// The published grammar does not make permission requests children of a
 		// prompt. Without an active turn there is nothing for session/cancel to
@@ -773,7 +802,7 @@ func (c *ClientConn) register(request *jsonrpc.Request) registration {
 	}
 	return registration{
 		dispatch: true,
-		settled:  func() { c.turns.forgetPermission(session, request.ID) },
+		settled:  func() { turn.forgetPermission(call) },
 	}
 }
 
@@ -781,14 +810,8 @@ func (c *ClientConn) register(request *jsonrpc.Request) registration {
 // decides the race. Where the write goes is the caller's to say: cancelPermissions
 // needs it on the wire before the cancellation notification, and ordered
 // delivery needs the write off its own loop.
-func (c *ClientConn) answerCancelled(id jsonrpc.ID) func() {
-	if !c.claimAnswer(id) {
-		return nil
-	}
-	return func() {
-		c.writeResponse(id, &RequestPermissionResponse{
-			Outcome: &RequestPermissionOutcomeCancelled{},
-		}, nil)
-		c.interruptRequest(id)
-	}
+func (c *ClientConn) answerCancelled(call *inboundRequest) func() bool {
+	return c.claimResponse(call, &RequestPermissionResponse{
+		Outcome: &RequestPermissionOutcomeCancelled{},
+	}, nil)
 }

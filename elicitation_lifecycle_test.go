@@ -75,7 +75,7 @@ func TestCallerCancellationStillObservesAStateOwningResponse(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := l.await(ctx, call); !errors.Is(err, context.Canceled) {
+	if _, err := l.await(ctx, call); !errors.Is(err, context.Canceled) {
 		t.Fatalf("await returned %v, want context cancellation", err)
 	}
 	l.calls.deliver(&jsonrpc.Response{ID: call.id})

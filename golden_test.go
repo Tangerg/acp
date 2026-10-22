@@ -8,6 +8,20 @@ import (
 	"github.com/Tangerg/acp"
 )
 
+func TestNullArrayItemsFollowTheSchemasRecoveryPolicy(t *testing.T) {
+	var terminal acp.CreateTerminalRequest
+	if err := json.Unmarshal([]byte(`{"sessionId":"s","command":"tool","args":["a",null,"b"]}`), &terminal); err != nil {
+		t.Fatal(err)
+	}
+	if got := text(t, terminal.Args); got != `["a","b"]` {
+		t.Fatalf("recoverable args = %s, want null dropped", got)
+	}
+	var server acp.McpServerStdio
+	if err := json.Unmarshal([]byte(`{"name":"tool","command":"tool","args":[null],"env":[]}`), &server); err == nil {
+		t.Fatal("a strict argument array accepted null as an empty string")
+	}
+}
+
 // These are the encoder's own promises, for values built in Go rather than
 // decoded from a peer. The cross-SDK corpus cannot state them: it starts from
 // JSON, so it can never construct the nil slice, the absent Opt or the

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math/big"
 	"slices"
 	"strconv"
 	"strings"
@@ -1449,21 +1450,26 @@ func goNumericType(schema *Schema) (string, error) {
 }
 
 func checkBoundsAreFree(goType string, schema *Schema) error {
-	free := map[string][2]float64{
-		goInt32:   {-2147483648, 2147483647},
-		goInt64:   {-9223372036854775808, 9223372036854775807},
-		goUint16:  {0, 65535},
-		goUint32:  {0, 4294967295},
-		goUint64:  {0, 18446744073709551615},
-		goFloat64: {},
+	free := map[string][2]string{
+		goInt32:  {"-2147483648", "2147483647"},
+		goInt64:  {"-9223372036854775808", "9223372036854775807"},
+		goUint16: {"0", "65535"},
+		goUint32: {"0", "4294967295"},
+		goUint64: {"0", "18446744073709551615"},
 	}[goType]
-	if schema.Minimum != nil && *schema.Minimum != free[0] {
+	if schema.Minimum != nil && !equalNumber(*schema.Minimum, free[0]) {
 		return fmt.Errorf("minimum %v is not the low bound of %s, and a generated range check is not implemented", *schema.Minimum, goType)
 	}
-	if schema.Maximum != nil && *schema.Maximum != free[1] {
+	if schema.Maximum != nil && !equalNumber(*schema.Maximum, free[1]) {
 		return fmt.Errorf("maximum %v is not the high bound of %s, and a generated range check is not implemented", *schema.Maximum, goType)
 	}
 	return nil
+}
+
+func equalNumber(number json.Number, literal string) bool {
+	value, valid := new(big.Rat).SetString(string(number))
+	want, defined := new(big.Rat).SetString(literal)
+	return valid && defined && value.Cmp(want) == 0
 }
 
 // defaultLiteral renders the schema's declared default as a Go literal.

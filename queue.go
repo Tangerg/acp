@@ -47,18 +47,20 @@ type queue struct {
 // the uncancelled context used only to drain notifications and responses.
 type delivery struct {
 	message jsonrpc.Message
-	ctx     context.Context //nolint:containedctx // created at read time so drained calls start cancelled.
+	request *inboundRequest
 }
 
-// serveContext is the context this message's handler runs under: a call's own,
-// and the drain context for a notification, which never had one. Asking the
-// delivery is what keeps the two from being two parameters of the same type that
-// a caller could pass the wrong way round.
-func (d delivery) serveContext(drain context.Context) context.Context {
-	if d.ctx != nil {
-		return d.ctx
+// Calls keep their request cancellation. A queued notification started after
+// shutdown must still be delivered, whichever queue batch holds it. A handler
+// already running when shutdown starts retains the connection's cancellation.
+func (d delivery) serveContext(connection context.Context) context.Context {
+	if d.request != nil {
+		return d.request.ctx
 	}
-	return drain
+	if connection.Err() != nil {
+		return context.WithoutCancel(connection)
+	}
+	return connection
 }
 
 func newQueue(limit int) *queue {
@@ -69,8 +71,8 @@ func (q *queue) push(message jsonrpc.Message) bool {
 	return q.pushDelivery(delivery{message: message})
 }
 
-func (q *queue) pushCall(ctx context.Context, message *jsonrpc.Request) bool {
-	return q.pushDelivery(delivery{message: message, ctx: ctx})
+func (q *queue) pushCall(request *inboundRequest, message *jsonrpc.Request) bool {
+	return q.pushDelivery(delivery{message: message, request: request})
 }
 
 // A refusal is the connection's to act on: a queue does not know how to end one.

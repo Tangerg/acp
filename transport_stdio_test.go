@@ -27,8 +27,14 @@ func TestATurnOverNewlineDelimitedJSON(t *testing.T) {
 	clientReads, agentWrites := io.Pipe()
 	agentReads, clientWrites := io.Pipe()
 
-	clientSide := acp.NewIOTransport(clientReads, clientWrites)
-	agentSide := acp.NewIOTransport(agentReads, agentWrites)
+	clientSide := acp.NewIOTransport(&acp.IOConfig{
+		Reader: clientReads, Writer: clientWrites,
+		Close: func() error { return errors.Join(clientReads.Close(), clientWrites.Close()) },
+	})
+	agentSide := acp.NewIOTransport(&acp.IOConfig{
+		Reader: agentReads, Writer: agentWrites,
+		Close: func() error { return errors.Join(agentReads.Close(), agentWrites.Close()) },
+	})
 
 	updates := make(chan string, 4)
 	client, err := acp.NewClient(&acp.ClientConfig{
@@ -99,7 +105,10 @@ func TestATurnOverNewlineDelimitedJSON(t *testing.T) {
 // is the one thing the Connection contract insists Close does.
 func TestClosingAByteStreamUnblocksItsRead(t *testing.T) {
 	reader, writer := io.Pipe()
-	transport := acp.NewIOTransport(reader, writer)
+	transport := acp.NewIOTransport(&acp.IOConfig{
+		Reader: reader, Writer: writer,
+		Close: func() error { return errors.Join(reader.Close(), writer.Close()) },
+	})
 
 	stream, err := transport.Connect(context.Background())
 	if err != nil {
@@ -147,10 +156,10 @@ func TestByteStreamFramingRefusesWhatIsNotAMessage(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			stream, err := acp.NewIOTransport(
-				io.NopCloser(strings.NewReader(test.stream)),
-				nopWriteCloser{io.Discard},
-			).Connect(context.Background())
+			stream, err := acp.NewIOTransport(&acp.IOConfig{
+				Reader: strings.NewReader(test.stream), Writer: io.Discard,
+				Close: func() error { return nil },
+			}).Connect(context.Background())
 			if err != nil {
 				t.Fatalf("Connect: %v", err)
 			}
@@ -173,8 +182,16 @@ func TestByteStreamFramingRefusesWhatIsNotAMessage(t *testing.T) {
 // configuration error rather than a second spelling of the default.
 func TestTransportConfigurationErrorsDoNotPanic(t *testing.T) {
 	tests := map[string]acp.Transport{
-		"nil IO reader":      acp.NewIOTransport(nil, nopWriteCloser{io.Discard}),
-		"nil IO writer":      acp.NewIOTransport(io.NopCloser(strings.NewReader("")), nil),
+		"nil IO config": acp.NewIOTransport(nil),
+		"nil IO reader": acp.NewIOTransport(&acp.IOConfig{
+			Writer: io.Discard, Close: func() error { return nil },
+		}),
+		"nil IO writer": acp.NewIOTransport(&acp.IOConfig{
+			Reader: strings.NewReader(""), Close: func() error { return nil },
+		}),
+		"nil IO close": acp.NewIOTransport(&acp.IOConfig{
+			Reader: strings.NewReader(""), Writer: io.Discard,
+		}),
 		"nil command config": acp.NewCommandTransport(nil),
 		"nil command":        acp.NewCommandTransport(&acp.CommandConfig{}),
 		"negative grace": acp.NewCommandTransport(&acp.CommandConfig{
@@ -196,10 +213,10 @@ func TestByteStreamTransportsDoNotOpenAfterSetupCancellation(t *testing.T) {
 	cancel()
 	command := exec.CommandContext(context.Background(), "true")
 	for name, transport := range map[string]acp.Transport{
-		"IO": acp.NewIOTransport(
-			io.NopCloser(strings.NewReader("")),
-			nopWriteCloser{io.Discard},
-		),
+		"IO": acp.NewIOTransport(&acp.IOConfig{
+			Reader: strings.NewReader(""), Writer: io.Discard,
+			Close: func() error { return nil },
+		}),
 		"command": acp.NewCommandTransport(&acp.CommandConfig{Command: command}),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -328,7 +345,3 @@ func TestTheStdioTransportIsAvailable(t *testing.T) {
 		t.Fatal("NewStdioTransport returned nothing")
 	}
 }
-
-type nopWriteCloser struct{ io.Writer }
-
-func (nopWriteCloser) Close() error { return nil }

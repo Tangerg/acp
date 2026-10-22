@@ -61,11 +61,18 @@ matrix. Run a fuzz target locally with:
 go test . -run '^$' -fuzz FuzzName -fuzztime=30s
 ```
 
-`docs:check` spell-checks and lints every tracked Markdown file, and the two checkers are meant to see the same
-set. `cspell.json` names `.github/**/*.md` separately because a `**` glob does not descend into a leading-dot
-directory — without it the pull request template is linted and not spelled, which is how `design/design.md`
-once went unchecked for months. Its word list carries only words the checked prose actually uses; a term that
-lives solely in Go comments does not belong there, because no check reads them.
+`docs:check` spell-checks and lints every tracked Markdown file. `.tools/lint-docs.mjs` passes Git's tracked
+Markdown paths to the pinned `markdownlint` API; its rule configuration lives in that script. This includes
+dot-directories without a glob dependency. `cspell.json` names `.github/**/*.md` separately because its `**`
+glob does not descend into a leading-dot directory. Its word list carries only words the checked prose
+actually uses; a term that lives solely in Go comments does not belong there, because no check reads them.
+
+The same command audits every dependency at low severity and runs the toolchain's regression tests.
+KaTeX's version has one owner in `.tools/package.json`: the direct development dependency used by those
+tests. The `overrides` reference makes the math extension resolve that same patched renderer, because its
+upstream range still selects a version affected by the
+[inherited-trust vulnerability](https://github.com/advisories/GHSA-238p-pmpm-9mq7). Remove the override when
+the extension's declared range admits the pinned renderer. The lockfile is generated with npm.
 
 ## The protocol is upstream
 

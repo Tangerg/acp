@@ -350,6 +350,67 @@ func isRequestScope(scope acp.ElicitationFormModeValue) bool {
 	return request
 }
 
+func TestARequestScopeCannotEscapeItsConnectionOrItsRequest(t *testing.T) {
+	client, err := acp.NewClient(&acp.ClientConfig{
+		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		RequestPermission: denyingPermission,
+		Elicitation: &acp.ElicitationHandlers{Form: func(
+			context.Context, *acp.CreateElicitationRequest, *acp.ElicitationFormMode,
+		) (*acp.CreateElicitationResponse, error) {
+			return &acp.CreateElicitationResponse{Value: &acp.ElicitationAcceptAction{}}, nil
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contexts := make(chan context.Context, 1)
+	connections := make(chan *acp.AgentConn, 1)
+	release := make(chan struct{})
+	agent, err := acp.NewAgent(&acp.AgentConfig{
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+			return &acp.NewSessionResponse{SessionID: "session"}, nil
+		},
+		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
+			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+		},
+		Cancel:      func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
+		AuthMethods: []acp.AuthMethod{&acp.AuthMethodAgent{ID: "token", Name: "Token"}},
+		Authenticate: func(ctx context.Context, conn *acp.AgentConn, _ *acp.AuthenticateRequest) (*acp.AuthenticateResponse, error) {
+			contexts <- ctx
+			connections <- conn
+			<-release
+			return &acp.AuthenticateResponse{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := connectPeers(t, client, agent)
+	connectPeers(t, client, agent)
+	answered := make(chan error, 1)
+	go func() {
+		_, err := conn.Authenticate(t.Context(), &acp.AuthenticateRequest{MethodID: "token"})
+		answered <- err
+	}()
+	requestCtx, owner := <-contexts, <-connections
+	params := &acp.CreateElicitationParams{Message: "?", Mode: &acp.ElicitationFormMode{RequestedSchema: formSchema()}}
+	for candidate := range agent.Conns() {
+		if candidate != owner {
+			if _, err := candidate.CreateElicitation(requestCtx, params); err == nil {
+				t.Error("another connection accepted the request's scope")
+			}
+		}
+	}
+	close(release)
+	if err := <-answered; err != nil {
+		t.Fatal(err)
+	}
+	<-requestCtx.Done()
+	if _, err := owner.CreateElicitation(context.WithoutCancel(requestCtx), params); err == nil {
+		t.Error("an answered request could still open a request-scoped elicitation")
+	}
+}
+
 // The outbound half of the mode capability. A client that renders forms and not
 // pages is not asked for a page, and the refusal happens before the write.
 func TestAModeTheClientDidNotAdvertiseIsRefusedBeforeTheWire(t *testing.T) {

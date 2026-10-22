@@ -10,6 +10,7 @@
 package jsonrpc2
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -61,15 +62,15 @@ func (w *WireError) UnmarshalJSON(data []byte) error {
 
 	var decoded WireError
 	rawCode, hasCode := members["code"]
-	if !hasCode {
-		return errors.New("jsonrpc: decode error: missing code")
+	if !hasCode || bytes.Equal(bytes.TrimSpace(rawCode), []byte("null")) {
+		return errors.New("jsonrpc: decode error: missing or null code")
 	}
 	if decodeErr := json.Unmarshal(rawCode, &decoded.Code); decodeErr != nil {
 		return fmt.Errorf("jsonrpc: decode error code: %w", decodeErr)
 	}
 	rawMessage, hasMessage := members["message"]
-	if !hasMessage {
-		return errors.New("jsonrpc: decode error: missing message")
+	if !hasMessage || bytes.Equal(bytes.TrimSpace(rawMessage), []byte("null")) {
+		return errors.New("jsonrpc: decode error: missing or null message")
 	}
 	if decodeErr := json.Unmarshal(rawMessage, &decoded.Message); decodeErr != nil {
 		return fmt.Errorf("jsonrpc: decode error message: %w", decodeErr)
