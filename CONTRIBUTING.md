@@ -72,7 +72,10 @@ KaTeX's version has one owner in `.tools/package.json`: the direct development d
 tests. The `overrides` reference makes the math extension resolve that same patched renderer, because its
 upstream range still selects a version affected by the
 [inherited-trust vulnerability](https://github.com/advisories/GHSA-238p-pmpm-9mq7). Remove the override when
-the extension's declared range admits the pinned renderer. The lockfile is generated with npm.
+the extension's declared range admits the pinned renderer. `markdownlint` pins a `re2js` affected by the
+[lookbehind denial-of-service vulnerability](https://github.com/advisories/GHSA-gg6h-894w-4m9c), so a second
+override selects the patched release. Remove it when `markdownlint` pins `re2js` 2.8.7 or later. The lockfile
+is generated with npm.
 
 ## The protocol is upstream
 

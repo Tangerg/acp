@@ -15,6 +15,7 @@
     "markdownlint": "0.42.0"
   },
   "overrides": {
-    "katex": "$katex"
+    "katex": "$katex",
+    "re2js": "2.8.8"
   }
 }
