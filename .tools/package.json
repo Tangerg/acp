@@ -10,8 +10,8 @@
     "docs:check": "npm audit --audit-level=low && npm run docs:test && npm run spell && npm run docs:lint"
   },
   "devDependencies": {
-    "cspell": "10.2.2",
-    "katex": "0.19.0",
+    "cspell": "10.4.0",
+    "katex": "0.19.1",
     "markdownlint": "0.42.0"
   },
   "overrides": {
