@@ -79,11 +79,49 @@ func TestARefusedOpenIsNotAnnounced(t *testing.T) {
 	})
 }
 
+// The request that opened a session is answered, so an announcement that takes
+// its time must not keep counting against InflightRequests: breaching that bound
+// ends the connection.
+func TestASlowAnnouncementDoesNotHoldItsRequestsPlace(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		agent := openingAgentWith(t, acp.Limits{InflightRequests: 1}, nil, func(context.Context, *acp.AgentSession) {
+			<-release
+		})
+		stream, ctx := rawClientFor(t, agent)
+		initializeRaw(ctx, t, stream)
+		// A request's place is returned just after its answer is written, so the
+		// next one waits until it has been.
+		synctest.Wait()
+
+		for id := int64(2); id <= 3; id++ {
+			answer := roundTrip(ctx, t, stream, id, "session/new", `{"cwd":"/w","mcpServers":[]}`)
+			if answer.Error != nil {
+				t.Fatalf("session/new %d was refused: %v", id, answer.Error)
+			}
+			// Every goroutine has settled, so the first announcement is blocked
+			// before the second request arrives.
+			synctest.Wait()
+		}
+		close(release)
+	})
+}
+
 // openingAgent opens "created" from session/new and serves load and resume for
 // any stored session, announcing each one it opens. newSession and opened
 // replace those defaults when set.
 func openingAgent(
 	t *testing.T,
+	newSession func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error),
+	opened func(context.Context, *acp.AgentSession),
+) *acp.Agent {
+	t.Helper()
+	return openingAgentWith(t, acp.Limits{}, newSession, opened)
+}
+
+func openingAgentWith(
+	t *testing.T,
+	limits acp.Limits,
 	newSession func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error),
 	opened func(context.Context, *acp.AgentSession),
 ) *acp.Agent {
@@ -119,6 +157,7 @@ func openingAgent(
 			return &acp.ResumeSessionResponse{}, nil
 		},
 		SessionOpened: opened,
+		Limits:        limits,
 	})
 	if err != nil {
 		t.Fatalf("NewAgent: %v", err)

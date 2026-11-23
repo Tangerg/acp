@@ -43,9 +43,10 @@ type AgentConfig struct {
 	// session/new, session/load or session/resume response has been written. A
 	// client cannot route an update for a session whose identifier it has not
 	// been given, so this is where an agent announces what a session offers, such
-	// as its available commands. ctx ends with the connection. It runs in the
-	// request's place, so work that outlasts the announcement belongs in a
-	// goroutine of its own.
+	// as its available commands. It runs on a goroutine of its own after the
+	// request has been retired, so it may take its time without holding one of
+	// the connection's InflightRequests; ctx ends with the connection, and Wait
+	// waits for it.
 	SessionOpened func(ctx context.Context, session *AgentSession)
 
 	// Authenticate performs an agent-handled method listed in AuthMethods. The
@@ -189,7 +190,7 @@ func opensSession(
 			if created, ok := written.(*NewSessionResponse); ok {
 				session = created.SessionID
 			}
-			opened(c.life.ctx, c.session(session))
+			c.life.start(func() { opened(c.life.ctx, c.session(session)) })
 		}})
 	}
 }

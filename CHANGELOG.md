@@ -38,8 +38,16 @@ migration instructions.
 ### Breaking changes
 
 - `ClientConn.Peer` and `AgentConn.Peer` are now `Negotiated`, returning a
-  `Negotiated` value. The `ProtocolVersion` field is gone: a connection only ever
-  speaks `CurrentProtocolVersion`. Rename `conn.Peer()` to `conn.Negotiated()`.
+  `Negotiated` value in place of the removed `PeerInfo`. The `ProtocolVersion`
+  field is gone: a connection only ever speaks `CurrentProtocolVersion`. Rename
+  `conn.Peer()` to `conn.Negotiated()`.
+- Every client handler receives the `*ClientConn` the request arrived on, after
+  its context: `SessionUpdate`, `RequestPermission`, `ReadTextFile`,
+  `WriteTextFile`, the `TerminalHandlers` and `ElicitationHandlers` fields, and
+  both fallbacks. An agent's `CallFallback` and `NotifyFallback` likewise receive
+  the `*AgentConn`. One client can drive several agents that use the same session
+  identifier, so only the connection says which agent is asking. Add the
+  parameter, named `_` where the handler does not need it.
 - Projection types follow their request names: `CloseParams` is
   `CloseSessionParams`, `SetModeParams` is `SetSessionModeParams`, and
   `SetConfigOptionParams` is `SetSessionConfigOptionParams`.
@@ -67,7 +75,8 @@ migration instructions.
   A custom transport returns the `*jsonrpc.DecodeError` from `DecodeMessage` for
   an undecodable message, and the connection keeps reading.
 - `ElicitationRequestScope` is exported. A client reads a request-scoped
-  elicitation's `RequestID` from it; an agent still never sets the scope.
+  elicitation's `RequestID` from it, now a `jsonrpc.ID`; an agent still never
+  sets the scope.
 - `ClientConn.Authenticate` refuses an identifier the agent did not offer, or one
   naming a terminal method, with an error wrapping `ErrNotAdvertised` instead of
   an `*Error` carrying `-32602`, like every other local refusal. Replace checks
