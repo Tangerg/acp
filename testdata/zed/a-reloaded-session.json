@@ -1,0 +1,391 @@
+{
+  "$comment": "Recorded by hand: Zed spawned an agent built on this module, and Claude drove the agent panel through macOS accessibility, so every click and keystroke reached Zed as a user's would. Replayed by zed_test.go. Do not edit; CONTRIBUTING.md says how to record another.",
+  "scenario": "the agent reloaded from the panel's menu, and the session loaded back with its history",
+  "note": "After Reload Agent, Zed started a fresh process and sent session/load for the open thread. The agent replayed each earlier prompt as a user_message_chunk followed by its own agent_message_chunk before answering, then announced its slash commands again once the answer was on the wire.",
+  "provenance": {
+    "client": "Zed",
+    "clientVersion": "1.29.3+stable.395.d01b134cddf5e4f71964deb2d6f81cdb38fcf1e7",
+    "recorded": "2026-11-24",
+    "agent": "an agent built on this module; the handlers behind it are a probe, not part of the module",
+    "schemaRelease": "schema-v1.34.1"
+  },
+  "clientToAgent": [
+    {
+      "jsonrpc": "2.0",
+      "id": "29edb1c0-2038-43a8-9404-ce067e78f1da",
+      "method": "initialize",
+      "params": {
+        "protocolVersion": 1,
+        "clientCapabilities": {
+          "fs": {
+            "readTextFile": true,
+            "writeTextFile": true
+          },
+          "terminal": true,
+          "session": {
+            "compaction": {},
+            "configOptions": {
+              "boolean": {}
+            },
+            "notices": {}
+          },
+          "auth": {
+            "terminal": true
+          },
+          "elicitation": {
+            "form": {},
+            "url": {}
+          },
+          "_meta": {
+            "terminal_output": true,
+            "terminal-auth": true
+          }
+        },
+        "clientInfo": {
+          "name": "zed",
+          "title": "Zed",
+          "version": "1.29.3+stable.395.d01b134cddf5e4f71964deb2d6f81cdb38fcf1e7"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "23888b8c-8243-4dd8-8b7f-cabeab554c3a",
+      "method": "session/load",
+      "params": {
+        "mcpServers": [],
+        "cwd": "/private/tmp/zed-acp/workspace",
+        "sessionId": "probe-14089-1"
+      }
+    }
+  ],
+  "agentToClient": [
+    {
+      "jsonrpc": "2.0",
+      "id": "29edb1c0-2038-43a8-9404-ce067e78f1da",
+      "result": {
+        "protocolVersion": 1,
+        "agentCapabilities": {
+          "loadSession": true,
+          "promptCapabilities": {
+            "image": true,
+            "audio": false,
+            "embeddedContext": true
+          },
+          "mcpCapabilities": {
+            "http": false,
+            "sse": false
+          },
+          "sessionCapabilities": {
+            "list": {},
+            "close": {}
+          },
+          "auth": {}
+        },
+        "agentInfo": {
+          "name": "acp-go-probe",
+          "title": "ACP Go probe",
+          "version": "0.1.0"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "user_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "hello from zed"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "(replayed) you said: hello from zed"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "user_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "/plan"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "(replayed) you said: /plan"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "user_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "/write the release is on Friday"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "(replayed) you said: /write the release is on Friday"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "user_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "/term"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "(replayed) you said: /term"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "user_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "/ask"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "(replayed) you said: /ask"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "user_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "/slow"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "(replayed) you said: /slow"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "user_message_chunk",
+          "content": {
+            "type": "text",
+            "text": ""
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "(replayed) you said: "
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "user_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "/fail"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "(replayed) you said: /fail"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "23888b8c-8243-4dd8-8b7f-cabeab554c3a",
+      "result": {
+        "configOptions": [
+          {
+            "id": "model",
+            "name": "Model",
+            "category": "model",
+            "type": "select",
+            "currentValue": "careful",
+            "options": [
+              {
+                "value": "fast",
+                "name": "Fast"
+              },
+              {
+                "value": "careful",
+                "name": "Careful"
+              }
+            ]
+          },
+          {
+            "id": "verbose",
+            "name": "Verbose",
+            "type": "boolean",
+            "currentValue": true
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "available_commands_update",
+          "availableCommands": [
+            {
+              "name": "plan",
+              "description": "Show a plan with tool calls and a diff"
+            },
+            {
+              "name": "write",
+              "description": "Ask permission, then append to NOTES.md"
+            },
+            {
+              "name": "term",
+              "description": "Run a command in a client terminal"
+            },
+            {
+              "name": "ask",
+              "description": "Ask a question through elicitation"
+            },
+            {
+              "name": "slow",
+              "description": "Stream until stopped"
+            },
+            {
+              "name": "fail",
+              "description": "Fail the turn with an error"
+            },
+            {
+              "name": "echo",
+              "description": "Echo the rest of the line",
+              "input": {
+                "hint": "text to echo"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

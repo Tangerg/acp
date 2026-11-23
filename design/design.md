@@ -951,8 +951,9 @@ in agreement:
   the reference implementation eliciting from this package's client in both modes,
   which is the inbound direction an agent built on this package cannot exercise:
   its own outbound gate refuses a mode the client did not advertise.
-- **Editor interoperability**: Zed spawned an agent built on this module
-  and a person drove it, including the stop button. Every property Zed sent
+- **Editor interoperability**: Zed 1.17 and 1.29 spawned an agent built on this
+  module and their panels were driven by hand, through permissions, a terminal,
+  a form elicitation, the stop button and a reload. Every property Zed sent
   survives this package's types unchanged.
 - **Wire fuzzing**: two targets assert that normalisation reaches a fixed point
   because schema-directed recovery can quietly break that property, and a third

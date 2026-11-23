@@ -1,0 +1,1265 @@
+{
+  "$comment": "Recorded by hand: Zed spawned an agent built on this module, and Claude drove the agent panel through macOS accessibility, so every click and keystroke reached Zed as a user's would. Replayed by zed_test.go. Do not edit; CONTRIBUTING.md says how to record another.",
+  "scenario": "a load the agent could not serve, then one session through every kind of turn the panel drives",
+  "note": "Zed restored a thread whose session the agent no longer had and was answered -32002. A new thread then carried the user's last model and verbose choices over with two session/set_config_option calls, received the slash commands the agent announced right after session/new, and ran eight prompts: plain text, a plan with tool calls and a diff, a permission the user allowed followed by a file read and write, a terminal that exited 3, a form elicitation the user answered, a turn stopped from the stop button, a prompt that was only an embedded file, and a turn the agent failed on purpose.",
+  "provenance": {
+    "client": "Zed",
+    "clientVersion": "1.29.3+stable.395.d01b134cddf5e4f71964deb2d6f81cdb38fcf1e7",
+    "recorded": "2026-11-24",
+    "agent": "an agent built on this module; the handlers behind it are a probe, not part of the module",
+    "schemaRelease": "schema-v1.34.1"
+  },
+  "clientToAgent": [
+    {
+      "jsonrpc": "2.0",
+      "id": "f3be4722-f900-4405-a792-4c571790a7b3",
+      "method": "initialize",
+      "params": {
+        "protocolVersion": 1,
+        "clientCapabilities": {
+          "fs": {
+            "readTextFile": true,
+            "writeTextFile": true
+          },
+          "terminal": true,
+          "session": {
+            "compaction": {},
+            "configOptions": {
+              "boolean": {}
+            },
+            "notices": {}
+          },
+          "auth": {
+            "terminal": true
+          },
+          "elicitation": {
+            "form": {},
+            "url": {}
+          },
+          "_meta": {
+            "terminal_output": true,
+            "terminal-auth": true
+          }
+        },
+        "clientInfo": {
+          "name": "zed",
+          "title": "Zed",
+          "version": "1.29.3+stable.395.d01b134cddf5e4f71964deb2d6f81cdb38fcf1e7"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "5aef4b7e-b9b1-4682-811c-569ddd617deb",
+      "method": "session/load",
+      "params": {
+        "mcpServers": [],
+        "cwd": "/private/tmp/zed-acp/workspace",
+        "sessionId": "probe-4167-1"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "05cf47ef-d680-4ba1-9453-4803d8821309",
+      "method": "session/new",
+      "params": {
+        "cwd": "/private/tmp/zed-acp/workspace",
+        "mcpServers": []
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "27018aab-417b-4d1c-b740-9209463afa32",
+      "method": "session/set_config_option",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "configId": "model",
+        "value": "careful"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "da182a2b-1617-425e-8648-59305b4f914d",
+      "method": "session/set_config_option",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "configId": "verbose",
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "2f70fdf2-20d3-4ddb-b82a-efb35fe0758a",
+      "method": "session/prompt",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "prompt": [
+          {
+            "type": "text",
+            "text": "hello from zed"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "1d0fac6f-6c6d-4fff-9bbb-93df4409c1b0",
+      "method": "session/prompt",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "prompt": [
+          {
+            "type": "text",
+            "text": "/plan"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "a1a5a33c-383e-47ae-914e-cf4ebfc031a2",
+      "method": "session/prompt",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "prompt": [
+          {
+            "type": "text",
+            "text": "/write the release is on Friday"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "outcome": {
+          "outcome": "selected",
+          "optionId": "once"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {
+        "content": ""
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "2dea2f6b-61d6-4c58-b52a-1330e1b3b37d",
+      "method": "session/prompt",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "prompt": [
+          {
+            "type": "text",
+            "text": "/term"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "result": {
+        "terminalId": "deb1347c-2645-41f7-bc6d-fab076a3d8cd"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 5,
+      "result": {
+        "exitCode": 3
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 6,
+      "result": {
+        "output": "hello from the probe\nNOTES.md\nbye\n",
+        "truncated": false,
+        "exitStatus": {
+          "exitCode": 3
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 7,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "557685f0-48ab-4b77-8763-9f51d98d562d",
+      "method": "session/prompt",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "prompt": [
+          {
+            "type": "text",
+            "text": "/ask"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 8,
+      "result": {
+        "action": "accept",
+        "content": {
+          "branch": "dev",
+          "force": true
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "f75f786a-6705-419d-b0dc-10014e1d2138",
+      "method": "session/prompt",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "prompt": [
+          {
+            "type": "text",
+            "text": "/slow"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/cancel",
+      "params": {
+        "sessionId": "probe-14089-1"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "4d998994-d2ce-405e-8a15-0a45a95139a4",
+      "method": "session/prompt",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "prompt": [
+          {
+            "type": "resource",
+            "resource": {
+              "text": "- the release is on Friday\n",
+              "uri": "file:///private/tmp/zed-acp/workspace/NOTES.md"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "c17a8481-ed62-4c54-9b07-b2976339e8c7",
+      "method": "session/prompt",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "prompt": [
+          {
+            "type": "text",
+            "text": "/fail"
+          }
+        ]
+      }
+    }
+  ],
+  "agentToClient": [
+    {
+      "jsonrpc": "2.0",
+      "id": "f3be4722-f900-4405-a792-4c571790a7b3",
+      "result": {
+        "protocolVersion": 1,
+        "agentCapabilities": {
+          "loadSession": true,
+          "promptCapabilities": {
+            "image": true,
+            "audio": false,
+            "embeddedContext": true
+          },
+          "mcpCapabilities": {
+            "http": false,
+            "sse": false
+          },
+          "sessionCapabilities": {
+            "list": {},
+            "close": {}
+          },
+          "auth": {}
+        },
+        "agentInfo": {
+          "name": "acp-go-probe",
+          "title": "ACP Go probe",
+          "version": "0.1.0"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "5aef4b7e-b9b1-4682-811c-569ddd617deb",
+      "error": {
+        "code": -32002,
+        "message": "no such session: probe-4167-1"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "05cf47ef-d680-4ba1-9453-4803d8821309",
+      "result": {
+        "sessionId": "probe-14089-1",
+        "configOptions": [
+          {
+            "id": "model",
+            "name": "Model",
+            "category": "model",
+            "type": "select",
+            "currentValue": "fast",
+            "options": [
+              {
+                "value": "fast",
+                "name": "Fast"
+              },
+              {
+                "value": "careful",
+                "name": "Careful"
+              }
+            ]
+          },
+          {
+            "id": "verbose",
+            "name": "Verbose",
+            "type": "boolean",
+            "currentValue": false
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "available_commands_update",
+          "availableCommands": [
+            {
+              "name": "plan",
+              "description": "Show a plan with tool calls and a diff"
+            },
+            {
+              "name": "write",
+              "description": "Ask permission, then append to NOTES.md"
+            },
+            {
+              "name": "term",
+              "description": "Run a command in a client terminal"
+            },
+            {
+              "name": "ask",
+              "description": "Ask a question through elicitation"
+            },
+            {
+              "name": "slow",
+              "description": "Stream until stopped"
+            },
+            {
+              "name": "fail",
+              "description": "Fail the turn with an error"
+            },
+            {
+              "name": "echo",
+              "description": "Echo the rest of the line",
+              "input": {
+                "hint": "text to echo"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "27018aab-417b-4d1c-b740-9209463afa32",
+      "result": {
+        "configOptions": [
+          {
+            "id": "model",
+            "name": "Model",
+            "category": "model",
+            "type": "select",
+            "currentValue": "careful",
+            "options": [
+              {
+                "value": "fast",
+                "name": "Fast"
+              },
+              {
+                "value": "careful",
+                "name": "Careful"
+              }
+            ]
+          },
+          {
+            "id": "verbose",
+            "name": "Verbose",
+            "type": "boolean",
+            "currentValue": false
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "da182a2b-1617-425e-8648-59305b4f914d",
+      "result": {
+        "configOptions": [
+          {
+            "id": "model",
+            "name": "Model",
+            "category": "model",
+            "type": "select",
+            "currentValue": "careful",
+            "options": [
+              {
+                "value": "fast",
+                "name": "Fast"
+              },
+              {
+                "value": "careful",
+                "name": "Careful"
+              }
+            ]
+          },
+          {
+            "id": "verbose",
+            "name": "Verbose",
+            "type": "boolean",
+            "currentValue": true
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "session_info_update",
+          "title": "Probe: hello from zed"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_thought_chunk",
+          "content": {
+            "type": "text",
+            "text": "model=careful verbose=true blocks=[text(14 chars)]"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "You said: "
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "**hello from zed**"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "\n\nPrompt blocks: text(14 chars)"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "usage_update",
+          "used": 1000,
+          "size": 200000
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "2f70fdf2-20d3-4ddb-b82a-efb35fe0758a",
+      "result": {
+        "stopReason": "end_turn"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_thought_chunk",
+          "content": {
+            "type": "text",
+            "text": "model=careful verbose=true blocks=[text(5 chars)]"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "plan",
+          "entries": [
+            {
+              "content": "Read the workspace",
+              "priority": "medium",
+              "status": "in_progress"
+            },
+            {
+              "content": "Draft the change",
+              "priority": "medium",
+              "status": "pending"
+            },
+            {
+              "content": "Show the diff",
+              "priority": "medium",
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "tool_call",
+          "toolCallId": "read-1",
+          "title": "Read hello.go",
+          "kind": "read",
+          "status": "in_progress",
+          "locations": [
+            {
+              "path": "/private/tmp/zed-acp/workspace/hello.go",
+              "line": 1
+            }
+          ],
+          "rawInput": {
+            "path": "/private/tmp/zed-acp/workspace/hello.go"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "read-1",
+          "status": "completed",
+          "content": [
+            {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": "package main\n"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "plan",
+          "entries": [
+            {
+              "content": "Read the workspace",
+              "priority": "medium",
+              "status": "completed"
+            },
+            {
+              "content": "Draft the change",
+              "priority": "medium",
+              "status": "in_progress"
+            },
+            {
+              "content": "Show the diff",
+              "priority": "medium",
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "tool_call",
+          "toolCallId": "edit-1",
+          "title": "Edit hello.go",
+          "kind": "edit",
+          "status": "completed",
+          "content": [
+            {
+              "type": "diff",
+              "path": "/private/tmp/zed-acp/workspace/hello.go",
+              "oldText": "package main\n",
+              "newText": "package main\n\nfunc main() { println(\"hi\") }\n"
+            }
+          ],
+          "locations": [
+            {
+              "path": "/private/tmp/zed-acp/workspace/hello.go"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "plan",
+          "entries": [
+            {
+              "content": "Read the workspace",
+              "priority": "medium",
+              "status": "completed"
+            },
+            {
+              "content": "Draft the change",
+              "priority": "medium",
+              "status": "completed"
+            },
+            {
+              "content": "Show the diff",
+              "priority": "medium",
+              "status": "completed"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "Plan finished."
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "usage_update",
+          "used": 2000,
+          "size": 200000
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "1d0fac6f-6c6d-4fff-9bbb-93df4409c1b0",
+      "result": {
+        "stopReason": "end_turn"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_thought_chunk",
+          "content": {
+            "type": "text",
+            "text": "model=careful verbose=true blocks=[text(31 chars)]"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "tool_call",
+          "toolCallId": "write-3",
+          "title": "Append to NOTES.md",
+          "kind": "edit",
+          "status": "pending",
+          "locations": [
+            {
+              "path": "/private/tmp/zed-acp/workspace/NOTES.md"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "session/request_permission",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "toolCall": {
+          "toolCallId": "write-3",
+          "kind": "edit",
+          "title": "Append to NOTES.md",
+          "locations": [
+            {
+              "path": "/private/tmp/zed-acp/workspace/NOTES.md"
+            }
+          ]
+        },
+        "options": [
+          {
+            "optionId": "once",
+            "name": "Allow once",
+            "kind": "allow_once"
+          },
+          {
+            "optionId": "always",
+            "name": "Always allow",
+            "kind": "allow_always"
+          },
+          {
+            "optionId": "no",
+            "name": "Reject",
+            "kind": "reject_once"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "method": "fs/read_text_file",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "path": "/private/tmp/zed-acp/workspace/NOTES.md"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "method": "fs/write_text_file",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "path": "/private/tmp/zed-acp/workspace/NOTES.md",
+        "content": "- the release is on Friday\n"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "write-3",
+          "status": "completed",
+          "content": [
+            {
+              "type": "diff",
+              "path": "/private/tmp/zed-acp/workspace/NOTES.md",
+              "oldText": "",
+              "newText": "- the release is on Friday\n"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "Appended with option once."
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "a1a5a33c-383e-47ae-914e-cf4ebfc031a2",
+      "result": {
+        "stopReason": "end_turn"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_thought_chunk",
+          "content": {
+            "type": "text",
+            "text": "model=careful verbose=true blocks=[text(5 chars)]"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "method": "terminal/create",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "command": "sh",
+        "args": [
+          "-c",
+          "echo hello from the probe; ls; sleep 1; echo bye; exit 3"
+        ],
+        "cwd": "/private/tmp/zed-acp/workspace",
+        "outputByteLimit": 4096
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "tool_call",
+          "toolCallId": "term-1",
+          "title": "sh -c …",
+          "kind": "execute",
+          "status": "in_progress",
+          "content": [
+            {
+              "type": "terminal",
+              "terminalId": "deb1347c-2645-41f7-bc6d-fab076a3d8cd"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 5,
+      "method": "terminal/wait_for_exit",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "terminalId": "deb1347c-2645-41f7-bc6d-fab076a3d8cd"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 6,
+      "method": "terminal/output",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "terminalId": "deb1347c-2645-41f7-bc6d-fab076a3d8cd"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "term-1",
+          "status": "completed"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "exit 3, 34 bytes, truncated=false"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 7,
+      "method": "terminal/release",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "terminalId": "deb1347c-2645-41f7-bc6d-fab076a3d8cd"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "usage_update",
+          "used": 4000,
+          "size": 200000
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "2dea2f6b-61d6-4c58-b52a-1330e1b3b37d",
+      "result": {
+        "stopReason": "end_turn"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_thought_chunk",
+          "content": {
+            "type": "text",
+            "text": "model=careful verbose=true blocks=[text(4 chars)]"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 8,
+      "method": "elicitation/create",
+      "params": {
+        "message": "Which branch should the probe push to?",
+        "mode": "form",
+        "requestedSchema": {
+          "type": "object",
+          "properties": {
+            "branch": {
+              "type": "string",
+              "title": "Branch",
+              "enum": [
+                "main",
+                "dev"
+              ]
+            },
+            "force": {
+              "type": "boolean",
+              "title": "Force push",
+              "default": false
+            }
+          },
+          "required": [
+            "branch"
+          ]
+        },
+        "sessionId": "probe-14089-1"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "Elicitation answer: `{\"action\":\"accept\",\"content\":{\"branch\":\"dev\",\"force\":true}}`"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "usage_update",
+          "used": 5000,
+          "size": 200000
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "557685f0-48ab-4b77-8763-9f51d98d562d",
+      "result": {
+        "stopReason": "end_turn"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_thought_chunk",
+          "content": {
+            "type": "text",
+            "text": "model=careful verbose=true blocks=[text(5 chars)]"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "tool_call",
+          "toolCallId": "slow-1",
+          "title": "Counting slowly",
+          "kind": "think",
+          "status": "in_progress"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "1… "
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "2… "
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "3… "
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "4… "
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "slow-1",
+          "status": "failed"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "f75f786a-6705-419d-b0dc-10014e1d2138",
+      "result": {
+        "stopReason": "cancelled"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_thought_chunk",
+          "content": {
+            "type": "text",
+            "text": "model=careful verbose=true blocks=[embedded file:///private/tmp/zed-acp/workspace/NOTES.md (27 chars)]"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "You said: "
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "****"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "\n\nPrompt blocks: embedded file:///private/tmp/zed-acp/workspace/NOTES.md (27 chars)"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "usage_update",
+          "used": 7000,
+          "size": 200000
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "4d998994-d2ce-405e-8a15-0a45a95139a4",
+      "result": {
+        "stopReason": "end_turn"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "probe-14089-1",
+        "update": {
+          "sessionUpdate": "agent_thought_chunk",
+          "content": {
+            "type": "text",
+            "text": "model=careful verbose=true blocks=[text(5 chars)]"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "c17a8481-ed62-4c54-9b07-b2976339e8c7",
+      "error": {
+        "code": -32603,
+        "message": "the probe failed this turn on purpose"
+      }
+    }
+  ]
+}

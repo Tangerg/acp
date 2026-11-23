@@ -135,13 +135,14 @@ a scenario in `scripts/interop-agent.ts` and `internal/cmd/interop`, then record
 when the pin moves.
 
 **Zed.** Recording the agent side against a real editor requires a person to drive Zed. Build an agent and put
-a wrapper in front of it that tees both directions of the stream to a file:
+a wrapper in front of it that tees both directions of the stream to files named for the process, because a
+transcript is one connection and Zed starts another whenever the agent is reloaded:
 
 ```sh
 go build -o /tmp/acp-agent ./examples/agent
 cat > /tmp/acp-agent.sh <<'SH'
 #!/bin/sh
-exec tee -a /tmp/from-client.jsonl | /tmp/acp-agent | tee -a /tmp/to-client.jsonl
+exec tee -a /tmp/from-client-$$.jsonl | /tmp/acp-agent | tee -a /tmp/to-client-$$.jsonl
 SH
 chmod +x /tmp/acp-agent.sh
 ```

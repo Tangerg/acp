@@ -16,9 +16,10 @@ import (
 // testdata/interop is this module's client against the reference implementation's
 // agent. This is the mirror of it, and the reference implementation cannot
 // provide it — the client half of ACP is an editor, and an editor is a person
-// clicking. So these transcripts were recorded by hand, once, with Zed spawning
-// an agent built on this package: the wire is real, the command ran in the
-// editor's terminal, and the cancellation came from its stop button.
+// clicking. So these transcripts were recorded by hand, with Zed spawning an
+// agent built on this package and its panel driven as a user drives it: the wire
+// is real, commands ran in the editor's terminal, and cancellations came from its
+// stop button.
 //
 // Being hand-recorded is the cost, and it is why this is a corpus rather than a
 // gate that could re-run: nothing here can catch Zed changing. What it does catch
@@ -140,6 +141,12 @@ var zedReplays = map[string]func(json.RawMessage) (json.RawMessage, error){
 	"initialize result":                 replayAs[acp.InitializeResponse],
 	"session/new params":                replayAs[acp.NewSessionRequest],
 	"session/new result":                replayAs[acp.NewSessionResponse],
+	"session/load params":               replayAs[acp.LoadSessionRequest],
+	"session/load result":               replayAs[acp.LoadSessionResponse],
+	"session/set_config_option params":  replayAs[acp.SetSessionConfigOptionRequest],
+	"session/set_config_option result":  replayAs[acp.SetSessionConfigOptionResponse],
+	"elicitation/create params":         replayAs[acp.CreateElicitationRequest],
+	"elicitation/create result":         replayAs[acp.CreateElicitationResponse],
 	"session/prompt params":             replayAs[acp.PromptRequest],
 	"session/prompt result":             replayAs[acp.PromptResponse],
 	"session/cancel params":             replayAs[acp.CancelNotification],
