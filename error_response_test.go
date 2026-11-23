@@ -115,3 +115,166 @@ func TestProtocolSentinelsRetainTheirCodesAsHandlerErrors(t *testing.T) {
 		}
 	}
 }
+
+// answerNothing is what a handler that breaks its contract returns.
+func answerNothing[Response any]() (*Response, error) {
+	return nil, nil //nolint:nilnil // the contract violation under test.
+}
+
+// A handler that returns neither a response nor an error has broken its
+// contract, and the peer is told so with -32603 rather than handed a null result
+// it cannot decode. Every request row is built by one constructor that keeps
+// this rule, so the methods the connection serves in its own way are held to it
+// as well as the plain ones: the elicitation handlers used to slip past it and
+// put "result":null on the wire.
+func TestAHandlerThatAnswersNothingIsAnInternalError(t *testing.T) {
+	wantInternalError := func(t *testing.T, err error) {
+		t.Helper()
+		var failure *acp.Error
+		if !errors.As(err, &failure) || failure.Code != acp.ErrorCodeInternalError {
+			t.Fatalf("the peer saw %v, want an internal error", err)
+		}
+	}
+
+	t.Run("an agent's handlers", func(t *testing.T) {
+		for name, call := range map[string]func(*acp.ClientConn) error{
+			"session/new": func(conn *acp.ClientConn) error {
+				_, _, err := conn.NewSession(t.Context(), &acp.NewSessionRequest{Cwd: "/nil"})
+				return err
+			},
+			"session/set_mode": func(conn *acp.ClientConn) error {
+				session, _, err := conn.NewSession(t.Context(), &acp.NewSessionRequest{Cwd: "/w"})
+				if err != nil {
+					return err
+				}
+				_, err = session.SetMode(t.Context(), &acp.SetSessionModeParams{ModeID: "fast"})
+				return err
+			},
+			"session/prompt": func(conn *acp.ClientConn) error {
+				session, _, err := conn.NewSession(t.Context(), &acp.NewSessionRequest{Cwd: "/w"})
+				if err != nil {
+					return err
+				}
+				_, err = session.Prompt(t.Context(), &acp.PromptParams{})
+				return err
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				agent, err := acp.NewAgent(&acp.AgentConfig{
+					NewSession: func(_ context.Context, _ *acp.AgentConn, request *acp.NewSessionRequest) (
+						*acp.NewSessionResponse, error,
+					) {
+						if request.Cwd == "/nil" {
+							return answerNothing[acp.NewSessionResponse]()
+						}
+						return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
+					},
+					Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
+						return answerNothing[acp.PromptResponse]()
+					},
+					SetMode: func(context.Context, *acp.AgentSession, *acp.SetSessionModeRequest) (
+						*acp.SetSessionModeResponse, error,
+					) {
+						return answerNothing[acp.SetSessionModeResponse]()
+					},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantInternalError(t, call(connectPeers(t, testClient(t), agent)))
+			})
+		}
+	})
+
+	t.Run("a client's handlers", func(t *testing.T) {
+		for name, test := range map[string]struct {
+			configure func(*acp.ClientConfig)
+			call      func(context.Context, *acp.AgentSession) error
+		}{
+			"session/request_permission": {
+				configure: func(config *acp.ClientConfig) {
+					config.RequestPermission = func(context.Context, *acp.ClientConn, *acp.RequestPermissionRequest) (
+						*acp.RequestPermissionResponse, error,
+					) {
+						return answerNothing[acp.RequestPermissionResponse]()
+					}
+				},
+				call: func(ctx context.Context, session *acp.AgentSession) error {
+					_, err := session.RequestPermission(ctx, &acp.RequestPermissionParams{
+						ToolCall: acp.ToolCallUpdate{ToolCallID: "write-1"},
+						Options: []acp.PermissionOption{
+							{OptionID: "allow", Name: "Allow", Kind: acp.PermissionOptionKindAllowOnce},
+						},
+					})
+					return err
+				},
+			},
+			"fs/read_text_file": {
+				configure: func(config *acp.ClientConfig) {
+					config.ReadTextFile = func(context.Context, *acp.ClientConn, *acp.ReadTextFileRequest) (
+						*acp.ReadTextFileResponse, error,
+					) {
+						return answerNothing[acp.ReadTextFileResponse]()
+					}
+				},
+				call: func(ctx context.Context, session *acp.AgentSession) error {
+					_, err := session.ReadTextFile(ctx, &acp.ReadTextFileParams{Path: "/w/notes"})
+					return err
+				},
+			},
+			"a form elicitation": {
+				configure: func(config *acp.ClientConfig) {
+					config.Elicitation = &acp.ElicitationHandlers{Form: func(
+						context.Context, *acp.ClientConn, *acp.CreateElicitationRequest, *acp.ElicitationFormMode,
+					) (*acp.CreateElicitationResponse, error) {
+						return answerNothing[acp.CreateElicitationResponse]()
+					}}
+				},
+				call: func(ctx context.Context, session *acp.AgentSession) error {
+					_, err := session.CreateElicitation(ctx, &acp.CreateElicitationParams{
+						Message: "which branch?", Mode: &acp.ElicitationFormMode{},
+					})
+					return err
+				},
+			},
+			"a URL elicitation": {
+				configure: func(config *acp.ClientConfig) {
+					config.Elicitation = &acp.ElicitationHandlers{URL: func(
+						context.Context, *acp.ClientConn, *acp.CreateElicitationRequest, *acp.ElicitationURLMode,
+					) (*acp.CreateElicitationResponse, error) {
+						return answerNothing[acp.CreateElicitationResponse]()
+					}}
+				},
+				call: func(ctx context.Context, session *acp.AgentSession) error {
+					_, err := session.CreateElicitation(ctx, &acp.CreateElicitationParams{
+						Message: "sign in", Mode: &acp.ElicitationURLMode{ElicitationID: "e-1", URL: "https://example.com"},
+					})
+					return err
+				},
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				config := &acp.ClientConfig{
+					SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
+					RequestPermission: denyingPermission,
+				}
+				test.configure(config)
+				client, err := acp.NewClient(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				observed := make(chan error, 1)
+				session := connectAndOpen(t, client, testAgent(t, func(
+					ctx context.Context, session *acp.AgentSession, _ *acp.PromptRequest,
+				) (*acp.PromptResponse, error) {
+					observed <- test.call(ctx, session)
+					return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+				}))
+				if _, err := session.Prompt(t.Context(), &acp.PromptParams{}); err != nil {
+					t.Fatalf("Prompt: %v", err)
+				}
+				wantInternalError(t, <-observed)
+			})
+		}
+	})
+}

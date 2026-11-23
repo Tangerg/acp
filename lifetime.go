@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 )
 
 // A lifetime owns shutdown: transport release, reader exit, delivery completion,
@@ -34,6 +35,17 @@ type lifetime struct {
 	// a WaitGroup that Wait has begun draining is a data race.
 	stopped bool
 	work    sync.WaitGroup
+}
+
+// detachedBudget bounds work the connection does on its own behalf: answering a
+// call, telling the peer a call was abandoned, releasing a terminal whose creator
+// left. Nobody local is waiting to bound a peer that stopped reading, and work
+// owed is still owed after the connection's own context ends.
+const detachedBudget = 5 * time.Second
+
+// detached is the context that work runs under.
+func (l *lifetime) detached() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(l.ctx), detachedBudget)
 }
 
 func newLifetime() *lifetime {

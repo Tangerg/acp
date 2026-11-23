@@ -90,7 +90,7 @@ func (s *ClientSession) Cancel(ctx context.Context, params *CancelParams) error 
 	case <-conn.over():
 		return conn.life.failure()
 	}
-	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(conn.life.ctx), responseWriteTimeout)
+	writeCtx, cancel := conn.life.detached()
 	defer cancel()
 	//nolint:contextcheck // a committed cancellation is the connection's to finish, past ctx.
 	if err := conn.notifyStandard(writeCtx, methodSessionCancel, params.bind(s.id)); err != nil {
@@ -125,7 +125,7 @@ func (s *ClientSession) SetConfigOption(
 // Gated on agentCapabilities.sessionCapabilities.close.
 func (s *ClientSession) Close(ctx context.Context, params *CloseSessionParams) (*CloseSessionResponse, error) {
 	response, err := callFor[CloseSessionResponse](ctx, &s.conn.connection, methodSessionClose, params.bind(s.id))
-	if errors.Is(err, &Error{Code: ErrorCodeResourceNotFound}) {
+	if errors.Is(err, ErrResourceNotFound) {
 		return new(CloseSessionResponse), nil
 	}
 	return response, err
@@ -161,17 +161,15 @@ func (s *AgentSession) RequestPermission(
 	ctx context.Context,
 	params *RequestPermissionParams,
 ) (*RequestPermissionResponse, error) {
+	// The request is this call's own copy, so the options its answer is held to
+	// are the ones that were sent.
 	request := deepCopy(params.bind(s.id))
-	offered, err := ownPermissionOptions(request.Options)
-	if err != nil {
-		return nil, err
-	}
 	response, err := callFor[RequestPermissionResponse](ctx, &s.conn.connection, methodSessionRequestPermission,
 		request)
 	if err != nil {
 		return nil, err
 	}
-	if invalid := offered.validate(response.Outcome); invalid != nil {
+	if invalid := offeredOptions(request.Options).check(response.Outcome); invalid != nil {
 		return nil, invalid
 	}
 	return response, nil

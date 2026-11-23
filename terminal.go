@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
-	"time"
 
 	"github.com/Tangerg/acp/jsonrpc"
 )
@@ -165,13 +164,10 @@ func (c *terminalCreation) abandon() {
 	}
 }
 
-// abandonedTerminalReleaseTimeout bounds cleanup of a terminal whose creator left.
-const abandonedTerminalReleaseTimeout = 5 * time.Second
-
 func (c *terminalCreation) release(handle *TerminalHandle) {
 	conn := c.session.conn
 	conn.life.start(func() {
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(conn.life.ctx), abandonedTerminalReleaseTimeout)
+		ctx, cancel := conn.life.detached()
 		defer cancel()
 		if err := releaseAbandonedTerminal(ctx, handle); err != nil && !errors.Is(err, ErrConnectionClosed) {
 			conn.logger.Warn("releasing a terminal from an abandoned create request failed",

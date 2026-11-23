@@ -85,12 +85,11 @@ func TestWorkspaceDoesNotCallEveryReadErrorMissing(t *testing.T) {
 	}
 	defer func() { _ = place.root.Close() }()
 	_, err = place.readTextFile(t.Context(), nil, &acp.ReadTextFileRequest{Path: filepath.Join(root, "missing")})
-	var failure *acp.Error
-	if !errors.As(err, &failure) || failure.Code != acp.ErrorCodeResourceNotFound {
+	if !errors.Is(err, acp.ErrResourceNotFound) {
 		t.Fatalf("missing file = %v", err)
 	}
 	_, err = place.readTextFile(t.Context(), nil, &acp.ReadTextFileRequest{Path: root})
-	if err == nil || errors.As(err, &failure) && failure.Code == acp.ErrorCodeResourceNotFound {
+	if err == nil || errors.Is(err, acp.ErrResourceNotFound) {
 		t.Fatalf("directory read falsely classified as absence: %v", err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())

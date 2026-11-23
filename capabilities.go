@@ -21,28 +21,48 @@ type methodCapability interface {
 	advertisedBy(agreed *Negotiated) bool
 }
 
-// An agentCapability is a leaf of [AgentCapabilities].
-type agentCapability struct {
-	leaf string
-	get  func(AgentCapabilities) bool
-	set  func(*AgentCapabilities)
+// A capabilityLeaf is one leaf of [AgentCapabilities] or [ClientCapabilities].
+// set is nil where the advertisement is derived from a handler group rather than
+// from one handler.
+type capabilityLeaf[Capabilities any] struct {
+	leafPath string
+	// of picks the side of the agreement the leaf belongs to.
+	of  func(*Negotiated) Capabilities
+	get func(Capabilities) bool
+	set func(*Capabilities)
 }
 
-func (c agentCapability) path() string { return "agentCapabilities." + c.leaf }
+func (c capabilityLeaf[Capabilities]) path() string { return c.leafPath }
 
-func (c agentCapability) advertisedBy(n *Negotiated) bool { return c.get(n.AgentCapabilities) }
-
-// A clientCapability is a leaf of [ClientCapabilities]. set is nil where the
-// advertisement is derived from a handler group rather than from one handler.
-type clientCapability struct {
-	leaf string
-	get  func(ClientCapabilities) bool
-	set  func(*ClientCapabilities)
+func (c capabilityLeaf[Capabilities]) advertisedBy(agreed *Negotiated) bool {
+	return c.get(c.of(agreed))
 }
 
-func (c clientCapability) path() string { return "clientCapabilities." + c.leaf }
+func agentLeaf(
+	leaf string,
+	get func(AgentCapabilities) bool,
+	set func(*AgentCapabilities),
+) capabilityLeaf[AgentCapabilities] {
+	return capabilityLeaf[AgentCapabilities]{
+		leafPath: "agentCapabilities." + leaf,
+		of:       func(agreed *Negotiated) AgentCapabilities { return agreed.AgentCapabilities },
+		get:      get,
+		set:      set,
+	}
+}
 
-func (c clientCapability) advertisedBy(n *Negotiated) bool { return c.get(n.ClientCapabilities) }
+func clientLeaf(
+	leaf string,
+	get func(ClientCapabilities) bool,
+	set func(*ClientCapabilities),
+) capabilityLeaf[ClientCapabilities] {
+	return capabilityLeaf[ClientCapabilities]{
+		leafPath: "clientCapabilities." + leaf,
+		of:       func(agreed *Negotiated) ClientCapabilities { return agreed.ClientCapabilities },
+		get:      get,
+		set:      set,
+	}
+}
 
 // gates maps every standard method to its gating capability. A nil entry is a
 // baseline method no capability gates: the lifecycle, a turn, cancellation, and
@@ -60,47 +80,31 @@ var gates = map[string]methodCapability{
 	methodSessionSetConfigOption:   nil,
 	methodCancelRequest:            nil,
 
-	methodSessionLoad: agentCapability{
-		leaf: "loadSession",
-		get:  func(c AgentCapabilities) bool { return c.LoadSession },
-		set:  func(c *AgentCapabilities) { c.LoadSession = true },
-	},
-	methodLogout: agentCapability{
-		leaf: "auth.logout",
-		get:  func(c AgentCapabilities) bool { return hasCapability(c.Auth.Logout) },
-		set:  func(c *AgentCapabilities) { c.Auth.Logout = OptValue(LogoutCapabilities{}) },
-	},
-	methodSessionList: agentCapability{
-		leaf: "sessionCapabilities.list",
-		get:  func(c AgentCapabilities) bool { return hasCapability(c.SessionCapabilities.List) },
-		set:  func(c *AgentCapabilities) { c.SessionCapabilities.List = OptValue(SessionListCapabilities{}) },
-	},
-	methodSessionDelete: agentCapability{
-		leaf: "sessionCapabilities.delete",
-		get:  func(c AgentCapabilities) bool { return hasCapability(c.SessionCapabilities.Delete) },
-		set:  func(c *AgentCapabilities) { c.SessionCapabilities.Delete = OptValue(SessionDeleteCapabilities{}) },
-	},
-	methodSessionResume: agentCapability{
-		leaf: "sessionCapabilities.resume",
-		get:  func(c AgentCapabilities) bool { return hasCapability(c.SessionCapabilities.Resume) },
-		set:  func(c *AgentCapabilities) { c.SessionCapabilities.Resume = OptValue(SessionResumeCapabilities{}) },
-	},
-	methodSessionClose: agentCapability{
-		leaf: "sessionCapabilities.close",
-		get:  func(c AgentCapabilities) bool { return hasCapability(c.SessionCapabilities.Close) },
-		set:  func(c *AgentCapabilities) { c.SessionCapabilities.Close = OptValue(SessionCloseCapabilities{}) },
-	},
+	methodSessionLoad: agentLeaf("loadSession",
+		func(c AgentCapabilities) bool { return c.LoadSession },
+		func(c *AgentCapabilities) { c.LoadSession = true }),
+	methodLogout: agentLeaf("auth.logout",
+		func(c AgentCapabilities) bool { return hasCapability(c.Auth.Logout) },
+		func(c *AgentCapabilities) { c.Auth.Logout = OptValue(LogoutCapabilities{}) }),
+	methodSessionList: agentLeaf("sessionCapabilities.list",
+		func(c AgentCapabilities) bool { return hasCapability(c.SessionCapabilities.List) },
+		func(c *AgentCapabilities) { c.SessionCapabilities.List = OptValue(SessionListCapabilities{}) }),
+	methodSessionDelete: agentLeaf("sessionCapabilities.delete",
+		func(c AgentCapabilities) bool { return hasCapability(c.SessionCapabilities.Delete) },
+		func(c *AgentCapabilities) { c.SessionCapabilities.Delete = OptValue(SessionDeleteCapabilities{}) }),
+	methodSessionResume: agentLeaf("sessionCapabilities.resume",
+		func(c AgentCapabilities) bool { return hasCapability(c.SessionCapabilities.Resume) },
+		func(c *AgentCapabilities) { c.SessionCapabilities.Resume = OptValue(SessionResumeCapabilities{}) }),
+	methodSessionClose: agentLeaf("sessionCapabilities.close",
+		func(c AgentCapabilities) bool { return hasCapability(c.SessionCapabilities.Close) },
+		func(c *AgentCapabilities) { c.SessionCapabilities.Close = OptValue(SessionCloseCapabilities{}) }),
 
-	methodFsReadTextFile: clientCapability{
-		leaf: "fs.readTextFile",
-		get:  func(c ClientCapabilities) bool { return c.Fs.ReadTextFile },
-		set:  func(c *ClientCapabilities) { c.Fs.ReadTextFile = true },
-	},
-	methodFsWriteTextFile: clientCapability{
-		leaf: "fs.writeTextFile",
-		get:  func(c ClientCapabilities) bool { return c.Fs.WriteTextFile },
-		set:  func(c *ClientCapabilities) { c.Fs.WriteTextFile = true },
-	},
+	methodFsReadTextFile: clientLeaf("fs.readTextFile",
+		func(c ClientCapabilities) bool { return c.Fs.ReadTextFile },
+		func(c *ClientCapabilities) { c.Fs.ReadTextFile = true }),
+	methodFsWriteTextFile: clientLeaf("fs.writeTextFile",
+		func(c ClientCapabilities) bool { return c.Fs.WriteTextFile },
+		func(c *ClientCapabilities) { c.Fs.WriteTextFile = true }),
 	// One boolean for all five terminal methods, which is why the handler group
 	// is all five or none.
 	methodTerminalCreate:      terminalCapability,
@@ -112,21 +116,13 @@ var gates = map[string]methodCapability{
 	// The elicitation modes gate a parameter rather than a method; the method is
 	// available when any mode is. elicitation/complete exists only to finish a
 	// URL elicitation, so the url mode gates it.
-	methodElicitationCreate: clientCapability{
-		leaf: "elicitation",
-		get:  anyElicitationMode,
-	},
-	methodElicitationComplete: clientCapability{
-		leaf: elicitationURL.leaf,
-		get:  elicitationURL.advertisedIn,
-	},
+	methodElicitationCreate:   clientLeaf("elicitation", anyElicitationMode, nil),
+	methodElicitationComplete: clientLeaf(elicitationURL.leaf, elicitationURL.advertisedIn, nil),
 }
 
-var terminalCapability = clientCapability{
-	leaf: "terminal",
-	get:  func(c ClientCapabilities) bool { return c.Terminal },
-	set:  func(c *ClientCapabilities) { c.Terminal = true },
-}
+var terminalCapability = clientLeaf("terminal",
+	func(c ClientCapabilities) bool { return c.Terminal },
+	func(c *ClientCapabilities) { c.Terminal = true })
 
 // hasCapability reads a capability object: a present `{}` is the only yes, and
 // both absent and null are no.
@@ -135,46 +131,24 @@ func hasCapability[T any](capability Opt[T]) bool {
 	return present
 }
 
-// advertiseAgent derives an agent's advertisement from the methods it serves.
-func advertiseAgent(serves func(method string) bool) AgentCapabilities {
-	var advertised AgentCapabilities
+// advertise derives one side's advertisement from the methods it serves.
+func advertise[Capabilities any](serves func(method string) bool) Capabilities {
+	var advertised Capabilities
 	for _, method := range slices.Sorted(maps.Keys(gates)) {
-		if capability, ok := gates[method].(agentCapability); ok && serves(method) {
-			capability.set(&advertised)
+		if leaf, ok := gates[method].(capabilityLeaf[Capabilities]); ok && leaf.set != nil && serves(method) {
+			leaf.set(&advertised)
 		}
 	}
 	return advertised
 }
 
-// advertiseClient derives a client's advertisement from the methods it serves.
-func advertiseClient(serves func(method string) bool) ClientCapabilities {
-	var advertised ClientCapabilities
-	for _, method := range slices.Sorted(maps.Keys(gates)) {
-		if capability, ok := gates[method].(clientCapability); ok && capability.set != nil && serves(method) {
-			capability.set(&advertised)
-		}
-	}
-	return advertised
-}
-
-// unservedAgentMethods reports the methods a stated agent advertisement claims
-// that its handlers do not serve, in a stable order.
-func unservedAgentMethods(stated AgentCapabilities, serves func(method string) bool) []string {
+// unservedMethods reports the methods a stated advertisement claims that its
+// handlers do not serve, in a stable order.
+func unservedMethods[Capabilities any](stated Capabilities, serves func(method string) bool) []string {
 	var unserved []string
 	for _, method := range slices.Sorted(maps.Keys(gates)) {
-		if capability, ok := gates[method].(agentCapability); ok && capability.get(stated) && !serves(method) {
-			unserved = append(unserved, capability.path()+" advertises "+method+" without the handler that serves it")
-		}
-	}
-	return unserved
-}
-
-// unservedClientMethods is [unservedAgentMethods] for a client.
-func unservedClientMethods(stated ClientCapabilities, serves func(method string) bool) []string {
-	var unserved []string
-	for _, method := range slices.Sorted(maps.Keys(gates)) {
-		if capability, ok := gates[method].(clientCapability); ok && capability.get(stated) && !serves(method) {
-			unserved = append(unserved, capability.path()+" advertises "+method+" without the handler that serves it")
+		if leaf, ok := gates[method].(capabilityLeaf[Capabilities]); ok && leaf.get(stated) && !serves(method) {
+			unserved = append(unserved, leaf.path()+" advertises "+method+" without the handler that serves it")
 		}
 	}
 	return unserved

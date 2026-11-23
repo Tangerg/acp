@@ -149,13 +149,13 @@ func TestTheClientRefusesAVersionItDoesNotSpeak(t *testing.T) {
 type answersVersion struct {
 	version acp.ProtocolVersion
 
-	mu      sync.Mutex
-	replies []jsonrpc.Message
+	replies chan jsonrpc.Message
 	closed  chan struct{}
 	once    sync.Once
 }
 
 func (t *answersVersion) Connect(context.Context) (acp.Connection, error) {
+	t.replies = make(chan jsonrpc.Message, 1)
 	t.closed = make(chan struct{})
 	return t, nil
 }
@@ -174,30 +174,22 @@ func (t *answersVersion) Write(_ context.Context, message jsonrpc.Message) error
 	if err != nil {
 		return err
 	}
-	t.mu.Lock()
-	t.replies = append(t.replies, decoded)
-	t.mu.Unlock()
-	return nil
+	select {
+	case t.replies <- decoded:
+		return nil
+	default:
+		return errors.New("answersVersion answers one request")
+	}
 }
 
 func (t *answersVersion) Read(ctx context.Context) (jsonrpc.Message, error) {
-	for {
-		t.mu.Lock()
-		if len(t.replies) > 0 {
-			reply := t.replies[0]
-			t.replies = t.replies[1:]
-			t.mu.Unlock()
-			return reply, nil
-		}
-		t.mu.Unlock()
-
-		select {
-		case <-t.closed:
-			return nil, io.EOF
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(time.Millisecond):
-		}
+	select {
+	case reply := <-t.replies:
+		return reply, nil
+	case <-t.closed:
+		return nil, io.EOF
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 

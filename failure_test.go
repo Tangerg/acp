@@ -25,7 +25,7 @@ import (
 // state nothing was ever going to record.
 func TestAResponseThatCannotBeWrittenEndsTheConnection(t *testing.T) {
 	failure := errors.New("the output side is gone")
-	transport := &failingWrites{
+	transport := &failingTransport{
 		failure: failure,
 		// One request, then silence. The read side stays open, which is the case
 		// that used to hang: a connection is only half broken.
@@ -59,7 +59,8 @@ func TestAResponseThatCannotBeWrittenEndsTheConnection(t *testing.T) {
 // still running, and a Close that answered nil would be reporting it as gone.
 func TestATransportThatCannotBeClosedIsReported(t *testing.T) {
 	failure := errors.New("the agent could not be reaped")
-	transport := &failingClose{failure: failure}
+	// Nothing is read or written: the connection is closed as soon as it opens.
+	transport := &failingTransport{closeErr: failure}
 
 	conn, err := testAgent(t, nil).Connect(context.Background(), transport)
 	if err != nil {
@@ -79,82 +80,6 @@ func TestATransportThatCannotBeClosedIsReported(t *testing.T) {
 	}
 }
 
-// failingWrites delivers a fixed script of inbound messages, then blocks. Every
-// write fails.
-type failingWrites struct {
-	failure error
-	inbound []string
-
-	mu     sync.Mutex
-	sent   int
-	closed chan struct{}
-	once   sync.Once
-}
-
-func (t *failingWrites) Connect(context.Context) (acp.Connection, error) {
-	t.closed = make(chan struct{})
-	return t, nil
-}
-
-func (t *failingWrites) Write(context.Context, jsonrpc.Message) error {
-	return t.failure
-}
-
-func (t *failingWrites) Read(ctx context.Context) (jsonrpc.Message, error) {
-	t.mu.Lock()
-	if t.sent < len(t.inbound) {
-		line := t.inbound[t.sent]
-		t.sent++
-		t.mu.Unlock()
-		return jsonrpc.DecodeMessage([]byte(line))
-	}
-	t.mu.Unlock()
-
-	select {
-	case <-t.closed:
-		return nil, io.EOF
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-func (t *failingWrites) Close() error {
-	t.once.Do(func() { close(t.closed) })
-	return nil
-}
-
-// failingClose is a transport that reads nothing, writes nothing, and cannot be
-// released.
-type failingClose struct {
-	failure error
-
-	closed chan struct{}
-	once   sync.Once
-}
-
-func (t *failingClose) Connect(context.Context) (acp.Connection, error) {
-	t.closed = make(chan struct{})
-	return t, nil
-}
-
-func (t *failingClose) Write(context.Context, jsonrpc.Message) error { return nil }
-
-func (t *failingClose) Read(ctx context.Context) (jsonrpc.Message, error) {
-	select {
-	case <-t.closed:
-		return nil, io.EOF
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-func (t *failingClose) Close() error {
-	// The pending read is still released, because that is the one thing Close must
-	// do however badly the rest of it goes.
-	t.once.Do(func() { close(t.closed) })
-	return t.failure
-}
-
 // A response this side cannot write in time ends the connection.
 //
 // The deadline on a response write is this package's own, not a caller's, so its
@@ -165,7 +90,7 @@ func TestAResponseWriteThatTimesOutEndsTheConnection(t *testing.T) {
 		// A peer that asks and then stops reading. The write blocks until the
 		// deadline this package set for it, which is what the test is about; under
 		// the synthetic clock it costs nothing.
-		transport := &scriptedWrites{
+		transport := &failingTransport{
 			inbound: []string{`{"jsonrpc":"2.0","id":1,"method":"session/new",` +
 				`"params":{"cwd":"/w","mcpServers":[]}}`},
 		}
@@ -187,7 +112,7 @@ func TestAResponseWriteThatTimesOutEndsTheConnection(t *testing.T) {
 func TestAClosedOutputWithABlockedInputEndsTheConnection(t *testing.T) {
 	// The handshake goes out, so the agent may send; everything after it is
 	// refused, which is a transport whose output has gone while its input has not.
-	transport := &scriptedWrites{
+	transport := &failingTransport{
 		inbound: []string{`{"jsonrpc":"2.0","id":1,"method":"initialize",` +
 			`"params":{"protocolVersion":1,"clientCapabilities":{}}}`},
 		succeed: 1,
@@ -229,7 +154,7 @@ func TestACallerDeadlineBeforeCommitDoesNotEndTheConnection(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				transport := &scriptedWrites{
+				transport := &failingTransport{
 					inbound: []string{`{"jsonrpc":"2.0","id":1,"method":"initialize",` +
 						`"params":{"protocolVersion":1,"clientCapabilities":{}}}`},
 					succeed:                  1,
@@ -261,7 +186,7 @@ func TestACallerDeadlineBeforeCommitDoesNotEndTheConnection(t *testing.T) {
 
 func TestAWrappedCallerDeadlineEndsTheConnection(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		transport := &scriptedWrites{
+		transport := &failingTransport{
 			inbound: []string{`{"jsonrpc":"2.0","id":1,"method":"initialize",` +
 				`"params":{"protocolVersion":1,"clientCapabilities":{}}}`},
 			succeed:     1,
@@ -283,15 +208,18 @@ func TestAWrappedCallerDeadlineEndsTheConnection(t *testing.T) {
 	})
 }
 
-// scriptedWrites delivers a fixed list of inbound messages and then blocks its
-// reads. The first succeed writes go through; the next one fails with failure or
-// its context, and a recovery test may let later writes through.
-type scriptedWrites struct {
+// failingTransport delivers a fixed list of inbound messages and then blocks its
+// reads until it is closed. The first succeed writes go through; the next one
+// fails with failure, or with its context when failure is nil, and a recovery
+// test may let later writes through. Close reports closeErr, after releasing the
+// pending read as Close must however badly the rest of it goes.
+type failingTransport struct {
 	inbound                  []string
 	succeed                  int
 	failure                  error
 	succeedAfterContextError bool
 	wrapContext              bool
+	closeErr                 error
 
 	mu      sync.Mutex
 	read    int
@@ -300,12 +228,12 @@ type scriptedWrites struct {
 	once    sync.Once
 }
 
-func (t *scriptedWrites) Connect(context.Context) (acp.Connection, error) {
+func (t *failingTransport) Connect(context.Context) (acp.Connection, error) {
 	t.closed = make(chan struct{})
 	return t, nil
 }
 
-func (t *scriptedWrites) Write(ctx context.Context, _ jsonrpc.Message) error {
+func (t *failingTransport) Write(ctx context.Context, _ jsonrpc.Message) error {
 	t.mu.Lock()
 	t.written++
 	attempt := t.written
@@ -327,7 +255,7 @@ func (t *scriptedWrites) Write(ctx context.Context, _ jsonrpc.Message) error {
 	}
 }
 
-func (t *scriptedWrites) Read(ctx context.Context) (jsonrpc.Message, error) {
+func (t *failingTransport) Read(ctx context.Context) (jsonrpc.Message, error) {
 	t.mu.Lock()
 	if t.read < len(t.inbound) {
 		line := t.inbound[t.read]
@@ -345,7 +273,7 @@ func (t *scriptedWrites) Read(ctx context.Context) (jsonrpc.Message, error) {
 	}
 }
 
-func (t *scriptedWrites) Close() error {
+func (t *failingTransport) Close() error {
 	t.once.Do(func() { close(t.closed) })
-	return nil
+	return t.closeErr
 }

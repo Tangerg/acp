@@ -111,14 +111,14 @@ type CreateElicitationParams struct {
 
 // An elicitationScope writes the operation's scope into a mode.
 type elicitationScope interface {
-	apply(mode CreateElicitationRequestValue, params *CreateElicitationParams) error
+	apply(mode CreateElicitationRequestValue, params *CreateElicitationParams)
 }
 
 type sessionScope struct {
 	session SessionID
 }
 
-func (s sessionScope) apply(mode CreateElicitationRequestValue, params *CreateElicitationParams) error {
+func (s sessionScope) apply(mode CreateElicitationRequestValue, params *CreateElicitationParams) {
 	scope := ElicitationSessionScope{SessionID: s.session, ToolCallID: params.ToolCallID}
 	switch mode := mode.(type) {
 	case *ElicitationFormMode:
@@ -126,14 +126,13 @@ func (s sessionScope) apply(mode CreateElicitationRequestValue, params *CreateEl
 	case *ElicitationURLMode:
 		mode.Value = &ElicitationURLModeSession{ElicitationSessionScope: scope}
 	}
-	return nil
 }
 
 type requestScope struct {
 	request jsonrpc.ID
 }
 
-func (s requestScope) apply(mode CreateElicitationRequestValue, _ *CreateElicitationParams) error {
+func (s requestScope) apply(mode CreateElicitationRequestValue, _ *CreateElicitationParams) {
 	scope := ElicitationRequestScope{RequestID: s.request}
 	switch mode := mode.(type) {
 	case *ElicitationFormMode:
@@ -141,7 +140,6 @@ func (s requestScope) apply(mode CreateElicitationRequestValue, _ *CreateElicita
 	case *ElicitationURLMode:
 		mode.Value = &ElicitationURLModeRequest{ElicitationRequestScope: scope}
 	}
-	return nil
 }
 
 // createElicitation sends an elicitation in a scope. The mode is copied before
@@ -161,9 +159,7 @@ func (c *AgentConn) createElicitation(
 		return nil, err
 	}
 	scoped := deepCopy(mode)
-	if scopeErr := scope.apply(scoped, params); scopeErr != nil {
-		return nil, scopeErr
-	}
+	scope.apply(scoped, params)
 	var form *compiledForm
 	if formMode, isForm := scoped.(*ElicitationFormMode); isForm {
 		if form, err = newCompiledForm(formMode.RequestedSchema); err != nil {
@@ -330,74 +326,80 @@ func elicitationModeOf(value CreateElicitationRequestValue) (elicitationMode, bo
 // registerElicitation reserves a URL elicitation's ID in wire order, before its
 // handler can show it, and commits the reservation only when an accepting answer
 // reaches the peer.
-func (c *ClientConn) registerElicitation(call *inboundRequest) registration {
-	request := paramsOf[CreateElicitationRequest](call)
-	url, isURL := request.Value.(*ElicitationURLMode)
-	handlers := c.client.config.Elicitation
-	if !isURL || url == nil || handlers.URL == nil {
-		return dispatched(callHooks{})
-	}
-	reservation, err := c.elicitations.reserve(url.ElicitationID)
-	if errors.Is(err, errElicitationIDInUse) {
-		return answered(nil, newError(ErrorCodeInvalidParams, "%s", err))
-	}
-	if err != nil {
-		return answered(nil, err)
-	}
-	return dispatched(callHooks{finished: func(written any) {
-		if response, ok := written.(*CreateElicitationResponse); ok && response.accepted() {
-			reservation.accept()
-			return
+func registerElicitation(handlers ElicitationHandlers) func(*ClientConn, *inboundRequest) registration {
+	return func(c *ClientConn, call *inboundRequest) registration {
+		request := paramsOf[CreateElicitationRequest](call)
+		url, isURL := request.Value.(*ElicitationURLMode)
+		if !isURL || url == nil || handlers.URL == nil {
+			return dispatched(callHooks{})
 		}
-		reservation.reject()
-	}})
+		reservation, err := c.elicitations.reserve(url.ElicitationID)
+		if errors.Is(err, errElicitationIDInUse) {
+			return answered(nil, newError(ErrorCodeInvalidParams, "%s", err))
+		}
+		if err != nil {
+			return answered(nil, err)
+		}
+		return dispatched(callHooks{finished: func(written any) {
+			if response, ok := written.(*CreateElicitationResponse); ok && response.accepted() {
+				reservation.accept()
+				return
+			}
+			reservation.reject()
+		}})
+	}
 }
 
 // serveElicitation routes an elicitation to the handler for its mode. A form is
 // compiled before the handler sees it and the handler's answer is held to it.
-func (c *ClientConn) serveElicitation(ctx context.Context, call *inboundRequest) (any, error) {
-	request := paramsOf[CreateElicitationRequest](call)
-	handlers := c.client.config.Elicitation
-	switch mode := request.Value.(type) {
-	case *ElicitationFormMode:
-		if handlers.Form == nil {
-			return nil, elicitationForm.refusedInbound()
+func serveElicitation(
+	handlers ElicitationHandlers,
+) func(*ClientConn, context.Context, *inboundRequest, *CreateElicitationRequest) (*CreateElicitationResponse, error) {
+	return func(c *ClientConn, ctx context.Context, _ *inboundRequest, request *CreateElicitationRequest) (
+		*CreateElicitationResponse, error,
+	) {
+		switch mode := request.Value.(type) {
+		case *ElicitationFormMode:
+			if handlers.Form == nil {
+				return nil, elicitationForm.refusedInbound()
+			}
+			form, err := newCompiledForm(mode.RequestedSchema)
+			if err != nil {
+				return nil, newError(ErrorCodeInvalidParams, "%s", err)
+			}
+			response, err := handlers.Form(ctx, c, request, mode)
+			if err != nil || response == nil {
+				return response, err
+			}
+			if bad := form.validateResponse(ctx, response); bad != nil {
+				// The answer violates the peer's valid schema, so the fault is this
+				// handler's rather than the request's.
+				return nil, fmt.Errorf("acp: the form handler's answer is invalid: %w", bad)
+			}
+			return response, nil
+		case *ElicitationURLMode:
+			if handlers.URL == nil {
+				return nil, elicitationURL.refusedInbound()
+			}
+			return handlers.URL(ctx, c, request, mode)
+		default:
+			// The catch-all included: guessing which known mode a future one
+			// resembles would be worse than saying it is not implemented.
+			return nil, newError(ErrorCodeInvalidParams, "the elicitation names a mode this package does not implement")
 		}
-		form, err := newCompiledForm(mode.RequestedSchema)
-		if err != nil {
-			return nil, newError(ErrorCodeInvalidParams, "%s", err)
-		}
-		response, err := handlers.Form(ctx, c, request, mode)
-		if err != nil || response == nil {
-			return response, err
-		}
-		if bad := form.validateResponse(ctx, response); bad != nil {
-			// The answer violates the peer's valid schema, so the fault is this
-			// handler's rather than the request's.
-			return nil, fmt.Errorf("acp: the form handler's answer is invalid: %w", bad)
-		}
-		return response, nil
-	case *ElicitationURLMode:
-		if handlers.URL == nil {
-			return nil, elicitationURL.refusedInbound()
-		}
-		return handlers.URL(ctx, c, request, mode)
-	default:
-		// The catch-all included: guessing which known mode a future one resembles
-		// would be worse than saying it is not implemented.
-		return nil, newError(ErrorCodeInvalidParams, "the elicitation names a mode this package does not implement")
 	}
 }
 
 // serveCompletion clears a URL elicitation and then tells the application.
 // "Clients MUST ignore notifications referencing unknown or already-completed
 // IDs", and only the connection holds the set to tell them apart.
-func (c *ClientConn) serveCompletion(ctx context.Context, notification *CompleteElicitationNotification) {
-	if !c.elicitations.receiveCompletion(notification.ElicitationID) {
-		return
-	}
-	if handlers := c.client.config.Elicitation; handlers.Complete != nil {
-		handlers.Complete(ctx, c, notification)
+func serveCompletion(
+	complete func(context.Context, *ClientConn, *CompleteElicitationNotification),
+) func(*ClientConn, context.Context, *CompleteElicitationNotification) {
+	return func(c *ClientConn, ctx context.Context, notification *CompleteElicitationNotification) {
+		if c.elicitations.receiveCompletion(notification.ElicitationID) && complete != nil {
+			complete(ctx, c, notification)
+		}
 	}
 }
 

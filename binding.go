@@ -2,14 +2,81 @@ package acp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 )
 
-// The serving side of the protocol is two tables, one per peer, mapping each
-// standard method this side serves to how it is served. Construction, the
-// capability advertisement and inbound dispatch all read the same table, so a
-// method served by a handler, advertised by it, and dispatched to it is one row.
+// A methodBinding is how one peer serves one standard method. A peer's rows are
+// built from its configuration, one for each method it has a handler for, and
+// the same set decides the derived advertisement and inbound dispatch: a method
+// is advertised and dispatched to exactly when it has a row.
+type methodBinding[Conn any] struct {
+	// decode reads the params as the method's own type, once, in wire order.
+	decode func(json.RawMessage) (any, error)
+	// register, when set, records a call in wire order before it is served.
+	register func(Conn, *inboundRequest) registration
+	// serve answers a request and notify handles a notification; a row sets the
+	// one its method's shape needs.
+	serve  func(Conn, context.Context, *inboundRequest) (any, error)
+	notify func(Conn, context.Context, any)
+}
+
+// answering binds a request whose answer serve decides. Every request row is
+// built here, so the rule every handler is held to — a response or an error,
+// never neither — has one keeper rather than one per method.
+func answering[Conn, Request, Response any](
+	serve func(Conn, context.Context, *inboundRequest, *Request) (*Response, error),
+) *methodBinding[Conn] {
+	if serve == nil {
+		return nil
+	}
+	return &methodBinding[Conn]{
+		decode: decoderFor[Request],
+		serve: func(conn Conn, ctx context.Context, call *inboundRequest) (any, error) {
+			response, err := serve(conn, ctx, call, paramsOf[Request](call))
+			switch {
+			case err != nil:
+				return nil, err
+			case response == nil:
+				return nil, newError(ErrorCodeInternalError, "handler for method %q returned a nil response", call.method)
+			default:
+				return response, nil
+			}
+		},
+	}
+}
+
+// handled binds a request to an application handler given the connection, or
+// to nothing when the handler is not set.
+func handled[Conn, Request, Response any](
+	handler func(context.Context, Conn, *Request) (*Response, error),
+) *methodBinding[Conn] {
+	if handler == nil {
+		return nil
+	}
+	return answering(func(conn Conn, ctx context.Context, _ *inboundRequest, request *Request) (*Response, error) {
+		return handler(ctx, conn, request)
+	})
+}
+
+// notified binds a notification, which is always served once bound.
+func notified[Conn, Notification any](handle func(Conn, context.Context, *Notification)) *methodBinding[Conn] {
+	return &methodBinding[Conn]{
+		decode: decoderFor[Notification],
+		notify: func(conn Conn, ctx context.Context, params any) {
+			handle(conn, ctx, decodedAs[Notification]("notification", params))
+		},
+	}
+}
+
+// registeredBy adds the wire-order registration a row's calls need.
+func (b *methodBinding[Conn]) registeredBy(register func(Conn, *inboundRequest) registration) *methodBinding[Conn] {
+	if b != nil {
+		b.register = register
+	}
+	return b
+}
 
 // emptyParams stands in for an absent or null params member, both of which the
 // schema permits wherever a method requires no property.
@@ -28,19 +95,24 @@ func decodeParams[Params any](raw json.RawMessage) (*Params, error) {
 	return params, nil
 }
 
-// decoderFor is decodeParams as a binding's decoder.
+// decoderFor is decodeParams as a row's decoder.
 func decoderFor[Params any](raw json.RawMessage) (any, error) {
 	return decodeParams[Params](raw)
 }
 
-// paramsOf returns a call's decoded params. The call's binding decoded them as
-// Params, so a mismatch is a defect in the binding table rather than in a peer.
+// paramsOf returns a call's decoded params.
 func paramsOf[Params any](call *inboundRequest) *Params {
-	params, ok := call.params.(*Params)
+	return decodedAs[Params](call.method, call.params)
+}
+
+// decodedAs asserts params its row decoded as Params, so a mismatch is a defect
+// in the row rather than in a peer.
+func decodedAs[Params any](owner string, params any) *Params {
+	typed, ok := params.(*Params)
 	if !ok {
-		panic(fmt.Sprintf("acp: %s params are %T, not %T", call.method, call.params, params))
+		panic(fmt.Sprintf("acp: %s params are %T, not %T", owner, params, typed))
 	}
-	return params
+	return typed
 }
 
 // rawParamsOf returns an extension call's undecoded params.
@@ -52,30 +124,8 @@ func rawParamsOf(call *inboundRequest) json.RawMessage {
 	return params
 }
 
-// invalidParams answers params that do not decode as the method's type.
-func invalidParams(method string, err error) *Error {
-	return newError(ErrorCodeInvalidParams, "params for method %q are invalid: %s", method, err)
-}
-
-func methodNotImplemented(method string) *Error {
-	return newError(ErrorCodeMethodNotFound, "method %q is not implemented", method)
-}
-
-// handlerAnswer turns a typed handler result into an answer, refusing the nil
-// response a handler is not permitted to return rather than inventing one.
-func handlerAnswer[Response any](method string, response *Response, err error) (any, error) {
-	switch {
-	case err != nil:
-		return nil, err
-	case response == nil:
-		return nil, newError(ErrorCodeInternalError, "handler for method %q returned a nil response", method)
-	default:
-		return response, nil
-	}
-}
-
 // A sessionScoped request names the session it belongs to, which is what lets
-// one binding hand a handle to every handler that needs one.
+// one row hand a handle to every handler that needs one.
 type sessionScoped interface {
 	sessionID() SessionID
 }

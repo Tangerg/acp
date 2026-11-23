@@ -81,7 +81,9 @@ answer, err := session.Prompt(ctx, &acp.PromptParams{
 ```
 
 If `NewSession` returns `acp.ErrAuthRequired`, choose one of the authentication
-methods from `conn.Negotiated().AuthMethods`, authenticate, and retry.
+methods from `conn.Negotiated().AuthMethods`, authenticate, and retry. An
+identifier the agent did not offer, or one naming a terminal method, is refused
+with `acp.ErrNotAdvertised` before anything is sent.
 
 ## Start an agent
 
@@ -155,10 +157,13 @@ Five protocol rules affect every integration:
 - **Capabilities grant authority**: the connection rejects outbound and inbound
   calls that were not advertised, and refuses to send a value the peer never
   advertised it could take: prompt content, MCP transports, system prompts,
-  `additionalDirectories`, boolean configuration options, and notice,
-  compaction, plan and subagent updates. A local refusal wraps
-  `acp.ErrNotAdvertised`, so it cannot be mistaken for the peer's answer.
-  Construction also rejects capabilities that lack matching handlers
+  `additionalDirectories`, boolean configuration options, notice,
+  compaction, plan and subagent updates, and an authentication method the agent
+  did not offer. A local refusal wraps `acp.ErrNotAdvertised`, so it cannot be
+  mistaken for the peer's answer. Construction also rejects capabilities that
+  lack matching handlers
+- **A handler answers with a response or an error**: one returning neither is
+  answered `-32603` on its behalf, never with a `null` result
 
 Every path the protocol carries must be absolute. This package refuses to send a
 relative one, and accepts either POSIX or Windows form because the path describes

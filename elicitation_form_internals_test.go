@@ -13,18 +13,18 @@ import (
 
 func TestFormSchemaIsCompiledBeforeTheHandlerRuns(t *testing.T) {
 	called := false
-	conn := &ClientConn{client: &Client{config: ClientConfig{Elicitation: &ElicitationHandlers{
+	serve := serveElicitation(ElicitationHandlers{
 		Form: func(context.Context, *ClientConn, *CreateElicitationRequest, *ElicitationFormMode) (*CreateElicitationResponse, error) {
 			called = true
 			return &CreateElicitationResponse{Value: &CreateElicitationResponseDecline{}}, nil
 		},
-	}}}}
+	})
 	params, decodeErr := decodeParams[CreateElicitationRequest](json.RawMessage(
 		`{"mode":"form","sessionId":"s","message":"form","requestedSchema":{"type":"object","properties":{"field":{"type":"string","pattern":"["}}}}`))
 	if decodeErr != nil {
 		t.Fatal(decodeErr)
 	}
-	_, err := conn.serveElicitation(t.Context(), &inboundRequest{method: methodElicitationCreate, params: params})
+	_, err := serve(newTestClientConn(t, ClientConfig{}), t.Context(), nil, params)
 	if called {
 		t.Error("an invalid form reached the application handler")
 	}

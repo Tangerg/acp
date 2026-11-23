@@ -2,13 +2,10 @@ package acp
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
-
-	"github.com/Tangerg/acp/jsonrpc"
 )
 
 // AgentConfig defines an agent's identity, handlers and capability
@@ -84,13 +81,19 @@ type AgentConfig struct {
 // An Agent owns the handlers and capabilities its connections share. One agent
 // may serve many clients.
 type Agent struct {
-	config       AgentConfig
+	info         *Implementation
+	meta         Meta
+	logger       *slog.Logger
+	limits       Limits
 	capabilities AgentCapabilities
 	auth         authenticationMethods
+	dispatcher   *dispatcher[*AgentConn]
 	conns        registry[*AgentConn]
 }
 
 // NewAgent builds an agent, or reports why the configuration cannot be served.
+// The handlers are bound here, so changing the configuration afterwards changes
+// nothing a running agent advertises or serves.
 func NewAgent(config *AgentConfig) (*Agent, error) {
 	if config == nil {
 		config = new(AgentConfig)
@@ -101,39 +104,75 @@ func NewAgent(config *AgentConfig) (*Agent, error) {
 	if err := config.Limits.check(); err != nil {
 		return nil, err
 	}
-	capabilities, err := config.resolveCapabilities()
-	if err != nil {
-		return nil, err
-	}
 	auth, err := newAuthenticationMethods(config.AuthMethods, config.Authenticate != nil)
 	if err != nil {
 		return nil, err
 	}
-	cloned := *config
-	cloned.Info = deepCopy(config.Info)
-	cloned.Meta = deepCopy(config.Meta)
-	cloned.AuthMethods = nil
-	cloned.Capabilities = nil
-	return &Agent{config: cloned, capabilities: capabilities, auth: auth}, nil
-}
-
-// serves reports whether the configuration serves a standard method.
-func (a *AgentConfig) serves(method string) bool {
-	if binding, ok := agentMethods[method]; ok {
-		return binding.served(a)
+	dispatcher := newDispatcher(sideAgent, config.methods(), config.CallFallback, config.NotifyFallback)
+	capabilities, err := config.resolveCapabilities(dispatcher.serves)
+	if err != nil {
+		return nil, err
 	}
-	return method == methodSessionCancel
+	return &Agent{
+		info:         deepCopy(config.Info),
+		meta:         deepCopy(config.Meta),
+		logger:       config.Logger,
+		limits:       config.Limits,
+		capabilities: capabilities,
+		auth:         auth,
+		dispatcher:   dispatcher,
+	}, nil
 }
 
-func (a *AgentConfig) resolveCapabilities() (AgentCapabilities, error) {
+// methods binds every standard method an agent serves to this configuration's
+// handlers. A handler that is not set leaves its method unbound.
+func (a *AgentConfig) methods() map[string]*methodBinding[*AgentConn] {
+	return map[string]*methodBinding[*AgentConn]{
+		methodInitialize: {
+			decode:   decoderFor[InitializeRequest],
+			register: (*AgentConn).registerInitialize,
+		},
+		methodAuthenticate:           answering(serveAuthenticate(a.Authenticate)),
+		methodLogout:                 handled(a.Logout),
+		methodSessionNew:             handled(a.NewSession),
+		methodSessionList:            handled(a.ListSessions),
+		methodSessionLoad:            handledInSession(a.LoadSession),
+		methodSessionResume:          handledInSession(a.ResumeSession),
+		methodSessionSetMode:         handledInSession(a.SetMode),
+		methodSessionSetConfigOption: handledInSession(a.SetConfigOption),
+		methodSessionDelete:          handledInSession(a.DeleteSession),
+		methodSessionClose:           handledInSession(closeSession(a.CloseSession)),
+		methodSessionPrompt:          answering(servePrompt(a.Prompt)).registeredBy((*AgentConn).registerPrompt),
+		methodSessionCancel:          notified(serveCancel(a.Cancel)),
+	}
+}
+
+func (a *AgentConfig) resolveCapabilities(serves func(method string) bool) (AgentCapabilities, error) {
 	if a.Capabilities == nil {
-		return advertiseAgent(a.serves), nil
+		return advertise[AgentCapabilities](serves), nil
 	}
 	stated := deepCopy(*a.Capabilities)
-	if unserved := unservedAgentMethods(stated, a.serves); len(unserved) > 0 {
+	if unserved := unservedMethods(stated, serves); len(unserved) > 0 {
 		return AgentCapabilities{}, fmt.Errorf("acp: AgentConfig.Capabilities: %v", unserved)
 	}
 	return stated, nil
+}
+
+// handledInSession binds a session-scoped request to a handler given the
+// session's handle, or to nothing when the handler is not set.
+func handledInSession[Request any, Scoped interface {
+	*Request
+	sessionScoped
+}, Response any](
+	handler func(context.Context, *AgentSession, Scoped) (*Response, error),
+) *methodBinding[*AgentConn] {
+	if handler == nil {
+		return nil
+	}
+	return answering(func(c *AgentConn, ctx context.Context, _ *inboundRequest, request *Request) (*Response, error) {
+		scoped := Scoped(request)
+		return handler(ctx, c.session(scoped.sessionID()), scoped)
+	})
 }
 
 // Connect accepts a connection and returns once its read loop runs, before the
@@ -156,7 +195,8 @@ func (a *Agent) Connect(ctx context.Context, transport Transport) (*AgentConn, e
 func newAgentConn(agent *Agent, stream Connection) *AgentConn {
 	conn := &AgentConn{agent: agent}
 	conn.connection = connection{negotiation: newNegotiation()}
-	conn.link = newLink(stream, conn, agent.config.Logger, agent.config.Limits)
+	served := &dispatch[*AgentConn]{dispatcher: agent.dispatcher, conn: conn, negotiation: conn.negotiation}
+	conn.link = newLink(stream, served, agent.logger, agent.limits)
 	conn.elicitations = newURLElicitations(conn.limits.OutstandingElicitations)
 	return conn
 }
@@ -260,105 +300,6 @@ func (c *AgentConn) Notify(ctx context.Context, method string, params any) error
 	return c.extensionNotify(ctx, method, params)
 }
 
-// An agentMethod is how an agent serves one standard method.
-type agentMethod struct {
-	served func(*AgentConfig) bool
-	decode func(json.RawMessage) (any, error)
-	// register, when set, records the call in wire order.
-	register func(*AgentConn, *inboundRequest) registration
-	serve    func(*AgentConn, context.Context, *inboundRequest) (any, error)
-}
-
-func always(*AgentConfig) bool { return true }
-
-func agentConnMethod[Request, Response any](
-	pick func(*AgentConfig) func(context.Context, *AgentConn, *Request) (*Response, error),
-) agentMethod {
-	return agentMethod{
-		served: func(config *AgentConfig) bool { return pick(config) != nil },
-		decode: decoderFor[Request],
-		serve: func(c *AgentConn, ctx context.Context, call *inboundRequest) (any, error) {
-			response, err := pick(&c.agent.config)(ctx, c, paramsOf[Request](call))
-			return handlerAnswer(call.method, response, err)
-		},
-	}
-}
-
-func agentSessionMethod[Request any, Scoped interface {
-	*Request
-	sessionScoped
-}, Response any](
-	pick func(*AgentConfig) func(context.Context, *AgentSession, Scoped) (*Response, error),
-) agentMethod {
-	return agentMethod{
-		served: func(config *AgentConfig) bool { return pick(config) != nil },
-		decode: decoderFor[Request],
-		serve: func(c *AgentConn, ctx context.Context, call *inboundRequest) (any, error) {
-			request := Scoped(paramsOf[Request](call))
-			response, err := pick(&c.agent.config)(ctx, c.session(request.sessionID()), request)
-			return handlerAnswer(call.method, response, err)
-		},
-	}
-}
-
-var agentMethods = map[string]agentMethod{
-	methodInitialize: {
-		served:   always,
-		decode:   decoderFor[InitializeRequest],
-		register: (*AgentConn).registerInitialize,
-	},
-	methodAuthenticate: {
-		served: func(config *AgentConfig) bool { return config.Authenticate != nil },
-		decode: decoderFor[AuthenticateRequest],
-		serve:  (*AgentConn).serveAuthenticate,
-	},
-	methodSessionNew: agentConnMethod(func(config *AgentConfig) func(
-		context.Context, *AgentConn, *NewSessionRequest) (*NewSessionResponse, error) {
-		return config.NewSession
-	}),
-	methodLogout: agentConnMethod(func(config *AgentConfig) func(
-		context.Context, *AgentConn, *LogoutRequest) (*LogoutResponse, error) {
-		return config.Logout
-	}),
-	methodSessionList: agentConnMethod(func(config *AgentConfig) func(
-		context.Context, *AgentConn, *ListSessionsRequest) (*ListSessionsResponse, error) {
-		return config.ListSessions
-	}),
-	methodSessionLoad: agentSessionMethod(func(config *AgentConfig) func(
-		context.Context, *AgentSession, *LoadSessionRequest) (*LoadSessionResponse, error) {
-		return config.LoadSession
-	}),
-	methodSessionResume: agentSessionMethod(func(config *AgentConfig) func(
-		context.Context, *AgentSession, *ResumeSessionRequest) (*ResumeSessionResponse, error) {
-		return config.ResumeSession
-	}),
-	methodSessionSetMode: agentSessionMethod(func(config *AgentConfig) func(
-		context.Context, *AgentSession, *SetSessionModeRequest) (*SetSessionModeResponse, error) {
-		return config.SetMode
-	}),
-	methodSessionSetConfigOption: agentSessionMethod(func(config *AgentConfig) func(
-		context.Context, *AgentSession, *SetSessionConfigOptionRequest) (*SetSessionConfigOptionResponse, error) {
-		return config.SetConfigOption
-	}),
-	methodSessionDelete: agentSessionMethod(func(config *AgentConfig) func(
-		context.Context, *AgentSession, *DeleteSessionRequest) (*DeleteSessionResponse, error) {
-		return config.DeleteSession
-	}),
-	methodSessionClose: agentSessionMethod(func(config *AgentConfig) func(
-		context.Context, *AgentSession, *CloseSessionRequest) (*CloseSessionResponse, error) {
-		if config.CloseSession == nil {
-			return nil
-		}
-		return closeSession(config.CloseSession)
-	}),
-	methodSessionPrompt: {
-		served:   always,
-		decode:   decoderFor[PromptRequest],
-		register: (*AgentConn).registerPrompt,
-		serve:    (*AgentConn).servePrompt,
-	},
-}
-
 // closeSession cancels the session's turn before the handler frees it: the
 // schema says the agent "must cancel any ongoing work related to the session
 // (treat it as if session/cancel was called)", and the turn is the connection's.
@@ -367,88 +308,12 @@ var agentMethods = map[string]agentMethod{
 func closeSession(
 	handler func(context.Context, *AgentSession, *CloseSessionRequest) (*CloseSessionResponse, error),
 ) func(context.Context, *AgentSession, *CloseSessionRequest) (*CloseSessionResponse, error) {
+	if handler == nil {
+		return nil
+	}
 	return func(ctx context.Context, session *AgentSession, request *CloseSessionRequest) (*CloseSessionResponse, error) {
 		session.conn.cancelTurn(session.id)
 		return handler(ctx, session, request)
-	}
-}
-
-// register decides a call in wire order: initialize before anything else, the
-// capability gate, the method's handler, and its params, decoded once here.
-func (c *AgentConn) register(call *inboundRequest, request *jsonrpc.Request) registration {
-	binding, served := agentMethods[request.Method]
-	if request.Method != methodInitialize {
-		agreed := c.negotiation.agreed()
-		if agreed == nil {
-			return refuseBeforeInitialize(request.Method)
-		}
-		if isStandardMethod(request.Method) {
-			if refusal := agreed.refusesInbound(request.Method); refusal != nil {
-				return answered(nil, refusal)
-			}
-		}
-	}
-	if !served {
-		if isStandardMethod(request.Method) {
-			return answered(nil, methodNotImplemented(request.Method))
-		}
-		call.params = request.Params
-		return dispatched(callHooks{})
-	}
-	if !binding.served(&c.agent.config) {
-		return answered(nil, methodNotImplemented(request.Method))
-	}
-	params, err := binding.decode(request.Params)
-	if err != nil {
-		return answered(nil, invalidParams(request.Method, err))
-	}
-	call.params = params
-	if binding.register != nil {
-		return binding.register(c, call)
-	}
-	return dispatched(callHooks{})
-}
-
-// serve runs a dispatched call and holds its response to the agreement, which
-// covers responses whose caller has already stopped waiting.
-func (c *AgentConn) serve(ctx context.Context, call *inboundRequest) (any, error) {
-	binding, standard := agentMethods[call.method]
-	if !standard {
-		return serveExtensionCall(ctx, c, call, c.agent.config.CallFallback)
-	}
-	response, err := binding.serve(c, ctx, call)
-	if err != nil {
-		return nil, err
-	}
-	if checked, ok := response.(outboundChecked); ok {
-		if invalid := checked.checkOutbound(c.negotiation.agreed()); invalid != nil {
-			c.logger.Error("a handler's response cannot be sent under the negotiated capabilities",
-				slog.String("method", call.method), slog.Any("error", invalid))
-			return nil, newError(ErrorCodeInternalError, "handler for method %q returned a response the "+
-				"negotiated capabilities do not permit", call.method)
-		}
-	}
-	return response, nil
-}
-
-func (c *AgentConn) serveNotification(ctx context.Context, request *jsonrpc.Request) error {
-	if c.negotiation.agreed() == nil {
-		return fmt.Errorf("acp: notification %q arrived before initialize", request.Method)
-	}
-	switch request.Method {
-	case methodSessionCancel:
-		params, err := decodeParams[CancelNotification](request.Params)
-		if err != nil {
-			return invalidParams(request.Method, err)
-		}
-		c.serveCancel(ctx, params)
-		return nil
-	default:
-		if isStandardMethod(request.Method) {
-			return methodNotImplemented(request.Method)
-		}
-		serveExtensionNotification(ctx, c, request.Method, request.Params, c.agent.config.NotifyFallback)
-		return nil
 	}
 }
 
@@ -466,11 +331,11 @@ func (c *AgentConn) registerInitialize(call *inboundRequest) registration {
 		AgentCapabilities: deepCopy(agent.capabilities),
 		AuthMethods:       agent.auth.offeredTo(request.ClientCapabilities),
 	}
-	if info := agent.config.Info; info != nil {
-		response.AgentInfo = OptValue(deepCopy(*info))
+	if agent.info != nil {
+		response.AgentInfo = OptValue(deepCopy(*agent.info))
 	}
-	if agent.config.Meta.Len() > 0 {
-		response.Meta = OptValue(deepCopy(agent.config.Meta))
+	if agent.meta.Len() > 0 {
+		response.Meta = OptValue(deepCopy(agent.meta))
 	}
 	c.negotiation.accept(Negotiated{
 		ClientCapabilities: request.ClientCapabilities,
@@ -490,13 +355,20 @@ func (c *AgentConn) registerInitialize(call *inboundRequest) registration {
 
 // serveAuthenticate holds the identifier to what this agent offered before its
 // handler is asked to authenticate it.
-func (c *AgentConn) serveAuthenticate(ctx context.Context, call *inboundRequest) (any, error) {
-	request := paramsOf[AuthenticateRequest](call)
-	if refusal := c.negotiation.agreed().authenticates(request.MethodID); refusal != nil {
-		return nil, refusal
+func serveAuthenticate(
+	handler func(context.Context, *AgentConn, *AuthenticateRequest) (*AuthenticateResponse, error),
+) func(*AgentConn, context.Context, *inboundRequest, *AuthenticateRequest) (*AuthenticateResponse, error) {
+	if handler == nil {
+		return nil
 	}
-	response, err := c.agent.config.Authenticate(ctx, c, request)
-	return handlerAnswer(call.method, response, err)
+	return func(c *AgentConn, ctx context.Context, _ *inboundRequest, request *AuthenticateRequest) (
+		*AuthenticateResponse, error,
+	) {
+		if refusal := c.negotiation.agreed().authenticates(request.MethodID); refusal != nil {
+			return nil, newError(ErrorCodeInvalidParams, "%s", refusal)
+		}
+		return handler(ctx, c, request)
+	}
 }
 
 // registerPrompt claims the session's turn in wire order, so a cancellation that
@@ -518,28 +390,37 @@ func (c *AgentConn) registerPrompt(call *inboundRequest) registration {
 // servePrompt answers a cancelled turn with the cancelled stop reason whatever
 // its handler returned: model and tool libraries abort with their context's
 // error, and the protocol warns against relaying that as -32603.
-func (c *AgentConn) servePrompt(ctx context.Context, call *inboundRequest) (any, error) {
-	request := paramsOf[PromptRequest](call)
-	// The turn is the one registration claimed: a handler that edits its request
-	// cannot redirect the commit to another session.
-	session := request.SessionID
-	response, err := c.agent.config.Prompt(ctx, c.session(session), request)
-	if c.turns.commit(session, call) {
+func servePrompt(
+	handler func(context.Context, *AgentSession, *PromptRequest) (*PromptResponse, error),
+) func(*AgentConn, context.Context, *inboundRequest, *PromptRequest) (*PromptResponse, error) {
+	return func(c *AgentConn, ctx context.Context, call *inboundRequest, request *PromptRequest) (
+		*PromptResponse, error,
+	) {
+		// The turn is the one registration claimed: a handler that edits its
+		// request cannot redirect the commit to another session.
+		session := request.SessionID
+		response, err := handler(ctx, c.session(session), request)
+		if !c.turns.commit(session, call) {
+			return response, err
+		}
 		if response == nil {
 			response = new(PromptResponse)
 		}
 		response.StopReason = StopReasonCancelled
 		return response, nil
 	}
-	return handlerAnswer(call.method, response, err)
 }
 
 // serveCancel runs in wire order, behind the responses the client sent before it,
 // so the agent's own calls return their answers rather than the cancellation.
-func (c *AgentConn) serveCancel(ctx context.Context, notification *CancelNotification) {
-	c.cancelTurn(notification.SessionID)
-	if handler := c.agent.config.Cancel; handler != nil {
-		handler(ctx, c.session(notification.SessionID), notification)
+func serveCancel(
+	handler func(context.Context, *AgentSession, *CancelNotification),
+) func(*AgentConn, context.Context, *CancelNotification) {
+	return func(c *AgentConn, ctx context.Context, notification *CancelNotification) {
+		c.cancelTurn(notification.SessionID)
+		if handler != nil {
+			handler(ctx, c.session(notification.SessionID), notification)
+		}
 	}
 }
 

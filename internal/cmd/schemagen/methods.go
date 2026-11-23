@@ -22,6 +22,9 @@ var sideConstants = map[string]string{
 	sideNameProtocol: "sideProtocol",
 }
 
+// metaVersion is the meta.json layout this generator reads.
+const metaVersion = 1
+
 // A MethodTable is meta.json: the protocol's method directory, keyed by an
 // identifier and valued by the wire name.
 type MethodTable struct {
@@ -38,6 +41,14 @@ const (
 	shapeRequest methodShape = iota
 	shapeNotification
 )
+
+// goConstant is the name the emitted table gives the shape.
+func (s methodShape) goConstant() string {
+	if s == shapeNotification {
+		return "shapeNotification"
+	}
+	return "shapeRequest"
+}
 
 // A Method is one entry of the generated table.
 type Method struct {
@@ -70,8 +81,8 @@ const sessionIDDefinition = "SessionId"
 // the schema's own annotations and routing unions. A disagreement between them
 // stops generation.
 func planMethods(doc *Document, table *MethodTable) ([]*Method, error) {
-	if table.Version != 1 {
-		return nil, fmt.Errorf("meta.json declares version %d, and only 1 is implemented", table.Version)
+	if table.Version != metaVersion {
+		return nil, fmt.Errorf("meta.json declares version %d, and only %d is implemented", table.Version, metaVersion)
 	}
 
 	byName := make(map[string]*Method)
@@ -261,11 +272,8 @@ func emitMethods(methods []*Method, table *MethodTable) ([]byte, error) {
 	}))
 	out.WriteString("var standardMethods = map[string]methodDescriptor{\n")
 	for _, method := range methods {
-		shape := "shapeRequest"
-		if method.Shape == shapeNotification {
-			shape = "shapeNotification"
-		}
-		fmt.Fprintf(&out, "\t%s: {side: %s, shape: %s", method.GoName, sideConstants[method.Side], shape)
+		fmt.Fprintf(&out, "\t%s: {side: %s, shape: %s", method.GoName, sideConstants[method.Side],
+			method.Shape.goConstant())
 		if method.RequiresSessionID {
 			out.WriteString(", requiresSessionID: true")
 		}

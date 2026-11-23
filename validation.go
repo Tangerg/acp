@@ -326,8 +326,7 @@ func (x *RequestPermissionRequest) checkOutbound(*Negotiated) error {
 	if err := checkToolCallPaths(content, locations); err != nil {
 		return err
 	}
-	_, err := ownPermissionOptions(x.Options)
-	return err
+	return distinctOptions(x.Options)
 }
 
 func (x *ReadTextFileRequest) checkOutbound(*Negotiated) error {

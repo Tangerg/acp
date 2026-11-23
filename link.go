@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"time"
 	"unicode/utf8"
 
 	"github.com/Tangerg/acp/jsonrpc"
@@ -24,7 +23,9 @@ type side interface {
 	// serve answers one dispatched call on a goroutine of its own.
 	serve(ctx context.Context, call *inboundRequest) (any, error)
 
-	// serveNotification handles one notification on the ordered delivery loop.
+	// serveNotification handles one notification on the ordered delivery loop,
+	// or reports why it was refused. A notification has no response to carry a
+	// refusal, so it is only logged.
 	serveNotification(ctx context.Context, request *jsonrpc.Request) error
 }
 
@@ -147,7 +148,7 @@ func (l *link) undecodable(decodeErr *jsonrpc.DecodeError) {
 	}
 	l.logger.Warn("an undecodable message was refused", slog.Any("error", decodeErr))
 	l.life.start(func() {
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(l.life.ctx), responseWriteTimeout)
+		ctx, cancel := l.life.detached()
 		defer cancel()
 		l.writeErrorResponse(ctx, jsonrpc.NullID(), &Error{Code: code, Message: code.String()})
 	})
@@ -190,18 +191,13 @@ func (l *link) admitRequest(request *jsonrpc.Request) bool {
 		return true
 	}
 	if !request.IsCall() {
-		if descriptor, standard := standardMethods[request.Method]; standard && descriptor.shape == shapeRequest {
-			l.logger.Warn("a request method arrived as a notification and was dropped",
-				slog.String("method", request.Method))
-			return true
-		}
 		return l.enqueue(delivery{message: request})
 	}
 
 	call, err := l.requests.accept(l.life.ctx, request)
 	if errors.Is(err, errDuplicateRequestID) {
 		l.life.start(func() {
-			ctx, cancel := context.WithTimeout(context.WithoutCancel(l.life.ctx), responseWriteTimeout)
+			ctx, cancel := l.life.detached()
 			defer cancel()
 			l.writeErrorResponse(ctx, request.ID, newError(ErrorCodeInvalidRequest, "%s", err))
 		})
@@ -263,7 +259,7 @@ func (l *link) deliver(pending delivery) {
 			return
 		}
 		if err := l.side.serveNotification(pending.serveContext(l.life.ctx), message); err != nil {
-			l.logger.Error("handling a notification failed",
+			l.logger.Warn("a notification was refused",
 				slog.String("method", message.Method), slog.Any("error", err))
 		}
 	case *jsonrpc.Response:
@@ -274,10 +270,7 @@ func (l *link) deliver(pending delivery) {
 }
 
 func (l *link) deliverCall(call *inboundRequest, request *jsonrpc.Request) {
-	entry := l.shapeRegistration(request)
-	if entry.automatic == nil {
-		entry = l.side.register(call, request)
-	}
+	entry := l.side.register(call, request)
 	l.life.start(func() {
 		defer call.finish()
 		result, err := l.answer(call, entry)
@@ -316,17 +309,6 @@ func (l *link) answer(call *inboundRequest, entry registration) (any, error) {
 // before its handler could run; nothing is written for it.
 var errAlreadyAnswered = errors.New("acp: the request was already answered")
 
-// shapeRegistration refuses a standard notification sent with an id: the method
-// exists, but not as a request, which is method-not-found.
-func (l *link) shapeRegistration(request *jsonrpc.Request) registration {
-	descriptor, standard := standardMethods[request.Method]
-	if standard && descriptor.shape == shapeNotification {
-		return answered(nil, newError(ErrorCodeMethodNotFound,
-			"method %q is a notification and has no request form", request.Method))
-	}
-	return registration{}
-}
-
 // cancelInflight acts on a $/cancel_request. One for a request already answered
 // is not an error: the peer gave up as the answer was being written.
 func (l *link) cancelInflight(request *jsonrpc.Request) {
@@ -363,14 +345,6 @@ func (l *link) wait() error { return l.life.wait() }
 
 // over is closed once delivery has finished.
 func (l *link) over() <-chan struct{} { return l.life.delivered }
-
-// cancelRequestTimeout bounds a $/cancel_request, whose caller has already stopped
-// waiting and must not be delayed by a degraded peer.
-const cancelRequestTimeout = 5 * time.Second
-
-// responseWriteTimeout bounds every write the connection makes on its own behalf,
-// because nobody is waiting locally to bound a peer that stopped reading.
-const responseWriteTimeout = 5 * time.Second
 
 // send registers and writes a call. It is separate from await because some calls
 // settle connection-owned state after their caller stops waiting.
@@ -497,7 +471,7 @@ func (l *link) notify(ctx context.Context, method string, params any) error {
 
 func (l *link) cancelRemotely(id jsonrpc.ID) {
 	l.life.start(func() {
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(l.life.ctx), cancelRequestTimeout)
+		ctx, cancel := l.life.detached()
 		defer cancel()
 		params := &cancelRequestNotification{RequestID: id}
 		if err := l.notify(ctx, methodCancelRequest, params); err != nil && !errors.Is(err, ErrConnectionClosed) {
@@ -541,7 +515,7 @@ func (l *link) claimResponse(call *inboundRequest, result any, handlerErr error)
 }
 
 func (l *link) writeResponse(call *inboundRequest, claim requestClaim, result any, handlerErr error) any {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(l.life.ctx), responseWriteTimeout)
+	ctx, cancel := l.life.detached()
 	defer cancel()
 	if err := call.awaitSending(ctx); err != nil {
 		l.endReading(fmt.Errorf("acp: awaiting request-scoped writes before responding: %w", err))

@@ -19,7 +19,7 @@ func TestSessionCancellationCannotOvertakeItsPromptWrite(t *testing.T) {
 	for name, deadline := range map[string]bool{"ordered": false, "deadline": true} {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				conn := newTestClientConn()
+				conn := newTestClientConn(t, ClientConfig{})
 				stream := &promptOrderStream{
 					calls: conn.calls, entered: make(chan struct{}), resume: make(chan struct{}),
 					written: make(chan string, 2),
@@ -71,7 +71,7 @@ func TestSessionCancellationCannotOvertakeItsPromptWrite(t *testing.T) {
 }
 
 func TestAlreadyCancelledCancelContextDoesNotChangeTheTurn(t *testing.T) {
-	conn := newTestClientConn()
+	conn := newTestClientConn(t, ClientConfig{})
 	turn, _ := conn.turns.begin(t.Context(), "session")
 	defer turn.complete()
 	ctx, cancel := context.WithCancel(t.Context())
@@ -117,7 +117,7 @@ func (s *promptOrderStream) Write(_ context.Context, message jsonrpc.Message) er
 // A permission request that arrives while a cancellation is running belongs to a
 // turn that is already over, so it is answered cancelled without a dialog.
 func TestAPermissionRequestArrivingDuringCancellationIsAnsweredCancelled(t *testing.T) {
-	conn := newTestClientConn()
+	conn := newTestClientConn(t, ClientConfig{})
 	const session SessionID = "sess-1"
 	turn, err := conn.turns.begin(t.Context(), session)
 	if err != nil {
@@ -155,7 +155,7 @@ func TestAPermissionRequestArrivingDuringCancellationIsAnsweredCancelled(t *test
 }
 
 func TestACancellationOutsideATurnDoesNotClaimPermissionRequests(t *testing.T) {
-	conn := newTestClientConn()
+	conn := newTestClientConn(t, ClientConfig{})
 	const session SessionID = "sess-1"
 
 	cancellation := conn.turns.beginCancellation(session)
@@ -178,7 +178,7 @@ func TestACancellationOutsideATurnDoesNotClaimPermissionRequests(t *testing.T) {
 // cancellation that arrived first found nothing on record and did nothing, and the
 // turn then ran to completion having never been told.
 func TestACancellationBeforeTheHandlerStartsIsNotLost(t *testing.T) {
-	conn := newTestAgentConn()
+	conn := newTestAgentConn(t)
 	const session SessionID = "sess-1"
 	id := jsonrpc.Int64ID(1)
 
@@ -189,7 +189,7 @@ func TestACancellationBeforeTheHandlerStartsIsNotLost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("accepting the request: %v", err)
 	}
-	if entry := conn.register(call, rawRequest(id, methodSessionPrompt, promptParams)); entry.automatic != nil {
+	if entry := conn.side.register(call, rawRequest(id, methodSessionPrompt, promptParams)); entry.automatic != nil {
 		t.Fatalf("the prompt was answered automatically although the session had no turn: %v", entry.automatic.err)
 	}
 
@@ -207,7 +207,7 @@ func TestACancellationBeforeTheHandlerStartsIsNotLost(t *testing.T) {
 // cancels, and applying the cancellation when it is read would overtake those
 // answers. So it is queued, and takes effect only when delivered.
 func TestACancellationDoesNotOvertakeTheAnswersSentBeforeIt(t *testing.T) {
-	conn := newTestAgentConn()
+	conn := newTestAgentConn(t)
 	id := jsonrpc.Int64ID(1)
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -216,7 +216,7 @@ func TestACancellationDoesNotOvertakeTheAnswersSentBeforeIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("accepting the request: %v", err)
 	}
-	conn.register(call, rawRequest(id, methodSessionPrompt, promptParams))
+	conn.side.register(call, rawRequest(id, methodSessionPrompt, promptParams))
 
 	conn.admitRequest(rawNotification(methodSessionCancel, `{"sessionId":"sess-1"}`))
 	select {
@@ -240,7 +240,7 @@ func TestACancellationDoesNotOvertakeTheAnswersSentBeforeIt(t *testing.T) {
 // The agent used to overwrite the recorded request, so a peer that sent two
 // prompts got two turns and a later cancellation could name neither.
 func TestASecondPromptForOneSessionIsRefused(t *testing.T) {
-	conn := newTestAgentConn()
+	conn := newTestAgentConn(t)
 	const session SessionID = "sess-1"
 
 	first := &inboundRequest{id: jsonrpc.Int64ID(1)}
@@ -269,12 +269,12 @@ func TestASecondPromptForOneSessionIsRefused(t *testing.T) {
 // writing it. A second prompt is unsafe before that point and safe afterwards;
 // the old response's later settlement must not release the new turn.
 func TestAPromptReopensOnlyAfterResultCommit(t *testing.T) {
-	conn := newTestAgentConn()
+	conn := newTestAgentConn(t)
 	const session SessionID = "sess-1"
 	first := &inboundRequest{id: jsonrpc.Int64ID(1)}
 	second := &inboundRequest{id: jsonrpc.Int64ID(2)}
 
-	entry := conn.register(first, rawRequest(first.id, methodSessionPrompt, promptParams))
+	entry := conn.side.register(first, rawRequest(first.id, methodSessionPrompt, promptParams))
 	if entry.automatic != nil || entry.hooks.chosen == nil || entry.hooks.finished == nil {
 		t.Fatal("the first prompt did not retain its commit and settlement obligations")
 	}
@@ -324,17 +324,17 @@ const promptParams = `{"sessionId":"sess-1","prompt":[]}`
 
 // The two connections these tests drive directly: no transport, which is enough
 // for registration and turn state, with an agreement already settled.
-func newTestAgentConn() *AgentConn {
-	conn := newTestAgentConnWith(Limits{})
-	conn.agent.config.NewSession = newSessionHandler
-	conn.agent.config.Prompt = endTurn
+func newTestAgentConn(t *testing.T) *AgentConn {
+	t.Helper()
+	conn := newTestAgentConnWith(t, Limits{})
 	conn.negotiation.accept(Negotiated{})
 	conn.negotiation.open()
 	return conn
 }
 
-func newTestClientConn() *ClientConn {
-	conn := newClientConn(&Client{}, nil)
+func newTestClientConn(t *testing.T, config ClientConfig) *ClientConn {
+	t.Helper()
+	conn := newTestClientConnWith(t, config)
 	conn.negotiation.accept(Negotiated{})
 	conn.negotiation.open()
 	return conn

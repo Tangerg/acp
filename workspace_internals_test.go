@@ -13,7 +13,7 @@ import (
 
 func TestTerminalReleaseCannotOvertakeAnAdmittedOperation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		terminal, stream := terminalOrderHarness()
+		terminal, stream := terminalOrderHarness(t)
 		output := make(chan error, 1)
 		go func() { _, err := terminal.Output(t.Context(), nil); output <- err }()
 		<-stream.entered
@@ -37,7 +37,7 @@ func TestTerminalReleaseCannotOvertakeAnAdmittedOperation(t *testing.T) {
 
 func TestTerminalReleaseCanRunWhileWaitingForExit(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		terminal, stream := terminalOrderHarness()
+		terminal, stream := terminalOrderHarness(t)
 		waiting := make(chan error, 1)
 		go func() { _, err := terminal.WaitForExit(t.Context(), nil); waiting <- err }()
 		id := <-stream.waiting
@@ -53,8 +53,9 @@ func TestTerminalReleaseCanRunWhileWaitingForExit(t *testing.T) {
 	})
 }
 
-func terminalOrderHarness() (*TerminalHandle, *terminalOrderStream) {
-	conn := newTestAgentConn()
+func terminalOrderHarness(t *testing.T) (*TerminalHandle, *terminalOrderStream) {
+	t.Helper()
+	conn := newTestAgentConn(t)
 	conn.negotiation.accept(Negotiated{ClientCapabilities: ClientCapabilities{Terminal: true}})
 	conn.negotiation.open()
 	stream := &terminalOrderStream{

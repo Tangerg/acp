@@ -30,6 +30,9 @@ migration instructions.
 - `session/close` and `session/delete` answered resource-not-found succeed,
   because the end state is the same.
 - Unhandled `_`-prefixed notifications are ignored silently, as the protocol asks.
+- A method the other peer serves is answered `-32601` naming that peer, without
+  consulting a capability: an agent asked to read a file no longer blames the
+  client's own `fs` advertisement.
 
 ### Breaking changes
 
@@ -64,6 +67,11 @@ migration instructions.
   an undecodable message, and the connection keeps reading.
 - `ElicitationRequestScope` is exported. A client reads a request-scoped
   elicitation's `RequestID` from it; an agent still never sets the scope.
+- `ClientConn.Authenticate` refuses an identifier the agent did not offer, or one
+  naming a terminal method, with an error wrapping `ErrNotAdvertised` instead of
+  an `*Error` carrying `-32602`, like every other local refusal. Replace checks
+  for `ErrorCodeInvalidParams` on `Authenticate` with
+  `errors.Is(err, acp.ErrNotAdvertised)`.
 
 ### Added
 
@@ -71,9 +79,16 @@ migration instructions.
   understand.
 - `AgentConfig.Cancel` is optional. The connection cancels the running `Prompt`
   handler's context whether or not it is set.
+- `ErrResourceNotFound` matches a peer's `-32002`, the code the protocol gives
+  a session or file the peer does not have.
 
 ### Fixed
 
+- An elicitation handler returning neither a response nor an error is answered
+  `-32603`, as every other handler is, instead of putting `"result": null` on the
+  wire.
+- A client holds its handlers' responses to the negotiated capabilities, as an
+  agent already did.
 - A request's `sessionId` is decoded once. A second, case-insensitive decoder
   let one message claim a session's turn and cancel another's.
 - Opening more than 1024 sessions no longer ends the connection.

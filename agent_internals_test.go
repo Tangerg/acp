@@ -3,6 +3,8 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/Tangerg/acp/jsonrpc"
@@ -134,6 +136,36 @@ func TestAnUnimplementedMethodIsNotFound(t *testing.T) {
 		if code := readRawErrorCode(t, stream); code != ErrorCodeMethodNotFound {
 			t.Fatalf("%s was answered %d (%s), want method not found", method, code, code)
 		}
+	}
+}
+
+// A method the other peer serves is not this side's to judge against a
+// capability: an agent asked to read a file refuses because agents do not serve
+// that method, whatever the client advertised about itself. The judge used to
+// read the client's own fs capability and blame it in the refusal.
+func TestAMethodTheOtherPeerServesIsNotFound(t *testing.T) {
+	for name, agreed := range map[string]Negotiated{
+		"the client advertised it for itself": {
+			ClientCapabilities: ClientCapabilities{Fs: FileSystemCapabilities{ReadTextFile: true}},
+		},
+		"the client did not": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			conn := newTestAgentConn(t)
+			conn.negotiation.accept(agreed)
+			call, err := conn.requests.accept(t.Context(), inboundFor(jsonrpc.Int64ID(1)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry := conn.side.register(call, rawCall(1, methodFsReadTextFile, `{"sessionId":"s","path":"/w/f"}`))
+			if entry.automatic == nil {
+				t.Fatal("an agent dispatched a method only a client serves")
+			}
+			var failure *Error
+			if !errors.As(entry.automatic.err, &failure) || failure.Code != ErrorCodeMethodNotFound || !strings.Contains(failure.Message, "other peer") {
+				t.Fatalf("refused with %v, want method-not-found naming the other peer", entry.automatic.err)
+			}
+		})
 	}
 }
 

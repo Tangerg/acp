@@ -22,7 +22,7 @@ func TestCancellationAppliesToResponseEncodingFailures(t *testing.T) {
 		{"cancelled valid result", true, &PromptResponse{StopReason: StopReasonEndTurn}, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			conn := newTestAgentConn()
+			conn := newTestAgentConn(t)
 			stream := &observedResponseStream{
 				observed: make(chan jsonrpc.Message, 1), resume: make(chan struct{}),
 			}
@@ -63,7 +63,7 @@ func TestCancellationAppliesToResponseEncodingFailures(t *testing.T) {
 
 func TestAnAutomaticResponseRetainsItsRequestUntilTheWriteSettles(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		conn := newTestAgentConn()
+		conn := newTestAgentConn(t)
 		barrier := &responseBarrier{entered: make(chan struct{}), release: make(chan struct{})}
 		conn.transport = barrier
 		conn.turns.claim("sess-1", &inboundRequest{id: jsonrpc.Int64ID(1)})
@@ -124,7 +124,7 @@ func TestAnAnsweredRequestRetainsOnlyItsOwnHandlerWork(t *testing.T) {
 
 func TestAReceivedResponseMakesItsWireIDReusableBeforeWriteReturns(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		conn := newTestAgentConn()
+		conn := newTestAgentConn(t)
 		stream := &observedResponseStream{
 			observed: make(chan jsonrpc.Message), resume: make(chan struct{}),
 		}

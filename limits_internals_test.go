@@ -66,7 +66,7 @@ func TestABacklogPastItsBoundEndsTheConnection(t *testing.T) {
 // The bound itself is checked here rather than over the wire because filling it
 // over the wire would race the delivery bound.
 func TestTooManyInflightRequestsIsRefused(t *testing.T) {
-	conn := newTestAgentConnWith(Limits{InflightRequests: testBound})
+	conn := newTestAgentConnWith(t, Limits{InflightRequests: testBound})
 
 	for id := range testBound {
 		if _, err := conn.requests.accept(t.Context(), inboundFor(jsonrpcTestID(id))); err != nil {
@@ -125,7 +125,7 @@ func TestAZeroLimitTakesItsDefault(t *testing.T) {
 
 	// And the connection reads the resolved value, so the bound in an error message
 	// is the effective one rather than the field the caller left zero.
-	conn := newTestAgentConnWith(Limits{})
+	conn := newTestAgentConnWith(t, Limits{})
 	if conn.limits.QueuedDeliveries != documentedDefault {
 		t.Fatalf("the link holds bound %d, want the resolved default %d",
 			conn.limits.QueuedDeliveries, documentedDefault)

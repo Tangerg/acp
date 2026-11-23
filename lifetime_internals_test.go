@@ -26,7 +26,7 @@ func TestACallersDeadlineDoesNotInterruptAWriteInProgress(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				conn := newTestAgentConn()
+				conn := newTestAgentConn(t)
 				reader, peerWriter := io.Pipe()
 				peerReader, writer := io.Pipe()
 				t.Cleanup(func() { _ = errors.Join(peerReader.Close(), peerWriter.Close()) })
@@ -65,11 +65,10 @@ func TestDrainingPreservesNotificationsAndCancelsRequestWork(t *testing.T) {
 	for name, duringDelivery := range map[string]bool{"before delivery": false, "during delivery": true} {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				conn := newTestClientConn()
 				notifications := make(chan error, 1)
 				requests := make(chan error, 1)
 				entered := make(chan struct{})
-				conn.client = &Client{config: ClientConfig{
+				conn := newTestClientConn(t, ClientConfig{
 					NotifyFallback: func(ctx context.Context, _ *ClientConn, notification *ExtNotification) {
 						if notification.Method == "_test/active" {
 							close(entered)
@@ -82,9 +81,7 @@ func TestDrainingPreservesNotificationsAndCancelsRequestWork(t *testing.T) {
 						requests <- ctx.Err()
 						return json.RawMessage(`{}`), nil
 					},
-				}}
-				conn.negotiation.accept(Negotiated{})
-				conn.negotiation.open()
+				})
 				conn.transport = &invalidMessageStream{}
 				if duringDelivery && !conn.admit(rawNotification("_test/active", `{}`)) {
 					t.Fatal("could not enqueue the active notification")
@@ -158,7 +155,7 @@ func TestLifetimeCancelsWorkBeforeReleasingTheTransport(t *testing.T) {
 
 func TestClosingWaitsForTheReaderToFinishDeliveringItsLastResponse(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		conn := newTestAgentConn()
+		conn := newTestAgentConn(t)
 		call, _ := conn.calls.begin(nil, nil)
 		stream := &lastResponseStream{
 			response: &jsonrpc.Response{ID: call.id, Result: json.RawMessage(`{}`)},
@@ -216,7 +213,7 @@ func TestInvalidTransportMessagesEndTheConnectionWithoutPanicking(t *testing.T) 
 		"nil": nil, "request": (*jsonrpc.Request)(nil), "response": (*jsonrpc.Response)(nil),
 	} {
 		t.Run(name, func(t *testing.T) {
-			conn := newTestAgentConn()
+			conn := newTestAgentConn(t)
 			conn.transport = &invalidMessageStream{message: message}
 			conn.run()
 			if err := conn.Wait(); err == nil {

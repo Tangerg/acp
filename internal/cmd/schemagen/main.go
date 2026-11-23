@@ -146,31 +146,33 @@ func verify(repository fs.FS, outputs map[string][]byte) error {
 	return nil
 }
 
-// write stages every output before replacing any, so a failure while writing
-// leaves the committed files as they were rather than half regenerated.
+// write stages every output before replacing any, so a failure to produce one
+// leaves the committed files as they were. Each replacement is a rename, which
+// cannot leave a file half written; a rename that fails stops the rest, and no
+// staged file is left behind either way.
 func write(root string, outputs map[string][]byte) error {
 	staged := make(map[string]string, len(outputs))
-	var stageErr error
+	discard := func(failure error) error {
+		for _, temporary := range staged {
+			if err := os.Remove(temporary); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				failure = errors.Join(failure, err)
+			}
+		}
+		return failure
+	}
 	for _, path := range sortedKeys(outputs) {
 		target := filepath.Join(root, filepath.FromSlash(path))
 		temporary := target + ".tmp"
 		// Committed generated source must be readable in module archives.
 		//nolint:gosec // G306: these are world-readable source files, not secrets.
 		if err := os.WriteFile(temporary, outputs[path], 0o644); err != nil {
-			stageErr = err
-			break
+			return discard(err)
 		}
 		staged[target] = temporary
 	}
-	if stageErr != nil {
-		for _, temporary := range staged {
-			stageErr = errors.Join(stageErr, os.Remove(temporary))
-		}
-		return stageErr
-	}
 	for _, target := range sortedKeys(staged) {
 		if err := os.Rename(staged[target], target); err != nil {
-			return err
+			return discard(err)
 		}
 	}
 	return nil

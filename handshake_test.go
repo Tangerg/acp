@@ -438,6 +438,11 @@ func TestAuthenticateIsHeldToTheAdvertisedMethods(t *testing.T) {
 			if !strings.Contains(err.Error(), test.says) {
 				t.Errorf("refused with %v, which does not say why", err)
 			}
+			// Refused before the wire, so it must not read as the agent's answer.
+			var answer *acp.Error
+			if !errors.Is(err, acp.ErrNotAdvertised) || errors.As(err, &answer) {
+				t.Errorf("refused with %v, want a local ErrNotAdvertised rather than a wire error", err)
+			}
 			select {
 			case got := <-served:
 				t.Fatalf("the agent's handler was asked to authenticate %q", got)

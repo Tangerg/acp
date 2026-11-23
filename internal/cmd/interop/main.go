@@ -94,6 +94,10 @@ func run(agentCommand []string, dir string, provenance Provenance) error {
 	return nil
 }
 
+// scenarioBudget bounds one scenario, including starting the reference agent,
+// which runs TypeScript through a transpiler on every start.
+const scenarioBudget = 60 * time.Second
+
 // record runs one scenario and returns what crossed the wire.
 func record(
 	agentCommand []string,
@@ -101,7 +105,7 @@ func record(
 	provenance Provenance,
 	play func(context.Context, *acp.ClientConn, *observations) error,
 ) (*Transcript, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), scenarioBudget)
 	defer cancel()
 
 	seen := newObservations()

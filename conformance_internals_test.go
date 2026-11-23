@@ -127,7 +127,7 @@ var obligations = map[string]obligation{
 	},
 	"Agents SHOULD catch these exceptions and return this semantically meaningful response to confirm successful cancellation.": {
 		ownedHere,
-		"AgentConn.servePrompt answers a cancelled turn with the cancelled stop reason whatever its handler returned, so an abort error is never relayed",
+		"servePrompt answers a cancelled turn with the cancelled stop reason whatever its handler returned, so an abort error is never relayed",
 	},
 	"Agents SHOULD include it.": {
 		ownedByApplication,
@@ -187,14 +187,14 @@ var obligations = map[string]obligation{
 	},
 	"Agents MUST advertise this method only when the client enabled its terminal authentication capability.": {
 		ownedHere,
-		"authenticationMethods.offered drops terminal methods when the client did not " +
+		"authenticationMethods.offeredTo drops terminal methods when the client did not " +
 			"advertise auth.terminal, so the advertisement an agent configured cannot be the " +
 			"one it sends to a client that cannot run one",
 	},
 	"The client MUST NOT pass this method to `authenticate`.": {
 		ownedHere,
-		"ClientConn.Authenticate refuses a terminal method before the write, and the agent " +
-			"refuses one inbound: the obligation is the client's and the check is on both sides " +
+		"AuthenticateRequest.checkOutbound refuses a terminal method before the write, and the " +
+			"agent refuses one inbound: the obligation is the client's and the check is on both sides " +
 			"because a peer outside this package can still send one",
 	},
 

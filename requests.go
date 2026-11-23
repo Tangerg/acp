@@ -142,7 +142,7 @@ func (r *inboundRequest) beginSending(ctx context.Context) error {
 	}
 	if !r.answerable() {
 		r.finishSending()
-		return errors.New("acp: the request this elicitation is scoped to has already been answered")
+		return errors.New("acp: the request this write is scoped to has already been answered")
 	}
 	return nil
 }

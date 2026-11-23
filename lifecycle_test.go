@@ -168,13 +168,13 @@ func TestAnAlreadyCancelledCallDoesNotEndTheConnection(t *testing.T) {
 type blockingCancelWrites struct {
 	released chan struct{}
 
-	mu      sync.Mutex
-	replies []jsonrpc.Message
+	replies chan jsonrpc.Message
 	closed  chan struct{}
 	once    sync.Once
 }
 
 func (t *blockingCancelWrites) Connect(context.Context) (acp.Connection, error) {
+	t.replies = make(chan jsonrpc.Message, 1)
 	t.closed = make(chan struct{})
 	return t, nil
 }
@@ -201,30 +201,22 @@ func (t *blockingCancelWrites) Write(ctx context.Context, message jsonrpc.Messag
 	if err != nil {
 		return err
 	}
-	t.mu.Lock()
-	t.replies = append(t.replies, response)
-	t.mu.Unlock()
-	return nil
+	select {
+	case t.replies <- response:
+		return nil
+	default:
+		return errors.New("blockingCancelWrites answers one initialize")
+	}
 }
 
 func (t *blockingCancelWrites) Read(ctx context.Context) (jsonrpc.Message, error) {
-	for {
-		t.mu.Lock()
-		if len(t.replies) > 0 {
-			reply := t.replies[0]
-			t.replies = t.replies[1:]
-			t.mu.Unlock()
-			return reply, nil
-		}
-		t.mu.Unlock()
-
-		select {
-		case <-t.closed:
-			return nil, io.EOF
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(time.Millisecond):
-		}
+	select {
+	case reply := <-t.replies:
+		return reply, nil
+	case <-t.closed:
+		return nil, io.EOF
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 

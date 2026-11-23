@@ -578,6 +578,18 @@ combining them behind unrelated mutexes would hide the ordering relationships:
 | `calls` | the outbound half: requests sent and not yet answered |
 | `requests` | each inbound request's identity, response claim, settlement, and retained handler work |
 
+Above the link sits one dispatcher per client or agent, generic over the
+connection type, and a connection's link side is that dispatcher bound to it. Its
+rows are built from the configuration at construction, one per method that has a
+handler, so the derived advertisement and inbound dispatch read the same set: a
+method is advertised and served exactly when it has a row. Both peers judge every
+inbound message by the same steps, once and in wire order: initialize first, then
+whether the name is the specification's or reserved for extensions, its shape,
+whether this peer is the one that serves it, the capability gate, and its params,
+decoded once. Every request row is built by one constructor, which is also what
+holds a handler to returning a response or an error. The link itself knows
+JSON-RPC and nothing of the protocol's method table.
+
 Only the reader can signal that no more messages will enter the queue. Closing
 the transport may race a successful read whose response has not yet been queued.
 Delivery ends after reader exit and queue drainage, so a waiting caller receives
@@ -734,8 +746,11 @@ comparing a field.
 Sentinels exist only where control flow needs one. `ErrAuthRequired` is the
 important one: an agent answering `session/new` with `-32000` is a documented step
 in the lifecycle rather than a failure, and `errors.Is` is how a client tells them
-apart. `ErrorCode` constants plus `errors.As` already cover ordinary inspection,
-and a sentinel per code would be API surface nobody asked for.
+apart. `ErrResourceNotFound` is the other code the protocol gives a meaning a
+caller branches on: closing or deleting a session that is already gone succeeds,
+and a missing file is how a client says a path is free. `ErrorCode` constants plus
+`errors.As` already cover ordinary inspection, and a sentinel per code would be API
+surface nobody asked for.
 
 The local sentinels answer the one question an `*Error` cannot: did the peer say
 this, or did it never see the request? `ErrNotAdvertised` is a local capability

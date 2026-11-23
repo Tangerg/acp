@@ -83,6 +83,6 @@ func (n *Negotiated) refusesOutbound(method string) error {
 // authenticates checks an authenticate method identifier against what the agent
 // offered. A terminal method is performed by running the agent again in a
 // terminal, so the schema forbids passing it to authenticate.
-func (n *Negotiated) authenticates(methodID AuthMethodID) *Error {
+func (n *Negotiated) authenticates(methodID AuthMethodID) error {
 	return authenticationMethods(n.AuthMethods).accepts(methodID)
 }

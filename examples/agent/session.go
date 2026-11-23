@@ -77,7 +77,8 @@ func (s *sessions) prompt(
 	conversation := s.open[session.ID()]
 	s.mu.Unlock()
 	if conversation == nil {
-		return nil, &acp.Error{Code: acp.ErrorCodeInvalidParams, Message: "no such session"}
+		// The protocol's answer for a session this agent does not have.
+		return nil, &acp.Error{Code: acp.ErrorCodeResourceNotFound, Message: "no such session: " + string(session.ID())}
 	}
 	return conversation.prompt(ctx, session, request)
 }
@@ -143,11 +144,10 @@ func (f *noteFile) append(ctx context.Context, session *acp.AgentSession, note s
 	}
 	var existing string
 	read, err := session.ReadTextFile(ctx, &acp.ReadTextFileParams{Path: f.path})
-	var failure *acp.Error
 	switch {
 	case err == nil:
 		existing = read.Content
-	case errors.As(err, &failure) && failure.Code == acp.ErrorCodeResourceNotFound:
+	case errors.Is(err, acp.ErrResourceNotFound):
 		// Only confirmed absence permits starting a file. An unreadable file
 		// may contain notes this operation has no authority to discard.
 	default:

@@ -34,11 +34,11 @@ func TestEachGateReadsTheServingSide(t *testing.T) {
 		side := standardMethods[method].side
 		switch gate.(type) {
 		case nil:
-		case agentCapability:
+		case capabilityLeaf[AgentCapabilities]:
 			if side != sideAgent {
 				t.Errorf("%s is served by side %d and gated on an agent capability", method, side)
 			}
-		case clientCapability:
+		case capabilityLeaf[ClientCapabilities]:
 			if side != sideClient {
 				t.Errorf("%s is served by side %d and gated on a client capability", method, side)
 			}
@@ -55,9 +55,9 @@ func TestEachCapabilityPermitsExactlyItsMethods(t *testing.T) {
 	for method, gate := range gates {
 		var agreed Negotiated
 		switch gate := gate.(type) {
-		case agentCapability:
+		case capabilityLeaf[AgentCapabilities]:
 			gate.set(&agreed.AgentCapabilities)
-		case clientCapability:
+		case capabilityLeaf[ClientCapabilities]:
 			if gate.set == nil {
 				continue // derived from a handler group; covered below
 			}

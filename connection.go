@@ -104,13 +104,6 @@ func callFor[Response any](ctx context.Context, c *connection, method string, pa
 	return response, nil
 }
 
-// refuseBeforeInitialize answers a peer's call that arrived before initialize
-// was accepted: serving it would mean serving it under capabilities nobody has
-// exchanged.
-func refuseBeforeInitialize(method string) registration {
-	return answered(nil, newError(ErrorCodeInvalidRequest, "method %q arrived before initialize", method))
-}
-
 // A registry is the live connections of one client or agent. Membership ends
 // when a connection is released, whether or not anybody enumerates it.
 type registry[Conn comparable] struct {

@@ -43,14 +43,13 @@ func receivedAuthenticationMethods(
 	seen := make(map[AuthMethodID]bool, len(methods))
 	for _, method := range methods {
 		advertised, known := authenticationMethod(method)
-		_, terminal := method.(*AuthMethodTerminal)
 		switch {
 		case !known:
 			continue
 		case seen[advertised.id]:
 			logger.Warn("the agent offered an authentication method identifier twice; keeping the first",
 				slog.String("methodId", string(advertised.id)))
-		case terminal && !client.Auth.Terminal:
+		case !advertised.offerableTo(client):
 			logger.Warn("the agent offered terminal authentication to a client that did not enable it",
 				slog.String("methodId", string(advertised.id)))
 		default:
@@ -67,6 +66,12 @@ func receivedAuthenticationMethods(
 type advertisedAuth struct {
 	id           AuthMethodID
 	agentHandled bool
+}
+
+// offerableTo reports whether a client may be offered the method: a terminal
+// method only to one that enabled terminal authentication.
+func (a advertisedAuth) offerableTo(client ClientCapabilities) bool {
+	return a.agentHandled || client.Auth.Terminal
 }
 
 func authenticationMethod(method AuthMethod) (advertisedAuth, bool) {
@@ -86,15 +91,13 @@ func authenticationMethod(method AuthMethod) (advertisedAuth, bool) {
 	}
 }
 
-// offeredTo returns the methods to offer one client: a terminal method only to a
-// client that enabled terminal authentication.
+// offeredTo returns the methods to offer one client.
 func (m authenticationMethods) offeredTo(client ClientCapabilities) []AuthMethod {
 	offered := make([]AuthMethod, 0, len(m))
 	for _, method := range m {
-		if _, terminal := method.(*AuthMethodTerminal); terminal && !client.Auth.Terminal {
-			continue
+		if advertised, _ := authenticationMethod(method); advertised.offerableTo(client) {
+			offered = append(offered, deepCopy(method))
 		}
-		offered = append(offered, deepCopy(method))
 	}
 	if len(offered) == 0 {
 		return nil
@@ -103,8 +106,9 @@ func (m authenticationMethods) offeredTo(client ClientCapabilities) []AuthMethod
 }
 
 // accepts checks an identifier passed to authenticate: it must be one the agent
-// offered, and a terminal method is not passed to authenticate at all.
-func (m authenticationMethods) accepts(methodID AuthMethodID) *Error {
+// offered, and a terminal method is not passed to authenticate at all. The
+// reason is the same on both sides; what it becomes is each side's own.
+func (m authenticationMethods) accepts(methodID AuthMethodID) error {
 	for _, method := range m {
 		advertised, known := authenticationMethod(method)
 		if !known || advertised.id != methodID {
@@ -113,10 +117,17 @@ func (m authenticationMethods) accepts(methodID AuthMethodID) *Error {
 		if advertised.agentHandled {
 			return nil
 		}
-		return newError(ErrorCodeInvalidParams,
-			"authentication method %q is terminal-based and is performed by running the agent in a terminal, "+
-				"not by calling authenticate", methodID)
+		return fmt.Errorf("authentication method %q is terminal-based and is performed by running the agent "+
+			"in a terminal, not by calling authenticate", methodID)
 	}
-	return newError(ErrorCodeInvalidParams,
-		"%q is not one of the authentication methods offered in the initialize response", methodID)
+	return fmt.Errorf("%q is not one of the authentication methods offered in the initialize response", methodID)
+}
+
+// checkOutbound refuses locally an identifier the agent would refuse, so a
+// client never mistakes its own mistake for the agent's answer.
+func (x *AuthenticateRequest) checkOutbound(agreed *Negotiated) error {
+	if refusal := agreed.authenticates(x.MethodID); refusal != nil {
+		return fmt.Errorf("%w: %w", ErrNotAdvertised, refusal)
+	}
+	return nil
 }

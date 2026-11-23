@@ -81,6 +81,7 @@ var handWritten = map[string]string{
 	// The sentinels, which exist only where control flow needs one.
 	"ErrAuthRequired":     "error.go — how an agent says authenticate first, which is control flow",
 	"ErrRequestCancelled": "error.go — a peer's -32800, which does not prove anybody cancelled anything",
+	"ErrResourceNotFound": "error.go — a peer's -32002, which closing a session and reading a file branch on",
 	"ErrConnectionClosed": "error.go — a local state rather than a wire error: nobody sent it",
 	"ErrPromptInProgress": "session.go — one prompt at a time per session, because session/cancel names no turn",
 	"ErrTerminalReleased": "terminal.go — a released terminal identifier is the client's to reuse, so the handle is spent",

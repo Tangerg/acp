@@ -2,7 +2,6 @@ package acp
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
@@ -99,12 +98,18 @@ func (t *TerminalHandlers) check() error {
 // A Client owns the handlers and capabilities its connections share. One client
 // may connect to many agents.
 type Client struct {
-	config       ClientConfig
+	info         *Implementation
+	meta         Meta
+	logger       *slog.Logger
+	limits       Limits
 	capabilities ClientCapabilities
+	dispatcher   *dispatcher[*ClientConn]
 	conns        registry[*ClientConn]
 }
 
 // NewClient builds a client, or reports why the configuration cannot be served.
+// The handlers are bound here, so changing the configuration afterwards changes
+// nothing a running client advertises or serves.
 func NewClient(config *ClientConfig) (*Client, error) {
 	if config == nil {
 		config = new(ClientConfig)
@@ -121,48 +126,61 @@ func NewClient(config *ClientConfig) (*Client, error) {
 	if err := config.Limits.check(); err != nil {
 		return nil, err
 	}
-	capabilities, err := config.resolveCapabilities()
+	dispatcher := newDispatcher(sideClient, config.methods(), config.CallFallback, config.NotifyFallback)
+	capabilities, err := config.resolveCapabilities(dispatcher.serves)
 	if err != nil {
 		return nil, err
 	}
-	// The configuration is copied so a caller who kept a pointer cannot change
-	// what a running client advertises or serves without going back through the
-	// checks above.
-	cloned := *config
-	cloned.Info = deepCopy(config.Info)
-	cloned.Meta = deepCopy(config.Meta)
-	cloned.Capabilities = nil
-	if config.Terminal != nil {
-		handlers := *config.Terminal
-		cloned.Terminal = &handlers
-	}
-	if config.Elicitation != nil {
-		handlers := *config.Elicitation
-		cloned.Elicitation = &handlers
-	}
-	return &Client{config: cloned, capabilities: capabilities}, nil
+	return &Client{
+		info:         deepCopy(config.Info),
+		meta:         deepCopy(config.Meta),
+		logger:       config.Logger,
+		limits:       config.Limits,
+		capabilities: capabilities,
+		dispatcher:   dispatcher,
+	}, nil
 }
 
-// serves reports whether the configuration serves a standard method.
-func (c *ClientConfig) serves(method string) bool {
-	switch method {
-	case methodSessionUpdate:
-		return true
-	case methodElicitationComplete:
-		return c.Elicitation != nil && c.Elicitation.URL != nil
+// methods binds every standard method a client serves to this configuration's
+// handlers. A handler that is not set leaves its method unbound.
+func (c *ClientConfig) methods() map[string]*methodBinding[*ClientConn] {
+	methods := map[string]*methodBinding[*ClientConn]{
+		methodSessionUpdate: notified(func(conn *ClientConn, ctx context.Context, notification *SessionNotification) {
+			c.SessionUpdate(ctx, conn, notification)
+		}),
+		methodSessionRequestPermission: answering(servePermission(c.RequestPermission)).
+			registeredBy((*ClientConn).registerPermission),
+		methodFsReadTextFile:  handled(c.ReadTextFile),
+		methodFsWriteTextFile: handled(c.WriteTextFile),
 	}
-	binding, ok := clientMethods[method]
-	return ok && binding.served(c)
+	if terminal := c.Terminal; terminal != nil {
+		methods[methodTerminalCreate] = handled(terminal.Create)
+		methods[methodTerminalOutput] = handled(terminal.Output)
+		methods[methodTerminalWaitForExit] = handled(terminal.WaitForExit)
+		methods[methodTerminalKill] = handled(terminal.Kill)
+		methods[methodTerminalRelease] = handled(terminal.Release)
+	}
+	if elicitation := c.Elicitation; elicitation != nil {
+		handlers := *elicitation
+		methods[methodElicitationCreate] = answering(serveElicitation(handlers)).
+			registeredBy(registerElicitation(handlers))
+		// The connection tracks accepted URL interactions whether or not the
+		// application wants to hear about their completion.
+		if handlers.URL != nil {
+			methods[methodElicitationComplete] = notified(serveCompletion(handlers.Complete))
+		}
+	}
+	return methods
 }
 
-func (c *ClientConfig) resolveCapabilities() (ClientCapabilities, error) {
+func (c *ClientConfig) resolveCapabilities(serves func(method string) bool) (ClientCapabilities, error) {
 	if c.Capabilities == nil {
-		derived := advertiseClient(c.serves)
+		derived := advertise[ClientCapabilities](serves)
 		derived.Elicitation = c.Elicitation.capabilities()
 		return derived, nil
 	}
 	stated := deepCopy(*c.Capabilities)
-	unserved := append(unservedClientMethods(stated, c.serves), c.Elicitation.unserved(stated)...)
+	unserved := append(unservedMethods(stated, serves), c.Elicitation.unserved(stated)...)
 	if len(unserved) > 0 {
 		return ClientCapabilities{}, fmt.Errorf("acp: ClientConfig.Capabilities: %v", unserved)
 	}
@@ -195,7 +213,8 @@ func (c *Client) Connect(ctx context.Context, transport Transport) (*ClientConn,
 func newClientConn(client *Client, stream Connection) *ClientConn {
 	conn := &ClientConn{client: client}
 	conn.connection = connection{negotiation: newNegotiation()}
-	conn.link = newLink(stream, conn, client.config.Logger, client.config.Limits)
+	served := &dispatch[*ClientConn]{dispatcher: client.dispatcher, conn: conn, negotiation: conn.negotiation}
+	conn.link = newLink(stream, served, client.logger, client.limits)
 	conn.elicitations = newURLElicitations(conn.limits.OutstandingElicitations)
 	return conn
 }
@@ -220,13 +239,12 @@ func (c *ClientConn) session(id SessionID) *ClientSession {
 }
 
 // Authenticate performs one of the agent-handled authentication methods in
-// [ClientConn.Negotiated], which is how a client answers [ErrAuthRequired].
+// [ClientConn.Negotiated], which is how a client answers [ErrAuthRequired]. An
+// identifier the agent did not offer, or one naming a terminal method, is
+// refused with [ErrNotAdvertised] before anything is sent.
 func (c *ClientConn) Authenticate(ctx context.Context, params *AuthenticateRequest) (*AuthenticateResponse, error) {
 	if params == nil {
 		params = new(AuthenticateRequest)
-	}
-	if refusal := c.negotiation.agreed().authenticates(params.MethodID); refusal != nil {
-		return nil, refusal
 	}
 	return callFor[AuthenticateResponse](ctx, &c.connection, methodAuthenticate, params)
 }
@@ -309,7 +327,7 @@ func (c *ClientConn) DeleteSession(ctx context.Context, params *DeleteSessionReq
 		params = new(DeleteSessionRequest)
 	}
 	response, err := callFor[DeleteSessionResponse](ctx, &c.connection, methodSessionDelete, params)
-	if errors.Is(err, &Error{Code: ErrorCodeResourceNotFound}) {
+	if errors.Is(err, ErrResourceNotFound) {
 		return new(DeleteSessionResponse), nil
 	}
 	return response, err
@@ -329,15 +347,16 @@ func (c *ClientConn) Notify(ctx context.Context, method string, params any) erro
 // initialize negotiates on the delivery loop, so that anything the agent sends
 // after answering is served by a connection that already knows what was agreed.
 func (c *ClientConn) initialize(ctx context.Context) error {
+	client := c.client
 	request := &InitializeRequest{
 		ProtocolVersion:    CurrentProtocolVersion,
-		ClientCapabilities: c.client.capabilities,
+		ClientCapabilities: client.capabilities,
 	}
-	if info := c.client.config.Info; info != nil {
-		request.ClientInfo = OptValue(deepCopy(*info))
+	if client.info != nil {
+		request.ClientInfo = OptValue(deepCopy(*client.info))
 	}
-	if c.client.config.Meta.Len() > 0 {
-		request.Meta = OptValue(deepCopy(c.client.config.Meta))
+	if client.meta.Len() > 0 {
+		request.Meta = OptValue(deepCopy(client.meta))
 	}
 	return c.callObserved(ctx, methodInitialize, request, func(answer *jsonrpc.Response) error {
 		var response InitializeResponse
@@ -364,154 +383,6 @@ func (c *ClientConn) initialize(ctx context.Context) error {
 	})
 }
 
-// A clientMethod is how a client serves one standard request method.
-type clientMethod struct {
-	served func(*ClientConfig) bool
-	decode func(json.RawMessage) (any, error)
-	// register, when set, records the call in wire order.
-	register func(*ClientConn, *inboundRequest) registration
-	serve    func(*ClientConn, context.Context, *inboundRequest) (any, error)
-}
-
-func clientConnMethod[Request, Response any](
-	pick func(*ClientConfig) func(context.Context, *ClientConn, *Request) (*Response, error),
-) clientMethod {
-	return clientMethod{
-		served: func(config *ClientConfig) bool { return pick(config) != nil },
-		decode: decoderFor[Request],
-		serve: func(c *ClientConn, ctx context.Context, call *inboundRequest) (any, error) {
-			response, err := pick(&c.client.config)(ctx, c, paramsOf[Request](call))
-			return handlerAnswer(call.method, response, err)
-		},
-	}
-}
-
-// terminalMethod picks one handler of the terminal group.
-func terminalMethod[Request, Response any](
-	pick func(*TerminalHandlers) func(context.Context, *ClientConn, *Request) (*Response, error),
-) clientMethod {
-	return clientConnMethod(func(config *ClientConfig) func(context.Context, *ClientConn, *Request) (*Response, error) {
-		if config.Terminal == nil {
-			return nil
-		}
-		return pick(config.Terminal)
-	})
-}
-
-var clientMethods = map[string]clientMethod{
-	methodSessionRequestPermission: {
-		served:   func(*ClientConfig) bool { return true },
-		decode:   decoderFor[RequestPermissionRequest],
-		register: (*ClientConn).registerPermission,
-		serve:    (*ClientConn).servePermission,
-	},
-	methodFsReadTextFile: clientConnMethod(func(config *ClientConfig) func(
-		context.Context, *ClientConn, *ReadTextFileRequest) (*ReadTextFileResponse, error) {
-		return config.ReadTextFile
-	}),
-	methodFsWriteTextFile: clientConnMethod(func(config *ClientConfig) func(
-		context.Context, *ClientConn, *WriteTextFileRequest) (*WriteTextFileResponse, error) {
-		return config.WriteTextFile
-	}),
-	methodTerminalCreate: terminalMethod(func(handlers *TerminalHandlers) func(
-		context.Context, *ClientConn, *CreateTerminalRequest) (*CreateTerminalResponse, error) {
-		return handlers.Create
-	}),
-	methodTerminalOutput: terminalMethod(func(handlers *TerminalHandlers) func(
-		context.Context, *ClientConn, *TerminalOutputRequest) (*TerminalOutputResponse, error) {
-		return handlers.Output
-	}),
-	methodTerminalWaitForExit: terminalMethod(func(handlers *TerminalHandlers) func(
-		context.Context, *ClientConn, *WaitForTerminalExitRequest) (*WaitForTerminalExitResponse, error) {
-		return handlers.WaitForExit
-	}),
-	methodTerminalKill: terminalMethod(func(handlers *TerminalHandlers) func(
-		context.Context, *ClientConn, *KillTerminalRequest) (*KillTerminalResponse, error) {
-		return handlers.Kill
-	}),
-	methodTerminalRelease: terminalMethod(func(handlers *TerminalHandlers) func(
-		context.Context, *ClientConn, *ReleaseTerminalRequest) (*ReleaseTerminalResponse, error) {
-		return handlers.Release
-	}),
-	methodElicitationCreate: {
-		served:   func(config *ClientConfig) bool { return config.Elicitation != nil },
-		decode:   decoderFor[CreateElicitationRequest],
-		register: (*ClientConn).registerElicitation,
-		serve:    (*ClientConn).serveElicitation,
-	},
-}
-
-// register decides a call in wire order: nothing before initialize is accepted,
-// then the capability gate, the method's handler, and its params, decoded once.
-func (c *ClientConn) register(call *inboundRequest, request *jsonrpc.Request) registration {
-	agreed := c.negotiation.agreed()
-	if agreed == nil {
-		return refuseBeforeInitialize(request.Method)
-	}
-	binding, served := clientMethods[request.Method]
-	if !served {
-		if isStandardMethod(request.Method) {
-			return answered(nil, methodNotImplemented(request.Method))
-		}
-		call.params = request.Params
-		return dispatched(callHooks{})
-	}
-	if refusal := agreed.refusesInbound(request.Method); refusal != nil {
-		return answered(nil, refusal)
-	}
-	if !binding.served(&c.client.config) {
-		return answered(nil, methodNotImplemented(request.Method))
-	}
-	params, err := binding.decode(request.Params)
-	if err != nil {
-		return answered(nil, invalidParams(request.Method, err))
-	}
-	call.params = params
-	if binding.register != nil {
-		return binding.register(c, call)
-	}
-	return dispatched(callHooks{})
-}
-
-func (c *ClientConn) serve(ctx context.Context, call *inboundRequest) (any, error) {
-	if binding, standard := clientMethods[call.method]; standard {
-		return binding.serve(c, ctx, call)
-	}
-	return serveExtensionCall(ctx, c, call, c.client.config.CallFallback)
-}
-
-func (c *ClientConn) serveNotification(ctx context.Context, request *jsonrpc.Request) error {
-	agreed := c.negotiation.agreed()
-	if agreed == nil {
-		return fmt.Errorf("acp: notification %q arrived before initialize", request.Method)
-	}
-	switch request.Method {
-	case methodSessionUpdate:
-		params, err := decodeParams[SessionNotification](request.Params)
-		if err != nil {
-			return invalidParams(request.Method, err)
-		}
-		c.client.config.SessionUpdate(ctx, c, params)
-		return nil
-	case methodElicitationComplete:
-		if refusal := agreed.refusesInbound(request.Method); refusal != nil {
-			return refusal
-		}
-		params, err := decodeParams[CompleteElicitationNotification](request.Params)
-		if err != nil {
-			return invalidParams(request.Method, err)
-		}
-		c.serveCompletion(ctx, params)
-		return nil
-	default:
-		if isStandardMethod(request.Method) {
-			return methodNotImplemented(request.Method)
-		}
-		serveExtensionNotification(ctx, c, request.Method, request.Params, c.client.config.NotifyFallback)
-		return nil
-	}
-}
-
 // registerPermission files a permission request under its session's turn in wire
 // order. One arriving while the turn is being cancelled is answered cancelled
 // without a dialog the user would see and have thrown away.
@@ -528,21 +399,27 @@ func (c *ClientConn) registerPermission(call *inboundRequest) registration {
 	}
 }
 
-// servePermission holds the handler's outcome to the options the agent offered.
-func (c *ClientConn) servePermission(ctx context.Context, call *inboundRequest) (any, error) {
-	request := paramsOf[RequestPermissionRequest](call)
-	offered, err := ownPermissionOptions(request.Options)
-	if err != nil {
-		return nil, newError(ErrorCodeInvalidParams, "%s", err)
+// servePermission holds the handler's outcome to the options the agent offered,
+// as they were offered: the handler may edit the request it is given.
+func servePermission(
+	handler func(context.Context, *ClientConn, *RequestPermissionRequest) (*RequestPermissionResponse, error),
+) func(*ClientConn, context.Context, *inboundRequest, *RequestPermissionRequest) (*RequestPermissionResponse, error) {
+	return func(c *ClientConn, ctx context.Context, _ *inboundRequest, request *RequestPermissionRequest) (
+		*RequestPermissionResponse, error,
+	) {
+		if err := distinctOptions(request.Options); err != nil {
+			return nil, newError(ErrorCodeInvalidParams, "%s", err)
+		}
+		offered := offeredOptions(request.Options)
+		response, err := handler(ctx, c, request)
+		if err != nil || response == nil {
+			return response, err
+		}
+		if invalid := offered.check(response.Outcome); invalid != nil {
+			return nil, fmt.Errorf("acp: the permission handler's outcome is invalid: %w", invalid)
+		}
+		return response, nil
 	}
-	response, err := c.client.config.RequestPermission(ctx, c, request)
-	if err != nil || response == nil {
-		return handlerAnswer(call.method, response, err)
-	}
-	if invalid := offered.validate(response.Outcome); invalid != nil {
-		return nil, fmt.Errorf("acp: the permission handler's outcome is invalid: %w", invalid)
-	}
-	return response, nil
 }
 
 // answerCancelled claims a pending permission request now, on the cancelling

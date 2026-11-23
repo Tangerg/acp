@@ -18,7 +18,7 @@ func TestAScopedElicitationWriteSharesItsParentsResponseDeadline(t *testing.T) {
 	for name, readElicitation := range map[string]bool{"blocked elicitation": false, "blocked response": true} {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				conn := newTestAgentConn()
+				conn := newTestAgentConn(t)
 				conn.negotiation.accept(Negotiated{ClientCapabilities: ClientCapabilities{
 					Elicitation: OptValue(ElicitationCapabilities{Form: OptValue(ElicitationFormCapabilities{})}),
 				}})
@@ -57,10 +57,10 @@ func TestAScopedElicitationWriteSharesItsParentsResponseDeadline(t *testing.T) {
 					answered <- conn.respond(parent, &AuthenticateResponse{}, nil) != nil
 				}()
 				synctest.Wait()
-				remaining := responseWriteTimeout
+				remaining := detachedBudget
 				if readElicitation {
 					remaining /= 2
-					time.Sleep(responseWriteTimeout - remaining)
+					time.Sleep(detachedBudget - remaining)
 					if _, err := peer.Read(t.Context()); err != nil {
 						t.Fatal(err)
 					}
@@ -114,7 +114,7 @@ func TestARequestAnswerCannotOvertakeItsScopedElicitationWrite(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				conn := newTestAgentConn()
+				conn := newTestAgentConn(t)
 				conn.negotiation.accept(Negotiated{ClientCapabilities: ClientCapabilities{
 					Elicitation: OptValue(ElicitationCapabilities{
 						Form: OptValue(ElicitationFormCapabilities{}), URL: OptValue(ElicitationURLCapabilities{}),

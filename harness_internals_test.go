@@ -34,8 +34,37 @@ func connectRawAgent(t *testing.T, agent *Agent) (Connection, *AgentConn) {
 	return stream, agentConn
 }
 
-func newTestAgentConnWith(limits Limits) *AgentConn {
-	return newAgentConn(&Agent{config: AgentConfig{Limits: limits}}, nil)
+// newTestAgentConnWith assembles an agent connection with no transport, for
+// driving registration and turn state directly.
+func newTestAgentConnWith(t *testing.T, limits Limits) *AgentConn {
+	t.Helper()
+	agent, err := NewAgent(&AgentConfig{NewSession: newSessionHandler, Prompt: endTurn, Limits: limits})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	return newAgentConn(agent, nil)
+}
+
+// newTestClientConnWith assembles a client connection with no transport. The two
+// handlers every client needs are filled in when the configuration leaves them
+// unset.
+func newTestClientConnWith(t *testing.T, config ClientConfig) *ClientConn {
+	t.Helper()
+	if config.SessionUpdate == nil {
+		config.SessionUpdate = func(context.Context, *ClientConn, *SessionNotification) {}
+	}
+	if config.RequestPermission == nil {
+		config.RequestPermission = func(context.Context, *ClientConn, *RequestPermissionRequest) (
+			*RequestPermissionResponse, error,
+		) {
+			return cancelledPermission(), nil
+		}
+	}
+	client, err := NewClient(&config)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	return newClientConn(client, nil)
 }
 
 func rawCall(id int, method, params string) *jsonrpc.Request {

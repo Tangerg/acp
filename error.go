@@ -81,6 +81,12 @@ var (
 	// that anybody cancelled anything: the schema lets a peer abort for resource
 	// constraints or shutdown too.
 	ErrRequestCancelled error = codeSentinelError(ErrorCodeRequestCancelled)
+
+	// ErrResourceNotFound matches a peer's -32002, which the protocol gives a
+	// meaning callers act on: a session or file the peer does not have.
+	// Closing or deleting a session that is already gone succeeds for that
+	// reason, and a missing file is how a client says a path is free.
+	ErrResourceNotFound error = codeSentinelError(ErrorCodeResourceNotFound)
 )
 
 // ErrConnectionClosed is returned by an operation on a connection that has ended.
