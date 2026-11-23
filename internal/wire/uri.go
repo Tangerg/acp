@@ -22,25 +22,25 @@ const (
 func ValidateURI(value string) error {
 	scheme, remainder, present := strings.Cut(value, ":")
 	if !present || !validURIScheme(scheme) {
-		return errors.New("acp: URI requires a valid scheme")
+		return errors.New("URI requires a valid scheme")
 	}
 	hierarchy, fragment, hasFragment := strings.Cut(remainder, "#")
 	if hasFragment && !validURIComponent(fragment, uriQueryDelimiters) {
-		return errors.New("acp: URI has an invalid fragment")
+		return errors.New("URI has an invalid fragment")
 	}
 	path, query, hasQuery := strings.Cut(hierarchy, "?")
 	if hasQuery && !validURIComponent(query, uriQueryDelimiters) {
-		return errors.New("acp: URI has an invalid query")
+		return errors.New("URI has an invalid query")
 	}
 	if authorityAndPath, hasAuthority := strings.CutPrefix(path, "//"); hasAuthority {
 		authority, relativePath, _ := strings.Cut(authorityAndPath, "/")
 		if !validURIAuthority(authority) {
-			return errors.New("acp: URI has an invalid authority")
+			return errors.New("URI has an invalid authority")
 		}
 		path = relativePath
 	}
 	if !validURIComponent(path, uriPathDelimiters) {
-		return errors.New("acp: URI has an invalid path")
+		return errors.New("URI has an invalid path")
 	}
 	return nil
 }

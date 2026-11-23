@@ -3,25 +3,19 @@ package acp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 )
 
 // A lifetime owns shutdown: transport release, reader exit, delivery completion,
 // and the terminal error. These are separate moments because closing a stream
-// may race a successful Read that has not yet queued its last response.
-//
-// Only the reader signals its exit, and only delivery signals that every queued
-// response has reached its waiter. Transport release cannot stand in for either.
+// may race a successful Read that has not yet queued its last message; only the
+// reader signals its exit, and only delivery signals that every queued message
+// has reached its handler or waiter.
 type lifetime struct {
-	// ctx scopes everything the connection owns: the read loop, and every inbound
-	// request's context.
-	//
-	// A context in a struct is ordinarily a smell, because it hides which call a
-	// deadline belongs to. This one is not a call's: it is the connection's, which
-	// outlives every context passed to it — a caller who gave Connect a
-	// five-second handshake timeout has not asked for the connection to die after
-	// five seconds. There is nowhere else for it to live.
+	// ctx is the connection's lifetime, which outlives every context passed to
+	// it: a five-second handshake timeout is not a five-second connection.
 	ctx    context.Context //nolint:containedctx // the connection's lifetime, not a call's.
 	cancel context.CancelFunc
 
@@ -29,16 +23,15 @@ type lifetime struct {
 	released  chan struct{}
 	readEnded chan struct{}
 	delivered chan struct{}
-	// terminal is written before released closes and read only after, so every
-	// caller sees the same value without holding a lock.
-	terminal error
+	// terminal and releaseErr are written before released closes and read only
+	// after, so every reader sees the same values without a lock.
+	terminal   error
+	releaseErr error
 
-	mu sync.Mutex
-	// Registry membership ends at release, even if nobody enumerates connections.
+	mu         sync.Mutex
 	unregister func()
-	// stopped closes the work pool to new entrants. It is a separate flag from the
-	// channels because it guards a WaitGroup, and adding to one that Wait has
-	// already begun draining is a data race rather than a late arrival.
+	// stopped closes the work pool once delivery has finished, because adding to
+	// a WaitGroup that Wait has begun draining is a data race.
 	stopped bool
 	work    sync.WaitGroup
 }
@@ -54,28 +47,24 @@ func newLifetime() *lifetime {
 	}
 }
 
-// Cancellation precedes release so that a transport whose Close waits for handler
-// work cannot form a cycle with work still waiting for its context. Release runs
-// inside because failing it is terminal rather than a detail for a log: a
-// subprocess that could not be reaped is still running, and answering "closed
-// cleanly" would report it as gone.
-func (l *lifetime) endReading(cause error, release func() error) {
+// endReading ends the connection once and reports whether this call did. A clean
+// end of stream and a local close are not failures. Cancellation precedes release
+// so that a transport whose Close waits for handler work cannot wait on work that
+// is waiting for this context; a failed release is terminal, because a subprocess
+// that could not be reaped is still running.
+func (l *lifetime) endReading(cause error, release func() error) bool {
+	ended := false
 	l.endOnce.Do(func() {
-		// A clean end of stream is not a failure. Neither is a read that was
-		// unblocked by this side closing the transport.
-		switch {
-		case errors.Is(cause, io.EOF):
-			cause = nil
-		case errors.Is(cause, context.Canceled) && l.ctx.Err() != nil:
-			cause = nil
-		case errors.Is(cause, ErrConnectionClosed):
+		ended = true
+		if errors.Is(cause, io.EOF) || errors.Is(cause, ErrConnectionClosed) {
 			cause = nil
 		}
 		l.cancel()
-		if err := release(); err != nil && cause == nil {
-			cause = err
-		}
+		l.releaseErr = release()
 		l.terminal = cause
+		if l.terminal == nil {
+			l.terminal = l.releaseErr
+		}
 
 		l.mu.Lock()
 		if l.unregister != nil {
@@ -85,8 +74,11 @@ func (l *lifetime) endReading(cause error, release func() error) {
 		close(l.released)
 		l.mu.Unlock()
 	})
+	return ended
 }
 
+// onRelease runs unregister when the connection is released, or now if it has
+// been already.
 func (l *lifetime) onRelease(unregister func()) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -106,9 +98,9 @@ func (l *lifetime) finishDelivering(release func()) {
 	close(l.delivered)
 }
 
-// Once delivery has shut the work pool no peer can observe newly scheduled work,
-// so starting any would create a goroutine Wait no longer owns.
-func (l *lifetime) spawn(fn func()) {
+// start runs fn as work Wait owns, unless delivery has already finished, when no
+// peer could observe it and it is not started.
+func (l *lifetime) start(fn func()) {
 	l.mu.Lock()
 	if l.stopped {
 		l.mu.Unlock()
@@ -123,10 +115,7 @@ func (l *lifetime) spawn(fn func()) {
 	}()
 }
 
-func (l *lifetime) run(fn func()) { l.work.Go(fn) }
-
-// Releasing the transport ends the connection even while its reader is handing
-// off a final message and the delivery queue still holds work.
+// ended reports whether the transport has been released.
 func (l *lifetime) ended() bool {
 	select {
 	case <-l.released:
@@ -143,13 +132,13 @@ func (l *lifetime) wait() error {
 	return l.terminal
 }
 
+// failure is the error an operation on an ended connection returns. It does not
+// wait for delivery: a slow notification handler must not hold a failed write
+// after the transport is already closed.
 func (l *lifetime) failure() error {
-	// terminal is final before released closes. Waiting for delivery here would
-	// let an unrelated slow notification handler hold a failed write — and its
-	// caller's deadline — after the transport is already irrecoverably closed.
 	<-l.released
 	if l.terminal != nil {
-		return l.terminal
+		return fmt.Errorf("%w: %w", ErrConnectionClosed, l.terminal)
 	}
 	return ErrConnectionClosed
 }

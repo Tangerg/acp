@@ -11,54 +11,77 @@ var errElicitationIDInUse = errors.New("acp: URL elicitation identifier is alrea
 type urlElicitationState uint8
 
 const (
+	// urlElicitationReserved has an ID claimed by create work not yet answered.
 	urlElicitationReserved urlElicitationState = iota
+	// urlElicitationOutstanding was accepted and awaits an optional completion.
 	urlElicitationOutstanding
+	// urlElicitationCompleting has a completion being written.
 	urlElicitationCompleting
 )
 
 // urlElicitations owns the protocol lifetime of every URL elicitation on one
-// connection. A record has identity as well as an ID so a delayed rollback from
-// an earlier transaction can never remove a later reuse of the same wire ID.
+// connection. A record has identity as well as an ID, so a delayed rollback can
+// never touch a later reuse of the same wire ID.
+//
+// Completing an accepted interaction is optional, so the outstanding population
+// is bounded by forgetting the oldest outstanding record rather than by refusing
+// new elicitations: a forgotten ID only loses the ability to recognise its late
+// completion.
 type urlElicitations struct {
 	mu      sync.Mutex
 	entries map[ElicitationID]*urlElicitation
+	limit   int
+	next    uint64
 }
 
 type urlElicitation struct {
 	owner *urlElicitations
 	id    ElicitationID
 	state urlElicitationState
+	// order is when the record was created, for forgetting the oldest.
+	order uint64
 }
 
 type urlElicitationCompletion struct {
 	elicitation *urlElicitation
 }
 
+func newURLElicitations(limit int) *urlElicitations {
+	return &urlElicitations{entries: make(map[ElicitationID]*urlElicitation), limit: limit}
+}
+
 // reserve establishes uniqueness before work that may put the ID on the wire or
-// in front of a user. It is provisional until the create response accepts the
-// URL interaction: decline, cancellation, and failure reject the reservation.
-//
-// The bound is an argument rather than a field, as it is for the session handles
-// in connection.go. A field would have to be assigned by hand after the link
-// resolved it, once per peer type, and its zero value refuses every elicitation —
-// so forgetting one would look like a peer misbehaving rather than a connection
-// that was never finished being built.
-func (u *urlElicitations) reserve(id ElicitationID, limit int) (*urlElicitation, error) {
+// in front of a user. The reservation is provisional until an accepting answer.
+func (u *urlElicitations) reserve(id ElicitationID) (*urlElicitation, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
 	if _, exists := u.entries[id]; exists {
 		return nil, fmt.Errorf("%w: %q", errElicitationIDInUse, id)
 	}
-	if len(u.entries) >= limit {
-		return nil, fmt.Errorf("%w (limit %d)", errTooManyElicitations, limit)
+	if len(u.entries) >= u.limit && !u.forgetOldestOutstanding() {
+		return nil, fmt.Errorf("%w: URL elicitations in progress (limit %d)", ErrLimitExceeded, u.limit)
 	}
-	if u.entries == nil {
-		u.entries = make(map[ElicitationID]*urlElicitation)
-	}
-	record := &urlElicitation{owner: u, id: id, state: urlElicitationReserved}
+	u.next++
+	record := &urlElicitation{owner: u, id: id, state: urlElicitationReserved, order: u.next}
 	u.entries[id] = record
 	return record, nil
+}
+
+// forgetOldestOutstanding is called under the lock. Reserved and completing
+// records are mid-transaction and are never forgotten.
+func (u *urlElicitations) forgetOldestOutstanding() bool {
+	var oldest *urlElicitation
+	for _, record := range u.entries {
+		if record.state == urlElicitationOutstanding && (oldest == nil || record.order < oldest.order) {
+			oldest = record
+		}
+	}
+	if oldest == nil {
+		return false
+	}
+	delete(u.entries, oldest.id)
+	return true
 }
 
 func (e *urlElicitation) accept() {
@@ -77,13 +100,11 @@ func (e *urlElicitation) reject() {
 	}
 }
 
-// beginCompletion reserves the outstanding record for one notification. The ID
-// cannot be reused while the write is in flight, which prevents a delayed failed
-// completion from reopening or deleting a newer interaction under the same ID.
+// beginCompletion reserves an outstanding record for one completion, so that a
+// delayed failed write cannot reopen or delete a newer interaction.
 func (u *urlElicitations) beginCompletion(id ElicitationID) (*urlElicitationCompletion, bool) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-
 	record, exists := u.entries[id]
 	if !exists || record.state != urlElicitationOutstanding {
 		return nil, false
@@ -101,6 +122,7 @@ func (c *urlElicitationCompletion) sent() {
 	}
 }
 
+// unsent restores the record after a write the transport proved uncommitted.
 func (c *urlElicitationCompletion) unsent() {
 	record := c.elicitation
 	record.owner.mu.Lock()
@@ -110,13 +132,11 @@ func (c *urlElicitationCompletion) unsent() {
 	}
 }
 
-// receiveCompletion implements the client's MUST-ignore rule. Only an accepted
-// URL interaction is outstanding; a reservation whose handler has not consented
-// yet is deliberately not completed by an early or otherwise invalid notice.
+// receiveCompletion implements the client's must-ignore rule: only an accepted
+// interaction is completed, never a reservation whose handler has not consented.
 func (u *urlElicitations) receiveCompletion(id ElicitationID) bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-
 	record, exists := u.entries[id]
 	if !exists || record.state != urlElicitationOutstanding {
 		return false
@@ -125,6 +145,7 @@ func (u *urlElicitations) receiveCompletion(id ElicitationID) bool {
 	return true
 }
 
+// current is called under the owner's lock.
 func (e *urlElicitation) current(state urlElicitationState) bool {
 	return e.owner.entries[e.id] == e && e.state == state
 }

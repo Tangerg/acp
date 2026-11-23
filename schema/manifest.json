@@ -1,5 +1,5 @@
 {
-  "$comment": "Generation roots. Scope is the transitive $ref closure of everything named here; internal/cmd/schemagen computes it and CI fails if the exported set differs. See README.md#manifestjson for what each bucket means and when it retires.",
+  "$comment": "Generation roots. Scope is everything the planner reaches from them; internal/cmd/schemagen fails generation if a probe has become reachable. See README.md#choose-generation-roots for what each bucket means and when it retires.",
   "payloads": [
     "AuthenticateRequest",
     "AuthenticateResponse",
@@ -53,13 +53,18 @@
   ],
   "internal": {
     "$comment": "Generated but not exported: JSON-RPC plumbing a caller never names. Each value says why. An exported definition that reaches one of these is a generation failure, because a published type whose field a caller cannot name is worse than no type.",
-    "CancelRequestNotification": "the params of $/cancel_request, which the connection sends on its own behalf; a caller cancels by cancelling a context",
-    "RequestId": "a JSON-RPC request identifier, which the API never surfaces: not request IDs, not the envelope, not the method strings",
-    "ElicitationRequestScope": "the scope of a request-tied elicitation, which names a JSON-RPC request id; the agent-side operation reads it from the context of the request being served, so a caller never spells one"
+    "CancelRequestNotification": "the params of $/cancel_request, which the connection sends on its own behalf; a caller cancels by cancelling a context"
+  },
+  "bindings": {
+    "$comment": "Definitions whose grammar a hand-written Go type already owns, so generation emits no second representation. The generator holds each definition to the declared shape and stops if a schema release changes it.",
+    "RequestId": {
+      "go": "jsonrpc.ID",
+      "shape": "jsonrpc-id",
+      "why": "JSON-RPC owns its request identifier; the envelope and every payload that names a request share the one type that decodes it."
+    }
   },
   "probes": {
-    "$comment": "Layer-1 wire-shape probes. Each key is a definition; each value is the shape it proves that no payload root reaches yet. Entries leave as the payload roots grow to reach the same shapes.",
-    "MultiSelectItems": "an open object union: a `not` catch-all arm, an untagged arm, and extra properties that must survive"
+    "$comment": "Layer-1 wire-shape probes. Each key is a definition; each value is the shape it proves that no payload root reaches yet. Entries leave as the payload roots grow to reach the same shapes."
   },
   "projections": {
     "$comment": "Handle-facing params types: the generated wire request minus the identifiers a handle owns.",
@@ -77,7 +82,7 @@
       ],
       "why": "A ClientSession binds the session identifier. Cancel still takes params because the notification carries _meta too."
     },
-    "SetModeParams": {
+    "SetSessionModeParams": {
       "from": "SetSessionModeRequest",
       "without": [
         "sessionId"
@@ -125,7 +130,7 @@
         "sessionId",
         "terminalId"
       ],
-      "why": "A Terminal binds both identifiers."
+      "why": "A TerminalHandle binds both identifiers."
     },
     "WaitForTerminalExitParams": {
       "from": "WaitForTerminalExitRequest",
@@ -133,7 +138,7 @@
         "sessionId",
         "terminalId"
       ],
-      "why": "A Terminal binds both identifiers."
+      "why": "A TerminalHandle binds both identifiers."
     },
     "KillTerminalParams": {
       "from": "KillTerminalRequest",
@@ -141,7 +146,7 @@
         "sessionId",
         "terminalId"
       ],
-      "why": "A Terminal binds both identifiers."
+      "why": "A TerminalHandle binds both identifiers."
     },
     "ReleaseTerminalParams": {
       "from": "ReleaseTerminalRequest",
@@ -149,16 +154,16 @@
         "sessionId",
         "terminalId"
       ],
-      "why": "A Terminal binds both identifiers."
+      "why": "A TerminalHandle binds both identifiers."
     },
-    "CloseParams": {
+    "CloseSessionParams": {
       "from": "CloseSessionRequest",
       "without": [
         "sessionId"
       ],
       "why": "A ClientSession binds the session identifier. Close still takes params because the request carries _meta too."
     },
-    "SetConfigOptionParams": {
+    "SetSessionConfigOptionParams": {
       "from": "SetSessionConfigOptionRequest",
       "without": [
         "sessionId"

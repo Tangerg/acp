@@ -24,7 +24,7 @@ func TestEverythingRetainedCanBeDeepCopied(t *testing.T) {
 		"Meta":                reflect.TypeFor[Meta](),
 		"ClientCapabilities":  reflect.TypeFor[ClientCapabilities](),
 		"AgentCapabilities":   reflect.TypeFor[AgentCapabilities](),
-		"PeerInfo":            reflect.TypeFor[PeerInfo](),
+		"Negotiated":          reflect.TypeFor[Negotiated](),
 		"AuthMethodAgent":     reflect.TypeFor[AuthMethodAgent](),
 		"AuthMethodTerminal":  reflect.TypeFor[AuthMethodTerminal](),
 		"ElicitationFormMode": reflect.TypeFor[ElicitationFormMode](),

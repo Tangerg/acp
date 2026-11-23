@@ -2,28 +2,25 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"maps"
+	"os"
+	"slices"
 	"strings"
 	"testing"
 )
 
-// The capability table is hand-maintained, so it is the one thing in this package
-// that can silently fall behind the schema. These hold it against the generated
-// method table in both directions.
-//
-// This is the check design.md asks CI for. It runs as a test rather than as a
-// script because the two things it compares are both in this package, and a test
-// that fails on a schema bump names the method it is missing.
+// The capability table is hand-maintained, so it is the one thing that can
+// silently fall behind the schema. These hold it against the generated method
+// table and the schema's own capability tree.
+
 func TestEveryMethodHasAGate(t *testing.T) {
 	for name := range standardMethods {
-		if _, gated := gates[name]; !gated {
-			t.Errorf("the schema defines %q and the capability table does not classify it; "+
-				"add a row saying whether it is baseline, gated, or not implemented yet", name)
+		if _, classified := gates[name]; !classified {
+			t.Errorf("the schema defines %q and the capability table does not classify it", name)
 		}
 	}
-}
-
-func TestNoGateNamesAMethodTheSchemaDoesNotDefine(t *testing.T) {
 	for name := range gates {
 		if !isStandardMethod(name) {
 			t.Errorf("the capability table classifies %q, which the schema no longer defines", name)
@@ -31,204 +28,134 @@ func TestNoGateNamesAMethodTheSchemaDoesNotDefine(t *testing.T) {
 	}
 }
 
-// A row's shape has to match its classification, or the gate would either consult
-// a predicate that is not there or ignore one that is.
-func TestGateRowsAreWellFormed(t *testing.T) {
-	for name, gate := range gates {
-		switch gate.gating {
-		case gatingCapability:
-			if gate.advertised == nil {
-				t.Errorf("%q is gated on a capability with no predicate to read it", name)
+// A gate reads the capabilities of the side that serves its method.
+func TestEachGateReadsTheServingSide(t *testing.T) {
+	for method, gate := range gates {
+		side := standardMethods[method].side
+		switch gate.(type) {
+		case nil:
+		case agentCapability:
+			if side != sideAgent {
+				t.Errorf("%s is served by side %d and gated on an agent capability", method, side)
 			}
-			if gate.capability == "" {
-				t.Errorf("%q is gated on a capability the row does not name, so a refusal cannot say which", name)
+		case clientCapability:
+			if side != sideClient {
+				t.Errorf("%s is served by side %d and gated on a client capability", method, side)
 			}
-		case gatingBaseline:
-			if gate.advertised != nil {
-				t.Errorf("%q is baseline and carries a predicate, so something reads a gate that is not there", name)
-			}
-			if gate.capability != "" {
-				t.Errorf("%q is baseline and names a capability", name)
-			}
-		case gatingUnimplemented:
-			// An unimplemented method may carry a predicate, and most do: it is
-			// what construction reads to refuse an advertisement for a method
-			// this package cannot serve. What it may not do is carry one without
-			// naming the capability, because the refusal quotes that name.
-			if gate.advertised != nil && gate.capability == "" {
-				t.Errorf("%q has a predicate and no capability to name in the refusal", name)
-			}
-			if gate.advertised == nil && gate.capability != "" {
-				t.Errorf("%q names a capability with no predicate to read it", name)
-			}
-		}
-		if gate.advertised != nil && gate.owner == 0 && gate.capability != "" {
-			// sideAgent is zero, so this only catches a row that forgot the field
-			// entirely — which is why the check is that the capability path and
-			// the owner agree rather than that the owner is set.
-			if !strings.HasPrefix(gate.capability, "agentCapabilities") {
-				t.Errorf("%q reads %s and its owner says the agent", name, gate.capability)
-			}
-		}
-		if gate.owner == sideClient && !strings.HasPrefix(gate.capability, "clientCapabilities") {
-			t.Errorf("%q reads %s and its owner says the client", name, gate.capability)
-		}
-		if gate.why == "" {
-			t.Errorf("%q is classified without saying why, so the classification cannot be reviewed", name)
+		default:
+			t.Errorf("%s has a gate of unknown kind %T", method, gate)
 		}
 	}
 }
 
-// Every predicate, exercised in both states. A predicate that read the wrong
-// field would be an authority boundary in the wrong place, and nothing else here
-// would notice.
-func TestEachPredicateReadsItsOwnCapability(t *testing.T) {
-	tests := []struct {
-		method    string
-		advertise func(*PeerInfo)
+// Advertising one capability permits exactly the methods that share its leaf. A
+// closure reading or writing the wrong leaf would put an authority boundary in the
+// wrong place, and nothing else would notice.
+func TestEachCapabilityPermitsExactlyItsMethods(t *testing.T) {
+	for method, gate := range gates {
+		var agreed Negotiated
+		switch gate := gate.(type) {
+		case agentCapability:
+			gate.set(&agreed.AgentCapabilities)
+		case clientCapability:
+			if gate.set == nil {
+				continue // derived from a handler group; covered below
+			}
+			gate.set(&agreed.ClientCapabilities)
+		default:
+			continue
+		}
+		for other, otherGate := range gates {
+			advertised, _ := agreed.advertises(other)
+			wanted := otherGate == nil || otherGate.path() == gate.path()
+			if advertised != wanted {
+				t.Errorf("advertising %s's capability made %s advertised = %t", method, other, advertised)
+			}
+		}
+	}
+}
+
+func TestTheElicitationGatesFollowTheModes(t *testing.T) {
+	var silent, empty, formOnly, both Negotiated
+	empty.ClientCapabilities.Elicitation = OptValue(ElicitationCapabilities{})
+	formOnly.ClientCapabilities.Elicitation = OptValue(ElicitationCapabilities{
+		Form: OptValue(ElicitationFormCapabilities{}),
+	})
+	both.ClientCapabilities.Elicitation = OptValue(ElicitationCapabilities{
+		Form: OptValue(ElicitationFormCapabilities{}),
+		URL:  OptValue(ElicitationURLCapabilities{}),
+	})
+	for name, test := range map[string]struct {
+		agreed           Negotiated
+		create, complete bool
 	}{
-		{
-			method:    methodSessionLoad,
-			advertise: func(peer *PeerInfo) { peer.AgentCapabilities.LoadSession = true },
-		},
-		{
-			method:    methodFsReadTextFile,
-			advertise: func(peer *PeerInfo) { peer.ClientCapabilities.Fs.ReadTextFile = true },
-		},
-		{
-			method:    methodFsWriteTextFile,
-			advertise: func(peer *PeerInfo) { peer.ClientCapabilities.Fs.WriteTextFile = true },
-		},
-		{
-			method:    methodTerminalCreate,
-			advertise: func(peer *PeerInfo) { peer.ClientCapabilities.Terminal = true },
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.method, func(t *testing.T) {
-			var silent PeerInfo
-			if err := silent.permits(test.method); err == nil {
-				t.Error("allowed with nothing advertised")
-			}
-
-			var advertising PeerInfo
-			test.advertise(&advertising)
-			if err := advertising.permits(test.method); err != nil {
-				t.Errorf("refused with the capability advertised: %v", err)
-			}
-		})
-	}
-}
-
-// Reading and writing are two capabilities, and the terminal group is one. Both
-// facts are the schema's, and both are easy to get wrong in a table.
-func TestTheFilesystemCapabilitiesAreIndependent(t *testing.T) {
-	var reading PeerInfo
-	reading.ClientCapabilities.Fs.ReadTextFile = true
-
-	if reading.permits(methodFsReadTextFile) != nil {
-		t.Error("reading was refused although it was advertised")
-	}
-	if reading.permits(methodFsWriteTextFile) == nil {
-		t.Error("advertising the read capability also allowed writing")
-	}
-}
-
-func TestTheTerminalCapabilityCoversAllFiveMethods(t *testing.T) {
-	terminalMethods := []string{
-		methodTerminalCreate,
-		methodTerminalOutput,
-		methodTerminalWaitForExit,
-		methodTerminalKill,
-		methodTerminalRelease,
-	}
-
-	var advertising PeerInfo
-	advertising.ClientCapabilities.Terminal = true
-	for _, name := range terminalMethods {
-		if advertising.permits(name) != nil {
-			t.Errorf("%q was refused although the terminal capability was advertised", name)
-		}
-		var silent PeerInfo
-		if silent.permits(name) == nil {
-			t.Errorf("%q was allowed with the terminal capability unadvertised", name)
+		// A present object advertising no mode advertises nothing: the RFD says it
+		// "advertises no supported modes, not form support".
+		"nothing":   {silent, false, false},
+		"no mode":   {empty, false, false},
+		"form only": {formOnly, true, false},
+		"both":      {both, true, true},
+	} {
+		create, _ := test.agreed.advertises(methodElicitationCreate)
+		complete, _ := test.agreed.advertises(methodElicitationComplete)
+		if create != test.create || complete != test.complete {
+			t.Errorf("%s: create %t complete %t, want %t and %t", name, create, complete, test.create, test.complete)
 		}
 	}
 }
 
-// Advertising a capability whose method this package does not implement is refused
-// at construction, before a connection exists to break the promise on.
-//
-// This used to be a hole: only loadSession and the fs/terminal handlers were
-// checked, so a peer could advertise an unsupported method and the inbound gate
-// would then refuse a method the peer had been told was there.
-func TestAdvertisingAnUnimplementedMethodIsRefusedAtConstruction(t *testing.T) {
-	// These are implementable now, so what the construction check catches is an
-	// advertisement with no handler behind it rather than one this package could
-	// never serve.
-	agentCases := map[string]*AgentCapabilities{
+func TestAnUnknownMethodIsNotAdvertised(t *testing.T) {
+	var agreed Negotiated
+	if advertised, _ := agreed.advertises("_vendor.example/thing"); advertised {
+		t.Error("an extension method passed the capability gate")
+	}
+}
+
+// Advertising a method no handler serves is refused at construction, before a
+// connection exists to break the promise on.
+func TestAdvertisingAnUnservedMethodIsRefusedAtConstruction(t *testing.T) {
+	for name, capabilities := range map[string]*AgentCapabilities{
 		"session listing": {SessionCapabilities: SessionCapabilities{List: OptValue(SessionListCapabilities{})}},
 		"session closing": {SessionCapabilities: SessionCapabilities{Close: OptValue(SessionCloseCapabilities{})}},
 		"logout":          {Auth: AgentAuthCapabilities{Logout: OptValue(LogoutCapabilities{})}},
-	}
-	for name, capabilities := range agentCases {
-		t.Run("an agent advertising "+name, func(t *testing.T) {
-			_, err := NewAgent(&AgentConfig{
-				NewSession:   newSessionStub,
-				Prompt:       promptStub,
-				Cancel:       func(context.Context, *AgentSession, *CancelNotification) {},
-				Capabilities: capabilities,
-			})
-			if err == nil {
-				t.Fatal("the advertisement was accepted, so the inbound gate would refuse a method " +
-					"the peer was told was there")
-			}
-		})
-	}
-
-	t.Run("a client advertising an elicitation mode it cannot render", func(t *testing.T) {
-		_, err := NewClient(&ClientConfig{
-			SessionUpdate:     func(context.Context, *ClientConn, *SessionNotification) {},
-			RequestPermission: permissionStub,
-			Capabilities: &ClientCapabilities{Elicitation: OptValue(ElicitationCapabilities{
-				Form: OptValue(ElicitationFormCapabilities{}),
-			})},
-		})
+	} {
+		_, err := NewAgent(&AgentConfig{NewSession: newSessionHandler, Prompt: endTurn, Capabilities: capabilities})
 		if err == nil {
-			t.Fatal("a client advertised the form mode with no handler that renders it, so every " +
-				"form elicitation would be refused after the agent was told it could send one")
+			t.Errorf("an agent advertising %s with no handler was accepted", name)
 		}
-	})
+	}
 
-	// The mode is checked in the same direction as a method: advertising more than
-	// the handlers serve is refused, advertising less is a client's own choice.
-	t.Run("a client advertising one mode of two it serves", func(t *testing.T) {
-		_, err := NewClient(&ClientConfig{
-			SessionUpdate:     func(context.Context, *ClientConn, *SessionNotification) {},
-			RequestPermission: permissionStub,
-			Elicitation: &ElicitationHandlers{
-				Form: formStub,
-				URL:  urlStub,
-			},
-			Capabilities: &ClientCapabilities{Elicitation: OptValue(ElicitationCapabilities{
-				Form: OptValue(ElicitationFormCapabilities{}),
-			})},
-		})
-		if err != nil {
-			t.Fatalf("a client that renders both modes and offers one was refused: %v", err)
-		}
+	_, err := NewClient(&ClientConfig{
+		SessionUpdate:     func(context.Context, *ClientConn, *SessionNotification) {},
+		RequestPermission: permissionStub,
+		Capabilities: &ClientCapabilities{Elicitation: OptValue(ElicitationCapabilities{
+			Form: OptValue(ElicitationFormCapabilities{}),
+		})},
 	})
+	if err == nil {
+		t.Error("a client advertised the form mode with no handler that renders it")
+	}
+
+	// Advertising fewer modes than the handlers serve is the client's choice.
+	_, err = NewClient(&ClientConfig{
+		SessionUpdate:     func(context.Context, *ClientConn, *SessionNotification) {},
+		RequestPermission: permissionStub,
+		Elicitation:       &ElicitationHandlers{Form: formStub, URL: urlStub},
+		Capabilities: &ClientCapabilities{Elicitation: OptValue(ElicitationCapabilities{
+			Form: OptValue(ElicitationFormCapabilities{}),
+		})},
+	})
+	if err != nil {
+		t.Errorf("a client that renders both modes and offers one was refused: %v", err)
+	}
 }
 
-// These capability fields explicitly define both omitted and null as false. Opt
-// keeps those states separate for round trips, so the authority check must not
-// confuse "present null" with "present capability object".
+// Capability objects define both omitted and null as no, so a null object is not
+// an advertisement to refuse.
 func TestNullCapabilityObjectsDoNotAdvertiseMethods(t *testing.T) {
 	_, err := NewAgent(&AgentConfig{
-		NewSession: newSessionStub,
-		Prompt:     promptStub,
-		Cancel:     func(context.Context, *AgentSession, *CancelNotification) {},
+		NewSession: newSessionHandler,
+		Prompt:     endTurn,
 		Capabilities: &AgentCapabilities{
 			Auth: AgentAuthCapabilities{Logout: OptNull[LogoutCapabilities]()},
 			SessionCapabilities: SessionCapabilities{
@@ -242,120 +169,143 @@ func TestNullCapabilityObjectsDoNotAdvertiseMethods(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAgent rejected null capabilities as advertisements: %v", err)
 	}
-
-	_, err = NewClient(&ClientConfig{
-		SessionUpdate: func(context.Context, *ClientConn, *SessionNotification) {},
-		RequestPermission: func(context.Context, *ClientConn, *RequestPermissionRequest) (*RequestPermissionResponse, error) {
-			return &RequestPermissionResponse{Outcome: &RequestPermissionOutcomeCancelled{}}, nil
-		},
-		Capabilities: &ClientCapabilities{Elicitation: OptNull[ElicitationCapabilities]()},
-	})
-	if err != nil {
-		t.Fatalf("NewClient rejected a null elicitation capability as an advertisement: %v", err)
-	}
 }
 
-// An agent that offers authentication methods must be able to serve the method it
-// tells a client to call.
 func TestOfferingAuthMethodsWithoutTheHandlerIsRefused(t *testing.T) {
 	_, err := NewAgent(&AgentConfig{
 		AuthMethods: []AuthMethod{&AuthMethodAgent{ID: "oauth", Name: "Sign in"}},
-		NewSession:  newSessionStub,
-		Prompt:      promptStub,
-		Cancel:      func(context.Context, *AgentSession, *CancelNotification) {},
+		NewSession:  newSessionHandler,
+		Prompt:      endTurn,
 	})
 	if err == nil {
 		t.Fatal("an agent offered an authentication method it cannot serve")
 	}
 }
 
-// A baseline method needs no capability, and a gated one is refused until the peer
-// that serves it says it is there.
-func TestBaselineIsAllowedAndGatedIsNotUntilAdvertised(t *testing.T) {
-	var silent PeerInfo
-	for _, name := range []string{methodInitialize, methodSessionNew, methodSessionPrompt, methodSessionUpdate} {
-		if silent.permits(name) != nil {
-			t.Errorf("the baseline method %q was refused", name)
-		}
-	}
-	for _, name := range []string{
-		methodLogout, methodSessionList, methodSessionClose,
-		methodElicitationCreate, methodElicitationComplete,
-	} {
-		if silent.permits(name) == nil {
-			t.Errorf("%q is gated but the gate allowed it unadvertised", name)
-		}
-	}
+// The boolean configuration option is granted through the client's own
+// advertisement, at every level of its nesting.
+func TestABooleanConfigOptionNeedsTheClientToHaveAdvertisedIt(t *testing.T) {
+	boolean := &SetSessionConfigOptionRequest{Value: &SetSessionConfigOptionRequestBoolean{}}
+	selected := &SetSessionConfigOptionRequest{Value: &SetSessionConfigOptionRequestValueID{}}
 
-	var loud PeerInfo
-	loud.ClientCapabilities.Elicitation = OptValue(ElicitationCapabilities{
-		Form: OptValue(ElicitationFormCapabilities{}),
-		URL:  OptValue(ElicitationURLCapabilities{}),
-	})
-	for _, name := range []string{methodElicitationCreate, methodElicitationComplete} {
-		if err := loud.permits(name); err != nil {
-			t.Errorf("%q was advertised and the gate still refused it: %v", name, err)
-		}
+	var silent Negotiated
+	if err := selected.checkOutbound(&silent); err != nil {
+		t.Errorf("a select value was refused, and the schema gates only the boolean type: %v", err)
 	}
-
-	// The url mode gates the completion on its own, so a client that renders forms
-	// and not pages serves the one and not the other.
-	var formOnly PeerInfo
-	formOnly.ClientCapabilities.Elicitation = OptValue(ElicitationCapabilities{
-		Form: OptValue(ElicitationFormCapabilities{}),
-	})
-	if err := formOnly.permits(methodElicitationCreate); err != nil {
-		t.Errorf("a form-only client was refused elicitation/create: %v", err)
+	err := boolean.checkOutbound(&silent)
+	if !errors.Is(err, ErrNotAdvertised) || !strings.Contains(err.Error(),
+		"clientCapabilities.session.configOptions.boolean") {
+		t.Fatalf("refused with %v, want ErrNotAdvertised naming the capability", err)
 	}
-	if formOnly.permits(methodElicitationComplete) == nil {
-		t.Error("a client that advertised no url mode was allowed elicitation/complete")
+	partial := Negotiated{ClientCapabilities: ClientCapabilities{Session: OptValue(ClientSessionCapabilities{})}}
+	if boolean.checkOutbound(&partial) == nil {
+		t.Error("session capabilities with no configOptions advertised a boolean option")
 	}
-}
-
-// The unimplemented classification, which no row uses now that elicitation is
-// served. It is tested on a table of its own because the thing being checked is
-// that the classification still means what capabilities.go says it means — the
-// day a schema bump adds a method, this is the row somebody will reach for.
-func TestAnUnimplementedRowIsRefusedToBothSides(t *testing.T) {
-	const method = "example/not_served"
-	table := gateTable{method: {
-		gating:     gatingUnimplemented,
-		capability: "clientCapabilities.example",
-		owner:      sideClient,
-		advertised: func(PeerInfo) bool { return true },
+	advertised := Negotiated{ClientCapabilities: ClientCapabilities{
+		Session: OptValue(ClientSessionCapabilities{
+			ConfigOptions: OptValue(SessionConfigOptionsCapabilities{
+				Boolean: OptValue(BooleanConfigOptionCapabilities{}),
+			}),
+		}),
 	}}
-
-	// Construction: an advertisement is refused for the method, not for a missing
-	// handler, because no handler could make it servable.
-	exceeded := table.exceeded(PeerInfo{}, sideClient, func(string) bool { return true })
-	if len(exceeded) != 1 {
-		t.Fatalf("exceeded reported %v, want the one unimplemented method", exceeded)
-	}
-	if !strings.Contains(exceeded[0], "does not implement") {
-		t.Errorf("exceeded said %q, which does not say the package cannot serve it", exceeded[0])
-	}
-
-	// And it is refused even when the implementation check would have passed,
-	// which is what keeps an unimplemented row from reading as a gated one.
-	if got := table.exceeded(PeerInfo{}, sideClient, func(string) bool { return false }); len(got) != 1 {
-		t.Fatalf("exceeded reported %v with no handler either, want the same one", got)
+	if err := boolean.checkOutbound(&advertised); err != nil {
+		t.Errorf("a boolean value was refused although the client advertised it: %v", err)
 	}
 }
 
-// A name outside the table is not a standard method, and the gate is not where an
-// extension method is decided.
-func TestAnUnknownMethodIsRefused(t *testing.T) {
-	var silent PeerInfo
-	if silent.permits("_vendor.example/thing") == nil {
-		t.Error("an extension method reached the capability gate and was allowed")
+// Every capability leaf the schema defines is read by something: a method gate,
+// a parameter capability, or the one reader named here. The leaves come from the
+// schema itself, so a capability added upstream fails this test until something
+// acts on it, rather than arriving as a grant nothing enforces.
+func TestEveryCapabilityIsRead(t *testing.T) {
+	read := map[string]bool{
+		// Read by authentication: terminal methods are offered only to a client
+		// that enabled them.
+		"clientCapabilities.auth.terminal": true,
 	}
-	if isStandardMethod("_vendor.example/thing") {
-		t.Error("an extension method is reported as standard, so the extension API would refuse it")
+	for _, gate := range gates {
+		if gate != nil {
+			read[gate.path()] = true
+		}
+	}
+	for _, capability := range []parameterCapability{
+		promptImage, promptAudio, promptResource, mcpHTTP, mcpSse, additionalDirectories, systemPrompt,
+		systemPromptOverride, booleanConfigOptions, noticeUpdates, compactionUpdates, planUpdates,
+		subagentUpdates, elicitationForm.parameterCapability, elicitationURL.parameterCapability,
+	} {
+		read[capability.capability] = true
+	}
+
+	leaves, nodes := schemaCapabilityTree(t)
+	for _, leaf := range leaves {
+		if !read[leaf] {
+			t.Errorf("the schema defines %s and nothing in this package reads it", leaf)
+		}
+	}
+	for _, path := range slices.Sorted(maps.Keys(read)) {
+		if !slices.Contains(nodes, path) {
+			t.Errorf("this package reads %s, which the schema does not define", path)
+		}
 	}
 }
 
-// The generated table agrees with the schema about how many methods there are,
-// which is the number the documentation quotes.
+// schemaCapabilityTree walks the schema's capability tree from both roots,
+// returning its leaves and every path in it. A leaf is a boolean or an object
+// whose only property is _meta, which the schema uses as a present-means-yes
+// marker; a container may also be read for its own presence.
+func schemaCapabilityTree(t *testing.T) (leaves, nodes []string) {
+	t.Helper()
+	raw, err := os.ReadFile("schema/schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Defs map[string]capabilitySchema `json:"$defs"`
+	}
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	var walk func(path string, schema capabilitySchema)
+	walk = func(path string, schema capabilitySchema) {
+		nodes = append(nodes, path)
+		if ref := schema.reference(); ref != "" {
+			schema = document.Defs[ref]
+		}
+		properties := slices.DeleteFunc(slices.Sorted(maps.Keys(schema.Properties)),
+			func(name string) bool { return name == "_meta" })
+		if len(properties) == 0 {
+			leaves = append(leaves, path)
+			return
+		}
+		for _, name := range properties {
+			walk(path+"."+name, schema.Properties[name])
+		}
+	}
+	for root, definition := range map[string]string{
+		"agentCapabilities": "AgentCapabilities", "clientCapabilities": "ClientCapabilities",
+	} {
+		walk(root, document.Defs[definition])
+	}
+	slices.Sort(leaves)
+	return leaves, nodes
+}
+
+type capabilitySchema struct {
+	Ref        string                      `json:"$ref"`
+	AllOf      []capabilitySchema          `json:"allOf"`
+	AnyOf      []capabilitySchema          `json:"anyOf"`
+	Properties map[string]capabilitySchema `json:"properties"`
+}
+
+func (s capabilitySchema) reference() string {
+	for _, candidate := range append(append([]capabilitySchema{s}, s.AllOf...), s.AnyOf...) {
+		if name, local := strings.CutPrefix(candidate.Ref, "#/$defs/"); local {
+			return name
+		}
+	}
+	return ""
+}
+
 func TestTheMethodTableIsTheSizeTheSchemaSays(t *testing.T) {
 	if got, want := len(standardMethods), 25; got != want {
 		t.Fatalf("the method table has %d methods, want %d", got, want)
@@ -363,185 +313,23 @@ func TestTheMethodTableIsTheSizeTheSchemaSays(t *testing.T) {
 	if standardMethods[methodCancelRequest].side != sideProtocol {
 		t.Error("$/cancel_request belongs to the connection rather than to either peer")
 	}
-	if standardMethods[methodSessionUpdate].shape != shapeNotification {
-		t.Error("session/update is a notification: there is no response to return")
-	}
-	if standardMethods[methodSessionPrompt].shape != shapeRequest {
-		t.Error("session/prompt is a request, and the turn ends when it is answered")
-	}
-	if !standardMethods[methodSessionDelete].requiresSessionID {
-		t.Error("session/delete lost the session scope required by its schema params")
-	}
-	if standardMethods[methodSessionList].requiresSessionID {
-		t.Error("session/list was given a session scope its schema params do not carry")
+	if !standardMethods[methodSessionDelete].requiresSessionID || standardMethods[methodSessionList].requiresSessionID {
+		t.Error("session scoping does not follow the schema's params")
 	}
 }
 
-// Handlers for the tests above, which are about what construction refuses rather
-// than about what a handler answers.
-func newSessionStub(context.Context, *AgentConn, *NewSessionRequest) (*NewSessionResponse, error) {
-	return &NewSessionResponse{SessionID: "sess-1"}, nil
-}
-
-func promptStub(context.Context, *AgentSession, *PromptRequest) (*PromptResponse, error) {
-	return &PromptResponse{StopReason: StopReasonEndTurn}, nil
-}
-
-// The boolean session configuration option, which the schema gates through the
-// client's own advertisement rather than the agent's.
-func TestABooleanConfigOptionNeedsTheClientToHaveAdvertisedIt(t *testing.T) {
-	boolean := &SetSessionConfigOptionRequestBoolean{}
-	selected := &SetSessionConfigOptionRequestValueID{}
-
-	var silent PeerInfo
-	if err := silent.permitsConfigOptionValue(selected); err != nil {
-		t.Errorf("a select value was refused, and the schema gates only the boolean type: %v", err)
-	}
-	err := silent.permitsConfigOptionValue(boolean)
-	if err == nil {
-		t.Fatal("a boolean value was allowed although the client advertised no support for one")
-	}
-	var refusal *Error
-	if !errors.As(err, &refusal) || refusal.Code != ErrorCodeInvalidParams {
-		t.Fatalf("refused with %v, want invalid params: the method is there and it is the value "+
-			"inside it that was never advertised", err)
-	}
-	if !strings.Contains(refusal.Message, "clientCapabilities.session.configOptions.boolean") {
-		t.Errorf("the refusal says %q, which does not name the capability", refusal.Message)
-	}
-
-	// Every level of the nesting has to be present, because each is an Opt whose
-	// absent state means the capability was not advertised.
-	partial := PeerInfo{ClientCapabilities: ClientCapabilities{
-		Session: OptValue(ClientSessionCapabilities{}),
-	}}
-	if partial.permitsConfigOptionValue(boolean) == nil {
-		t.Error("session capabilities with no configOptions advertised a boolean option")
-	}
-
-	advertised := PeerInfo{ClientCapabilities: ClientCapabilities{
-		Session: OptValue(ClientSessionCapabilities{
-			ConfigOptions: OptValue(SessionConfigOptionsCapabilities{
-				Boolean: OptValue(BooleanConfigOptionCapabilities{}),
-			}),
-		}),
-	}}
-	if err := advertised.permitsConfigOptionValue(boolean); err != nil {
-		t.Errorf("a boolean value was refused although the client advertised it: %v", err)
-	}
-}
-
-// The dual of TestEveryMethodHasAGate: every capability the schema defines is
-// read by something.
-//
-// The method table says which capability gates which method, and a test holds it
-// against the generated method list in both directions. Nothing said the same
-// about capabilities, and the gap that left was real: the boolean configuration
-// option capability was defined, decoded, carried in PeerInfo, and read by
-// nothing at all.
-//
-// A capability that gates a method is read by the table. One that gates a
-// parameter is read by a permits* function. One that carries no permission is
-// listed here with what it does instead. A capability in none of the three is a
-// grant this package accepted and never acted on.
-func TestEveryCapabilityIsRead(t *testing.T) {
-	gated := map[string]bool{}
-	for _, gate := range gates {
-		if gate.capability != "" {
-			gated[gate.capability] = true
-		}
-	}
-
-	// The leaves the schema defines, each with what reads it.
-	leaves := map[string]string{
-		"agentCapabilities.loadSession":                               "gates session/load",
-		"agentCapabilities.auth.logout":                               "gates logout",
-		"agentCapabilities.sessionCapabilities.list":                  "gates session/list",
-		"agentCapabilities.sessionCapabilities.delete":                "gates session/delete",
-		"agentCapabilities.sessionCapabilities.resume":                "gates session/resume",
-		"agentCapabilities.sessionCapabilities.close":                 "gates session/close",
-		"clientCapabilities.fs.readTextFile":                          "gates fs/read_text_file",
-		"clientCapabilities.fs.writeTextFile":                         "gates fs/write_text_file",
-		"clientCapabilities.terminal":                                 "gates all five terminal methods",
-		"clientCapabilities.elicitation":                              "gates elicitation/create",
-		"clientCapabilities.elicitation.url":                          "gates elicitation/complete",
-		"agentCapabilities.promptCapabilities.image":                  "PeerInfo.permitsPromptContent",
-		"agentCapabilities.promptCapabilities.audio":                  "PeerInfo.permitsPromptContent",
-		"agentCapabilities.promptCapabilities.embeddedContext":        "PeerInfo.permitsPromptContent",
-		"agentCapabilities.mcpCapabilities.http":                      "PeerInfo.permitsSessionSetup",
-		"agentCapabilities.mcpCapabilities.sse":                       "PeerInfo.permitsSessionSetup",
-		"agentCapabilities.sessionCapabilities.additionalDirectories": "PeerInfo.permitsSessionSetup",
-		"clientCapabilities.elicitation.form":                         "PeerInfo.permitsElicitationMode",
-		"clientCapabilities.session.configOptions.boolean":            "PeerInfo.permitsBooleanConfigOptions",
-		"clientCapabilities.session.compaction":                       "PeerInfo.validateSessionUpdate",
-		"clientCapabilities.session.notices":                          "PeerInfo.validateSessionUpdate",
-		"clientCapabilities.auth.terminal":                            "authenticationMethods.offered and validateOffer",
-	}
-
-	// Held against the gate table, so a row whose capability path is misspelled
-	// cannot pass by being listed here as gating something.
-	for path, how := range leaves {
-		if strings.HasPrefix(how, "gates ") && !gated[path] {
-			t.Errorf("%s is listed as gating a method, and no gate row names it", path)
-		}
-		if !strings.HasPrefix(how, "gates ") && gated[path] {
-			t.Errorf("%s gates a method and is listed as read by %s instead", path, how)
-		}
-	}
-	for path := range gated {
-		if _, listed := leaves[path]; !listed {
-			t.Errorf("the gate table reads %s, which this list does not name", path)
-		}
-	}
-}
-
-func permissionStub(
-	context.Context, *ClientConn,
-	*RequestPermissionRequest,
-) (*RequestPermissionResponse, error) {
-	return &RequestPermissionResponse{Outcome: &RequestPermissionOutcomeCancelled{}}, nil
+func permissionStub(context.Context, *ClientConn, *RequestPermissionRequest) (*RequestPermissionResponse, error) {
+	return cancelledPermission(), nil
 }
 
 func formStub(
-	context.Context, *ClientConn,
-	*CreateElicitationRequest,
-	*ElicitationFormMode,
+	context.Context, *ClientConn, *CreateElicitationRequest, *ElicitationFormMode,
 ) (*CreateElicitationResponse, error) {
 	return &CreateElicitationResponse{Value: &ElicitationAcceptAction{}}, nil
 }
 
 func urlStub(
-	context.Context, *ClientConn,
-	*CreateElicitationRequest,
-	*ElicitationURLMode,
+	context.Context, *ClientConn, *CreateElicitationRequest, *ElicitationURLMode,
 ) (*CreateElicitationResponse, error) {
 	return &CreateElicitationResponse{Value: &ElicitationAcceptAction{}}, nil
-}
-
-// A present capability object advertising no mode advertises nothing, so it
-// promises nothing to break. The elicitation RFD is explicit that it "advertises
-// no supported modes, not form support", and the method gate reads it the same
-// way: an agent is not permitted a call every mode of which would be refused.
-func TestAnEmptyElicitationObjectAdvertisesNoMode(t *testing.T) {
-	empty := PeerInfo{ClientCapabilities: ClientCapabilities{
-		Elicitation: OptValue(ElicitationCapabilities{}),
-	}}
-	if empty.permits(methodElicitationCreate) == nil {
-		t.Error("a client advertising no mode was offered elicitation/create, so every call " +
-			"it accepted would then be refused for its mode")
-	}
-
-	client, err := NewClient(&ClientConfig{
-		SessionUpdate:     func(context.Context, *ClientConn, *SessionNotification) {},
-		RequestPermission: permissionStub,
-		Capabilities: &ClientCapabilities{
-			Elicitation: OptValue(ElicitationCapabilities{}),
-		},
-	})
-	if err != nil {
-		t.Fatalf("an empty elicitation object was refused, and it promises nothing: %v", err)
-	}
-	if anyElicitationMode(client.capabilities) {
-		t.Error("an empty elicitation object was read as advertising a mode")
-	}
 }

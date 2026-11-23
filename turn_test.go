@@ -152,7 +152,7 @@ func TestARejectedPromptLeavesItsSessionFree(t *testing.T) {
 				prompted <- struct{}{}
 				return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 			})
-			_, stream, ctx := rawClientFor(t, agent)
+			stream, ctx := rawClientFor(t, agent)
 			if test.initializeFirst {
 				initializeRaw(ctx, t, stream)
 			}
@@ -161,7 +161,7 @@ func TestARejectedPromptLeavesItsSessionFree(t *testing.T) {
 			if rejected.Error == nil {
 				t.Fatal("the prompt was accepted, so this test proves nothing about rejection")
 			}
-			if !strings.Contains(rejected.Error.Error(), test.says) {
+			if !strings.Contains(string(rejected.Error), test.says) {
 				t.Errorf("rejected with %v, which is not the rejection this test meant", rejected.Error)
 			}
 
@@ -449,7 +449,7 @@ func TestCancellationWaitsForAClaimedPermissionAnswerToReachTheWire(t *testing.T
 			release:       release,
 			cancelBegan:   cancelBegan,
 		}
-		ctx, stop := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, stop := context.WithTimeout(context.Background(), deadlockGuard)
 		defer stop()
 		stream, err := agentSide.Connect(ctx)
 		if err != nil {
@@ -534,7 +534,7 @@ func TestACancellationThatHasNotBeenSentStillHoldsItsTurn(t *testing.T) {
 			method:    "session/cancel",
 			began:     startedCancel,
 		}
-		ctx, stop := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, stop := context.WithTimeout(context.Background(), deadlockGuard)
 		defer stop()
 		stream, err := agentSide.Connect(ctx)
 		if err != nil {
@@ -577,15 +577,12 @@ func TestACancellationThatHasNotBeenSentStillHoldsItsTurn(t *testing.T) {
 			t.Fatalf("Prompt: %v", err)
 		}
 
-		// A deadline rather than nothing, so that a prompt wrongly admitted fails
-		// here instead of blocking on a write nobody is reading.
-		refused, giveUp := context.WithTimeout(context.Background(), time.Second)
+		// A prompt started now waits for the cancellation rather than being sent
+		// ahead of it, where the agent would apply that cancellation to this turn.
+		waited, giveUp := context.WithTimeout(context.Background(), time.Second)
 		defer giveUp()
-		if _, err := session.Prompt(refused, &acp.PromptParams{}); !errors.Is(
-			err, acp.ErrPromptInProgress,
-		) {
-			t.Fatalf("a prompt was accepted while a cancellation for the previous turn had not been "+
-				"sent, so the agent would have applied that cancellation to this turn: %v", err)
+		if _, err := session.Prompt(waited, &acp.PromptParams{}); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("a prompt did not wait out the unsent cancellation of the previous turn: %v", err)
 		}
 
 		// Once the notification is out, the session is the next turn's.

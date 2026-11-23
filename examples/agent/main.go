@@ -35,8 +35,11 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
-	// A library does not own operating-system signals; a program does.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// A stdio agent ends when its client closes stdin. A terminal interrupt is
+	// the client's to handle, by cancelling the turn: it reaches this process too
+	// when both share the terminal, and must not take the answer away.
+	signal.Ignore(os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
 
 	open := newSessions()
@@ -46,18 +49,13 @@ func run(logger *slog.Logger) error {
 
 		NewSession: open.newSession,
 		Prompt:     open.prompt,
-		Cancel: func(_ context.Context, session *acp.AgentSession, _ *acp.CancelNotification) {
-			// The turn's context is already cancelled by the time this runs, so an
-			// agent whose work descends from it has nothing more to do here.
-			logger.Info("turn cancelled", "session", session.ID())
-		},
 	})
 	if err != nil {
 		return err
 	}
 
 	// Run serves one connection until the client hangs up or the process is
-	// signalled. A clean end of stream is not a failure, and neither is the signal.
+	// asked to stop. Neither is a failure.
 	if runErr := agent.Run(ctx, acp.NewStdioTransport()); runErr != nil && !errors.Is(runErr, context.Canceled) {
 		return runErr
 	}

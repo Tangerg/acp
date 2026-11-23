@@ -64,9 +64,9 @@ func emitRoundTrip(plan *Plan) ([]byte, error) {
 // roundTrippable reports whether a definition names a Go type a caller can
 // allocate and hand to the encoder.
 func roundTrippable(def *Def) bool {
-	if def.GoName != def.Ident {
-		// Unexported: the property runs from outside the package, which is where a
-		// caller encodes from.
+	if !def.exported() {
+		// The property runs from outside the package, which is where a caller
+		// encodes from.
 		return false
 	}
 	switch def.Kind {

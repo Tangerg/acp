@@ -20,7 +20,6 @@ func TestClosedConnectionsLeaveTheirRegistryWithoutEnumeration(t *testing.T) {
 		Prompt: func(context.Context, *AgentSession, *PromptRequest) (*PromptResponse, error) {
 			return &PromptResponse{StopReason: StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *AgentSession, *CancelNotification) {},
 	})
 	if err != nil {
 		t.Fatal(err)

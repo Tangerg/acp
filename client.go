@@ -11,76 +11,57 @@ import (
 	"github.com/Tangerg/acp/jsonrpc"
 )
 
-// ClientConfig defines a client's identity, handlers, and capability
-// advertisement. SessionUpdate and RequestPermission are required. Optional
-// handlers derive their corresponding capabilities unless Capabilities is set.
-// Callbacks receive their source connection because independent peers can reuse
-// session, terminal, and request identifiers on the same Client.
+// ClientConfig defines a client's identity, handlers and capability
+// advertisement. SessionUpdate and RequestPermission are required. Setting an
+// optional handler advertises the capability that gates its method, unless
+// Capabilities states the advertisement whole.
+//
+// Every handler receives the connection a request arrived on: one client may
+// drive several agents, and their session, terminal and request identifiers may
+// coincide.
 type ClientConfig struct {
-	// Info identifies this client during initialize. Optional: the schema lets a
-	// peer stay anonymous.
+	// Info identifies this client during initialize.
 	Info *Implementation
 	// Meta is attached to this client's initialize request.
 	Meta Meta
-	// Logger receives handler details withheld from the peer and notification
-	// failures that have no response channel. nil discards them. The package does
-	// not write diagnostics to process-global output.
+	// Logger receives handler failures, which the peer is not shown, and
+	// notification failures, which have no response to carry them. nil discards
+	// them.
 	Logger *slog.Logger
 
-	// SessionUpdate receives the agent's running commentary for a turn. Baseline:
-	// a client that cannot accept these cannot watch a turn happen.
 	SessionUpdate func(ctx context.Context, conn *ClientConn, notification *SessionNotification)
 
-	// RequestPermission asks the user to approve a tool call. Baseline, and
-	// required: there is no safe nil handler for it.
-	//
-	// The wire outcome is either cancelled or a selected option identifier, and an
-	// agent is not obliged to offer a reject option — so there is no universal
-	// "deny" to synthesise for a client that will not answer. A missing handler
-	// therefore fails construction rather than inventing an outcome the protocol
-	// does not define.
+	// RequestPermission is required because there is no safe default: an agent
+	// need not offer a reject option, so there is no universal deny to invent.
 	RequestPermission func(ctx context.Context, conn *ClientConn, request *RequestPermissionRequest) (*RequestPermissionResponse, error)
 
-	// ReadTextFile and WriteTextFile are gated on two independent capability
-	// booleans, so they are two independent handlers.
+	// ReadTextFile and WriteTextFile are gated on two independent capabilities.
 	ReadTextFile  func(ctx context.Context, conn *ClientConn, request *ReadTextFileRequest) (*ReadTextFileResponse, error)
 	WriteTextFile func(ctx context.Context, conn *ClientConn, request *WriteTextFileRequest) (*WriteTextFileResponse, error)
 
-	// Terminal is all five methods or none, because the capability that gates them
-	// is one boolean covering all five.
+	// Terminal is all five terminal methods or none, because one capability
+	// gates all five.
 	Terminal *TerminalHandlers
 
-	// Elicitation is this client's ability to put a structured request in front of
-	// the user. Its two modes are two independent capabilities, so it is a group
-	// whose fields advertise themselves rather than an all-or-none set.
+	// Elicitation advertises each mode it renders.
 	Elicitation *ElicitationHandlers
 
-	// CallFallback and NotifyFallback receive extension methods: names outside the
-	// set the specification defines. A standard method never reaches them, however
-	// it is spelled.
-	CallFallback   func(ctx context.Context, conn *ClientConn, request *ExtRequest) (json.RawMessage, error)
+	// CallFallback and NotifyFallback receive extension methods: names beginning
+	// with an underscore. A nil result answers with an empty object.
+	CallFallback   func(ctx context.Context, conn *ClientConn, request *ExtRequest) (any, error)
 	NotifyFallback func(ctx context.Context, conn *ClientConn, notification *ExtNotification)
 
-	// Capabilities is the complete desired advertisement, never a patch.
-	//
-	// nil advertises exactly what the handlers above support. Non-nil is taken as
-	// stated, and construction fails if it claims anything the handlers do not
-	// implement — capabilities are an authority boundary, and advertising one this
-	// client cannot serve is a promise it will break.
-	//
-	// It is a replacement rather than a merge because a field-by-field merge would
-	// need to distinguish "set to false" from "not set", and a scalar boolean has
-	// no third state to express that.
+	// Capabilities, when set, is the complete advertisement rather than a patch,
+	// because a boolean has no third state to say "not set". Construction fails if
+	// it claims anything the handlers do not serve.
 	Capabilities *ClientCapabilities
 
-	// Limits bounds the protocol state each of this client's connections will hold.
-	// The zero value takes every default; see [Limits] for which bound a slow
-	// SessionUpdate handler is the one to raise.
+	// Limits bounds the protocol state each connection holds.
 	Limits Limits
 }
 
-// TerminalHandlers is the complete terminal capability. When non-nil, all five
-// handlers are required because the protocol advertises them with one boolean.
+// TerminalHandlers is the complete terminal capability: all five handlers are
+// required, because one capability advertises all five methods.
 type TerminalHandlers struct {
 	Create      func(ctx context.Context, conn *ClientConn, request *CreateTerminalRequest) (*CreateTerminalResponse, error)
 	Output      func(ctx context.Context, conn *ClientConn, request *TerminalOutputRequest) (*TerminalOutputResponse, error)
@@ -89,56 +70,11 @@ type TerminalHandlers struct {
 	Release     func(ctx context.Context, conn *ClientConn, request *ReleaseTerminalRequest) (*ReleaseTerminalResponse, error)
 }
 
-// A Client owns the workspace-facing handlers and capabilities shared by its
-// connections. One client may connect to many agents.
-type Client struct {
-	config       ClientConfig
-	capabilities ClientCapabilities
-	conns        registry[*ClientConn]
-}
-
-// NewClient builds a client, or reports why the configuration cannot be served.
-//
-// It returns an error because the capability invariant is checked here: a
-// configuration whose advertisement exceeds its implementation, or that omits a
-// baseline handler, is rejected before it can accept a request it cannot serve.
-func NewClient(config *ClientConfig) (*Client, error) {
-	if config == nil {
-		config = &ClientConfig{}
-	}
-	if config.SessionUpdate == nil {
-		return nil, errors.New("acp: ClientConfig.SessionUpdate is required")
-	}
-	if config.RequestPermission == nil {
-		return nil, errors.New("acp: ClientConfig.RequestPermission is required")
-	}
-	if err := config.Terminal.check(); err != nil {
-		return nil, err
-	}
-	if err := config.Elicitation.check(); err != nil {
-		return nil, err
-	}
-	if err := config.Limits.check(); err != nil {
-		return nil, err
-	}
-
-	capabilities, err := config.resolveCapabilities()
-	if err != nil {
-		return nil, err
-	}
-	return &Client{config: config.clone(), capabilities: capabilities}, nil
-}
-
-// check refuses a partial handler set, because the capability that gates them is
-// one boolean covering all five methods: a client with four of them would refuse a
-// method it had advertised.
+// check refuses a partial set, which would refuse a method it advertised.
 func (t *TerminalHandlers) check() error {
 	if t == nil {
 		return nil
 	}
-	// Declared in the order the fields are, which a map cannot promise: the old
-	// one needed a sort afterwards to stop two runs of the same misconfiguration
-	// reporting it differently.
 	var missing []string
 	for _, handler := range []struct {
 		name string
@@ -154,172 +90,145 @@ func (t *TerminalHandlers) check() error {
 			missing = append(missing, handler.name)
 		}
 	}
-	if len(missing) == 0 {
-		return nil
+	if len(missing) > 0 {
+		return fmt.Errorf("acp: TerminalHandlers is incomplete; missing: %v", missing)
 	}
-	return fmt.Errorf("acp: TerminalHandlers is incomplete; missing: %v", missing)
+	return nil
+}
+
+// A Client owns the handlers and capabilities its connections share. One client
+// may connect to many agents.
+type Client struct {
+	config       ClientConfig
+	capabilities ClientCapabilities
+	conns        registry[*ClientConn]
+}
+
+// NewClient builds a client, or reports why the configuration cannot be served.
+func NewClient(config *ClientConfig) (*Client, error) {
+	if config == nil {
+		config = new(ClientConfig)
+	}
+	if config.SessionUpdate == nil || config.RequestPermission == nil {
+		return nil, errors.New("acp: ClientConfig requires SessionUpdate and RequestPermission")
+	}
+	if err := config.Terminal.check(); err != nil {
+		return nil, err
+	}
+	if err := config.Elicitation.check(); err != nil {
+		return nil, err
+	}
+	if err := config.Limits.check(); err != nil {
+		return nil, err
+	}
+	capabilities, err := config.resolveCapabilities()
+	if err != nil {
+		return nil, err
+	}
+	// The configuration is copied so a caller who kept a pointer cannot change
+	// what a running client advertises or serves without going back through the
+	// checks above.
+	cloned := *config
+	cloned.Info = deepCopy(config.Info)
+	cloned.Meta = deepCopy(config.Meta)
+	cloned.Capabilities = nil
+	if config.Terminal != nil {
+		handlers := *config.Terminal
+		cloned.Terminal = &handlers
+	}
+	if config.Elicitation != nil {
+		handlers := *config.Elicitation
+		cloned.Elicitation = &handlers
+	}
+	return &Client{config: cloned, capabilities: capabilities}, nil
+}
+
+// serves reports whether the configuration serves a standard method.
+func (c *ClientConfig) serves(method string) bool {
+	switch method {
+	case methodSessionUpdate:
+		return true
+	case methodElicitationComplete:
+		return c.Elicitation != nil && c.Elicitation.URL != nil
+	}
+	binding, ok := clientMethods[method]
+	return ok && binding.served(c)
 }
 
 func (c *ClientConfig) resolveCapabilities() (ClientCapabilities, error) {
-	derived := ClientCapabilities{
-		Fs: FileSystemCapabilities{
-			ReadTextFile:  c.ReadTextFile != nil,
-			WriteTextFile: c.WriteTextFile != nil,
-		},
-		Terminal:    c.Terminal != nil,
-		Elicitation: c.Elicitation.capabilities(),
-	}
 	if c.Capabilities == nil {
+		derived := advertiseClient(c.serves)
+		derived.Elicitation = c.Elicitation.capabilities()
 		return derived, nil
 	}
-
 	stated := deepCopy(*c.Capabilities)
-	exceeded := gates.exceeded(PeerInfo{ClientCapabilities: stated}, sideClient, c.implements)
-	// The elicitation modes are checked beside the methods rather than after them,
-	// because an advertisement is one promise: a mode with no handler is refused on
-	// its first use exactly as a method with no handler is.
-	exceeded = append(exceeded, c.Elicitation.exceeded(stated)...)
-	if len(exceeded) > 0 {
-		return ClientCapabilities{}, fmt.Errorf(
-			"acp: ClientConfig.Capabilities advertises what this client cannot serve: %v", exceeded)
+	unserved := append(unservedClientMethods(stated, c.serves), c.Elicitation.unserved(stated)...)
+	if len(unserved) > 0 {
+		return ClientCapabilities{}, fmt.Errorf("acp: ClientConfig.Capabilities: %v", unserved)
 	}
 	return stated, nil
 }
 
-// The other half of the capability table: the table says which capability gates
-// which method, this says which methods a configuration can actually serve, and
-// neither is derivable from the other. Construction checks their intersection.
-func (c *ClientConfig) implements(method string) bool {
-	switch method {
-	case methodSessionUpdate, methodSessionRequestPermission:
-		return true // baseline, and NewClient has already refused a nil handler
-	case methodFsReadTextFile:
-		return c.ReadTextFile != nil
-	case methodFsWriteTextFile:
-		return c.WriteTextFile != nil
-	case methodTerminalCreate, methodTerminalOutput, methodTerminalWaitForExit,
-		methodTerminalKill, methodTerminalRelease:
-		return c.Terminal != nil
-	case methodElicitationCreate:
-		// Either mode serves the method; which modes it can render is the parameter
-		// capability, and the handler group has already refused serving neither.
-		return c.Elicitation != nil
-	case methodElicitationComplete:
-		// Serving the url mode is what makes a client able to accept completions.
-		// Whether one reaches the application is Complete's business: the protocol
-		// makes sending optional and requires a client to ignore a completion it
-		// does not recognise, so a client with no Complete handler is not one that
-		// cannot serve the method.
-		return c.Elicitation != nil && c.Elicitation.URL != nil
-	default:
-		return false
-	}
-}
-
-// Without it a caller's slice, map or handler set stays aliased: mutating it
-// afterwards would change what this client advertises, or what it serves, without
-// going back through the check that made it valid — and would race a connection
-// already reading it.
-func (c *ClientConfig) clone() ClientConfig {
-	copied := *c
-	copied.Info = deepCopy(c.Info)
-	copied.Meta = deepCopy(c.Meta)
-	copied.Capabilities = deepCopy(c.Capabilities)
-	// Every handler group is copied, not aliased. A caller who kept a pointer
-	// could otherwise swap a handler after NewClient validated the set, changing
-	// what a running client serves without going back through the check that
-	// made it valid — and racing the dispatcher that reads it.
-	if c.Terminal != nil {
-		handlers := *c.Terminal
-		copied.Terminal = &handlers
-	}
-	if c.Elicitation != nil {
-		handlers := *c.Elicitation
-		copied.Elicitation = &handlers
-	}
-	return copied
-}
-
-// Connect performs the handshake and returns a connection that is already
-// initialized.
+// Connect performs the handshake and returns a connection already initialized:
+// the transport connected, initialize answered with the protocol version this
+// package implements, and the agent's capabilities stored. If any of that fails
+// the connection is closed before Connect returns.
 //
-// It returns only after the transport connects, initialize succeeds, the
-// negotiated version is one this package implements, and the peer's capabilities
-// are stored. If any of those fails — including the context being cancelled
-// mid-handshake — the logical connection is closed before returning, so a failed
-// Connect never leaks a live transport or a half-initialized peer.
-//
-// There is no public Initialize for the same reason: it would make three failure
-// modes this API has to define and test — a call before initialization, a second
-// one, and two concurrent ones — and doing it here makes all three
-// unrepresentable.
-//
-// The context scopes setup only. A caller who passed a five-second handshake
-// timeout has not asked for the connection to die after five seconds; lifetime is
-// owned by [ClientConn.Close] and observed by [ClientConn.Wait].
+// ctx scopes setup only; [ClientConn.Close] owns the connection's lifetime.
 func (c *Client) Connect(ctx context.Context, transport Transport) (*ClientConn, error) {
 	stream, err := transport.Connect(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	conn := &ClientConn{connection: newConnection(), client: c}
-	conn.link = newLink(stream, conn, c.config.Logger, c.config.Limits)
+	conn := newClientConn(c, stream)
 	conn.run()
 
 	if initErr := conn.initialize(ctx); initErr != nil {
-		// Close before returning: a half-initialized connection is not something to
-		// hand back and hope nobody uses.
 		_ = conn.Close()
 		return nil, initErr
 	}
-
 	c.conns.add(conn, conn.life)
 	return conn, nil
 }
 
+// newClientConn assembles a connection whose read loop has not started.
+func newClientConn(client *Client, stream Connection) *ClientConn {
+	conn := &ClientConn{client: client}
+	conn.connection = connection{negotiation: newNegotiation()}
+	conn.link = newLink(stream, conn, client.config.Logger, client.config.Limits)
+	conn.elicitations = newURLElicitations(conn.limits.OutstandingElicitations)
+	return conn
+}
+
+// Conns is a snapshot of the live connections, each registered once its
+// handshake succeeded.
 func (c *Client) Conns() iter.Seq[*ClientConn] { return c.conns.all() }
 
-// A ClientConn is one logical connection to an agent, after initialize.
-//
-// It is named for the connection and not the session because the specification
-// already means something by "session": session/new returns a session
-// identifier, a session is a conversation with its own history, and one
-// connection carries many. Calling the connection a session too would have put
-// NewSession on a type called ClientSession.
+// A ClientConn is one logical connection to an agent, after initialize. It is
+// named for the connection because the specification already means something by
+// "session": a conversation, of which one connection carries many.
 type ClientConn struct {
 	connection
 
-	client   *Client
-	sessions sessions[ClientSession]
-
+	client       *Client
 	turns        clientTurns
-	elicitations urlElicitations
+	elicitations *urlElicitations
 }
 
-// Authenticate performs the authentication an agent asked for, which is how a
-// client answers [ErrAuthRequired].
-//
-// The method identifier is one of those the agent advertised in its initialize
-// response, which [ClientConn.Peer] carries. A terminal method is not one of
-// them: the schema says the client "MUST NOT pass this method to authenticate",
-// because it is performed by running the agent again in an interactive terminal
-// rather than by calling it.
-func (c *ClientConn) Authenticate(
-	ctx context.Context,
-	params *AuthenticateRequest,
-) (*AuthenticateResponse, error) {
+func (c *ClientConn) session(id SessionID) *ClientSession {
+	return &ClientSession{id: id, conn: c}
+}
+
+// Authenticate performs one of the agent-handled authentication methods in
+// [ClientConn.Negotiated], which is how a client answers [ErrAuthRequired].
+func (c *ClientConn) Authenticate(ctx context.Context, params *AuthenticateRequest) (*AuthenticateResponse, error) {
 	if params == nil {
-		params = &AuthenticateRequest{}
+		params = new(AuthenticateRequest)
 	}
-	if err := c.Peer().authenticates(params.MethodID); err != nil {
-		return nil, err
+	if refusal := c.negotiation.agreed().authenticates(params.MethodID); refusal != nil {
+		return nil, refusal
 	}
-	response := new(AuthenticateResponse)
-	if err := c.call(ctx, methodAuthenticate, params, response); err != nil {
-		return nil, err
-	}
-	return response, nil
+	return callFor[AuthenticateResponse](ctx, &c.connection, methodAuthenticate, params)
 }
 
 // Logout ends the authentication a client established, without ending the
@@ -328,82 +237,41 @@ func (c *ClientConn) Authenticate(
 // Gated on agentCapabilities.auth.logout.
 func (c *ClientConn) Logout(ctx context.Context, params *LogoutRequest) (*LogoutResponse, error) {
 	if params == nil {
-		params = &LogoutRequest{}
+		params = new(LogoutRequest)
 	}
-	if err := c.Peer().permits(methodLogout); err != nil {
-		return nil, err
-	}
-	response := new(LogoutResponse)
-	if err := c.call(ctx, methodLogout, params, response); err != nil {
-		return nil, err
-	}
-	return response, nil
+	return callFor[LogoutResponse](ctx, &c.connection, methodLogout, params)
 }
 
-// NewSession opens a conversation.
-//
-// It returns the response as well as the handle because the response carries more
-// than an identifier — modes, configuration options and _meta — and a handle alone
-// would put those out of reach.
-//
-// An agent that requires authentication answers this with -32000, which is control
-// flow rather than failure:
-//
-//	session, result, err := conn.NewSession(ctx, params)
-//	if errors.Is(err, acp.ErrAuthRequired) {
-//		// Expected. Authenticate, then retry.
-//	}
-func (c *ClientConn) NewSession(
-	ctx context.Context,
-	params *NewSessionRequest,
-) (*ClientSession, *NewSessionResponse, error) {
+// NewSession opens a conversation and returns its handle with the response,
+// which carries modes, configuration options and _meta. An agent that requires
+// authentication answers with [ErrAuthRequired]: authenticate, then retry.
+func (c *ClientConn) NewSession(ctx context.Context, params *NewSessionRequest) (*ClientSession, *NewSessionResponse, error) {
 	if params == nil {
-		params = &NewSessionRequest{}
+		params = new(NewSessionRequest)
 	}
-	if err := c.checkSessionSetup(params.Cwd, params.McpServers, params.AdditionalDirectories); err != nil {
+	response, err := callFor[NewSessionResponse](ctx, &c.connection, methodSessionNew, params)
+	if err != nil {
 		return nil, nil, err
 	}
-	return openClientSession(ctx, c, methodSessionNew, params, func(response *NewSessionResponse) SessionID {
-		return response.SessionID
-	})
+	return c.session(response.SessionID), response, nil
 }
 
-// LoadSession reopens a conversation the agent already has, replaying its history
-// as [SessionNotification] updates before it answers.
-//
-// Loading an identifier this connection has already seen returns the handle it
-// already has. Loading it through a different connection returns a different one:
-// handles never silently move between transports.
+// LoadSession reopens a conversation the agent already has, replaying its
+// history as [SessionNotification] updates before it answers.
 //
 // Gated on agentCapabilities.loadSession.
-func (c *ClientConn) LoadSession(
-	ctx context.Context,
-	params *LoadSessionRequest,
-) (*ClientSession, *LoadSessionResponse, error) {
+func (c *ClientConn) LoadSession(ctx context.Context, params *LoadSessionRequest) (*ClientSession, *LoadSessionResponse, error) {
 	if params == nil {
-		return nil, nil, paramsRequired("LoadSession", "SessionID")
+		params = new(LoadSessionRequest)
 	}
-	// The outbound half of the gate. A call the peer never advertised is refused
-	// here rather than sent and refused there: the answer would be the same, and
-	// asking wastes a round trip while making a developer read a wire trace to
-	// find out what they forgot.
-	if err := c.Peer().permits(methodSessionLoad); err != nil {
+	response, err := callFor[LoadSessionResponse](ctx, &c.connection, methodSessionLoad, params)
+	if err != nil {
 		return nil, nil, err
 	}
-	if err := c.checkSessionSetup(params.Cwd, params.McpServers, params.AdditionalDirectories); err != nil {
-		return nil, nil, err
-	}
-	id := params.SessionID
-	return openClientSession(ctx, c, methodSessionLoad, params, func(*LoadSessionResponse) SessionID {
-		return id
-	})
+	return c.session(params.SessionID), response, nil
 }
 
 // ResumeSession reopens a session the agent still has, without replaying it.
-//
-// That is what the schema says separates it from [ClientConn.LoadSession]: resume
-// is for an agent that can continue a conversation but does not implement handing
-// its history back.
 //
 // Gated on agentCapabilities.sessionCapabilities.resume.
 func (c *ClientConn) ResumeSession(
@@ -411,422 +279,278 @@ func (c *ClientConn) ResumeSession(
 	params *ResumeSessionRequest,
 ) (*ClientSession, *ResumeSessionResponse, error) {
 	if params == nil {
-		return nil, nil, paramsRequired("ResumeSession", "SessionID")
+		params = new(ResumeSessionRequest)
 	}
-	if err := c.Peer().permits(methodSessionResume); err != nil {
+	response, err := callFor[ResumeSessionResponse](ctx, &c.connection, methodSessionResume, params)
+	if err != nil {
 		return nil, nil, err
 	}
-	if err := c.checkSessionSetup(params.Cwd, params.McpServers, params.AdditionalDirectories); err != nil {
-		return nil, nil, err
-	}
-	id := params.SessionID
-	return openClientSession(ctx, c, methodSessionResume, params, func(*ResumeSessionResponse) SessionID {
-		return id
-	})
+	return c.session(params.SessionID), response, nil
 }
 
-// Opening a session publishes its handle in response order, even if the caller
-// stopped waiting. Every opening operation uses this observer; the waiter only
-// receives the already-published handle and its private decoded response.
-func openClientSession[Response any](
-	ctx context.Context,
-	c *ClientConn,
-	method string,
-	params any,
-	identify func(*Response) SessionID,
-) (*ClientSession, *Response, error) {
-	response := new(Response)
-	var session *ClientSession
-	if err := c.callObserved(ctx, method, params, func(answer *jsonrpc.Response) error {
-		if decodeErr := decodeResponse(answer, response); decodeErr != nil {
-			return decodeErr
-		}
-		session = c.session(identify(response))
-		return nil
-	}); err != nil {
-		return nil, nil, err
-	}
-	return session, response, nil
-}
-
-// ListSessions reports the sessions the agent has stored.
-//
-// It is paginated: a response carrying NextCursor has more behind it, and passing
-// that cursor back asks for the next page. The pages are the agent's own — this
-// does not gather them, because a caller that wants one page should not pay for
-// all of them.
+// ListSessions reports one page of the sessions the agent has stored. A response
+// with NextCursor has more behind it.
 //
 // Gated on agentCapabilities.sessionCapabilities.list.
-func (c *ClientConn) ListSessions(
-	ctx context.Context,
-	params *ListSessionsRequest,
-) (*ListSessionsResponse, error) {
+func (c *ClientConn) ListSessions(ctx context.Context, params *ListSessionsRequest) (*ListSessionsResponse, error) {
 	if params == nil {
-		params = &ListSessionsRequest{}
+		params = new(ListSessionsRequest)
 	}
-	if cwd, set := params.Cwd.Get(); set {
-		if err := absolutePath("cwd", cwd); err != nil {
-			return nil, err
-		}
-	}
-	if err := c.Peer().permits(methodSessionList); err != nil {
-		return nil, err
-	}
-	response := new(ListSessionsResponse)
-	if err := c.call(ctx, methodSessionList, params, response); err != nil {
-		return nil, err
-	}
-	return response, nil
+	return callFor[ListSessionsResponse](ctx, &c.connection, methodSessionList, params)
 }
 
-// DeleteSession removes a stored session, which the schema describes as removing
-// it from [ClientConn.ListSessions].
-//
-// It takes an identifier rather than a handle because the session it names is one
-// this connection may never have opened. If it did, the handle is forgotten: it
-// would otherwise name a session the agent no longer has.
+// DeleteSession removes a stored session, which may be one this connection
+// never opened. An agent answering resource-not-found has no such session, which
+// leaves the same end state, so that is a successful delete.
 //
 // Gated on agentCapabilities.sessionCapabilities.delete.
-func (c *ClientConn) DeleteSession(
-	ctx context.Context,
-	params *DeleteSessionRequest,
-) (*DeleteSessionResponse, error) {
+func (c *ClientConn) DeleteSession(ctx context.Context, params *DeleteSessionRequest) (*DeleteSessionResponse, error) {
 	if params == nil {
-		return nil, paramsRequired("DeleteSession", "SessionID")
+		params = new(DeleteSessionRequest)
 	}
-	if err := c.Peer().permits(methodSessionDelete); err != nil {
-		return nil, err
+	response, err := callFor[DeleteSessionResponse](ctx, &c.connection, methodSessionDelete, params)
+	if errors.Is(err, &Error{Code: ErrorCodeResourceNotFound}) {
+		return new(DeleteSessionResponse), nil
 	}
-	response := new(DeleteSessionResponse)
-	id := params.SessionID
-	if err := c.callObserved(ctx, methodSessionDelete, params, func(answer *jsonrpc.Response) error {
-		if decodeErr := decodeResponse(answer, response); decodeErr != nil {
-			return decodeErr
-		}
-		c.sessions.forget(id)
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return response, nil
+	return response, err
 }
 
-// Call sends an extension request and decodes its result.
-//
-// Extension methods only. A method the specification defines is refused, because
-// it has exactly one path through the typed codec and the capability gate, and
-// this is not it.
+// Call sends an extension request and decodes its result. Extension methods
+// only: a standard method has one path, through its operation.
 func (c *ClientConn) Call(ctx context.Context, method string, params, result any) error {
 	return c.extensionCall(ctx, method, params, result)
 }
 
-// Notify sends an extension notification. Extension methods only; see
-// [ClientConn.Call].
+// Notify sends an extension notification.
 func (c *ClientConn) Notify(ctx context.Context, method string, params any) error {
 	return c.extensionNotify(ctx, method, params)
 }
 
+// initialize negotiates on the delivery loop, so that anything the agent sends
+// after answering is served by a connection that already knows what was agreed.
 func (c *ClientConn) initialize(ctx context.Context) error {
-	if !c.handshake.begin() {
-		return errors.New("acp: initialize is already in progress on this connection")
-	}
 	request := &InitializeRequest{
 		ProtocolVersion:    CurrentProtocolVersion,
 		ClientCapabilities: c.client.capabilities,
 	}
 	if info := c.client.config.Info; info != nil {
-		request.ClientInfo = OptValue(*info)
+		request.ClientInfo = OptValue(deepCopy(*info))
 	}
 	if c.client.config.Meta.Len() > 0 {
 		request.Meta = OptValue(deepCopy(c.client.config.Meta))
 	}
-
-	// The answer is checked and published from the delivery loop, so that anything
-	// the agent sent after answering is served by a connection that already knows
-	// what was agreed. See link.callObserved.
 	return c.callObserved(ctx, methodInitialize, request, func(answer *jsonrpc.Response) error {
 		var response InitializeResponse
 		if err := decodeResponse(answer, &response); err != nil {
 			return err
 		}
-		return c.accept(request, &response)
-	})
-}
-
-func (c *ClientConn) accept(request *InitializeRequest, response *InitializeResponse) error {
-	// A protocol version identifies a grammar, not a feature level. Accepting a
-	// higher or lower number would claim a grammar this package does not implement.
-	if response.ProtocolVersion != CurrentProtocolVersion {
-		return fmt.Errorf("acp: the agent answered initialize with protocol version %d, "+
-			"and this package implements %d and no other",
-			response.ProtocolVersion, CurrentProtocolVersion)
-	}
-	auth, err := ownAuthenticationMethods(response.AuthMethods)
-	if err != nil {
-		return fmt.Errorf("acp: initialize response contains invalid authentication methods: %w", err)
-	}
-	if invalid := auth.validateOffer(request.ClientCapabilities); invalid != nil {
-		return invalid
-	}
-	response.AuthMethods = auth
-
-	c.handshake.accept(PeerInfo{
-		ProtocolVersion:    response.ProtocolVersion,
-		ClientCapabilities: deepCopy(c.client.capabilities),
-		ClientInfo:         request.ClientInfo,
-		ClientMeta:         request.Meta,
-		AgentCapabilities:  response.AgentCapabilities,
-		AgentInfo:          response.AgentInfo,
-		AgentMeta:          response.Meta,
-		AuthMethods:        response.AuthMethods,
-	})
-	c.handshake.publish(nil)
-	return nil
-}
-
-func (c *ClientConn) serve(ctx context.Context, request *jsonrpc.Request) (any, error) {
-	config := &c.client.config
-
-	// Nothing is legal here before initialize completes: this side asked the
-	// question, so anything arriving first arrived too early. The delivery queue
-	// processes the answer ahead of every message that followed it, which is what
-	// makes that a fact about the agent rather than a publication race here.
-	if !c.handshake.isAccepted() {
-		return nil, newError(ErrorCodeInvalidRequest,
-			"method %q arrived before initialize completed", request.Method)
-	}
-
-	// The capability gate first, and in this direction too. Capabilities are an
-	// authority boundary, so a method this client never advertised is refused
-	// rather than served — the agent was told it was not there.
-	if isStandardMethod(request.Method) {
-		if err := c.Peer().permits(request.Method); err != nil {
-			return nil, err
+		// A protocol version names a grammar; any other answer claims one this
+		// package does not implement.
+		if response.ProtocolVersion != CurrentProtocolVersion {
+			return fmt.Errorf("acp: the agent answered initialize with protocol version %d, and this package "+
+				"implements %d and no other", response.ProtocolVersion, CurrentProtocolVersion)
 		}
-	}
+		c.negotiation.accept(Negotiated{
+			ClientCapabilities: request.ClientCapabilities,
+			ClientInfo:         request.ClientInfo,
+			ClientMeta:         request.Meta,
+			AgentCapabilities:  response.AgentCapabilities,
+			AgentInfo:          response.AgentInfo,
+			AgentMeta:          response.Meta,
+			AuthMethods:        receivedAuthenticationMethods(response.AuthMethods, request.ClientCapabilities, c.logger),
+		})
+		c.negotiation.open()
+		return nil
+	})
+}
 
+// A clientMethod is how a client serves one standard request method.
+type clientMethod struct {
+	served func(*ClientConfig) bool
+	decode func(json.RawMessage) (any, error)
+	// register, when set, records the call in wire order.
+	register func(*ClientConn, *inboundRequest) registration
+	serve    func(*ClientConn, context.Context, *inboundRequest) (any, error)
+}
+
+func clientConnMethod[Request, Response any](
+	pick func(*ClientConfig) func(context.Context, *ClientConn, *Request) (*Response, error),
+) clientMethod {
+	return clientMethod{
+		served: func(config *ClientConfig) bool { return pick(config) != nil },
+		decode: decoderFor[Request],
+		serve: func(c *ClientConn, ctx context.Context, call *inboundRequest) (any, error) {
+			response, err := pick(&c.client.config)(ctx, c, paramsOf[Request](call))
+			return handlerAnswer(call.method, response, err)
+		},
+	}
+}
+
+// terminalMethod picks one handler of the terminal group.
+func terminalMethod[Request, Response any](
+	pick func(*TerminalHandlers) func(context.Context, *ClientConn, *Request) (*Response, error),
+) clientMethod {
+	return clientConnMethod(func(config *ClientConfig) func(context.Context, *ClientConn, *Request) (*Response, error) {
+		if config.Terminal == nil {
+			return nil
+		}
+		return pick(config.Terminal)
+	})
+}
+
+var clientMethods = map[string]clientMethod{
+	methodSessionRequestPermission: {
+		served:   func(*ClientConfig) bool { return true },
+		decode:   decoderFor[RequestPermissionRequest],
+		register: (*ClientConn).registerPermission,
+		serve:    (*ClientConn).servePermission,
+	},
+	methodFsReadTextFile: clientConnMethod(func(config *ClientConfig) func(
+		context.Context, *ClientConn, *ReadTextFileRequest) (*ReadTextFileResponse, error) {
+		return config.ReadTextFile
+	}),
+	methodFsWriteTextFile: clientConnMethod(func(config *ClientConfig) func(
+		context.Context, *ClientConn, *WriteTextFileRequest) (*WriteTextFileResponse, error) {
+		return config.WriteTextFile
+	}),
+	methodTerminalCreate: terminalMethod(func(handlers *TerminalHandlers) func(
+		context.Context, *ClientConn, *CreateTerminalRequest) (*CreateTerminalResponse, error) {
+		return handlers.Create
+	}),
+	methodTerminalOutput: terminalMethod(func(handlers *TerminalHandlers) func(
+		context.Context, *ClientConn, *TerminalOutputRequest) (*TerminalOutputResponse, error) {
+		return handlers.Output
+	}),
+	methodTerminalWaitForExit: terminalMethod(func(handlers *TerminalHandlers) func(
+		context.Context, *ClientConn, *WaitForTerminalExitRequest) (*WaitForTerminalExitResponse, error) {
+		return handlers.WaitForExit
+	}),
+	methodTerminalKill: terminalMethod(func(handlers *TerminalHandlers) func(
+		context.Context, *ClientConn, *KillTerminalRequest) (*KillTerminalResponse, error) {
+		return handlers.Kill
+	}),
+	methodTerminalRelease: terminalMethod(func(handlers *TerminalHandlers) func(
+		context.Context, *ClientConn, *ReleaseTerminalRequest) (*ReleaseTerminalResponse, error) {
+		return handlers.Release
+	}),
+	methodElicitationCreate: {
+		served:   func(config *ClientConfig) bool { return config.Elicitation != nil },
+		decode:   decoderFor[CreateElicitationRequest],
+		register: (*ClientConn).registerElicitation,
+		serve:    (*ClientConn).serveElicitation,
+	},
+}
+
+// register decides a call in wire order: nothing before initialize is accepted,
+// then the capability gate, the method's handler, and its params, decoded once.
+func (c *ClientConn) register(call *inboundRequest, request *jsonrpc.Request) registration {
+	agreed := c.negotiation.agreed()
+	if agreed == nil {
+		return refuseBeforeInitialize(request.Method)
+	}
+	binding, served := clientMethods[request.Method]
+	if !served {
+		if isStandardMethod(request.Method) {
+			return answered(nil, methodNotImplemented(request.Method))
+		}
+		call.params = request.Params
+		return dispatched(callHooks{})
+	}
+	if refusal := agreed.refusesInbound(request.Method); refusal != nil {
+		return answered(nil, refusal)
+	}
+	if !binding.served(&c.client.config) {
+		return answered(nil, methodNotImplemented(request.Method))
+	}
+	params, err := binding.decode(request.Params)
+	if err != nil {
+		return answered(nil, invalidParams(request.Method, err))
+	}
+	call.params = params
+	if binding.register != nil {
+		return binding.register(c, call)
+	}
+	return dispatched(callHooks{})
+}
+
+func (c *ClientConn) serve(ctx context.Context, call *inboundRequest) (any, error) {
+	if binding, standard := clientMethods[call.method]; standard {
+		return binding.serve(c, ctx, call)
+	}
+	return serveExtensionCall(ctx, c, call, c.client.config.CallFallback)
+}
+
+func (c *ClientConn) serveNotification(ctx context.Context, request *jsonrpc.Request) error {
+	agreed := c.negotiation.agreed()
+	if agreed == nil {
+		return fmt.Errorf("acp: notification %q arrived before initialize", request.Method)
+	}
 	switch request.Method {
 	case methodSessionUpdate:
-		return nil, dispatchConnNotification(ctx, c, request, config.SessionUpdate)
-	case methodSessionRequestPermission:
-		return c.requestPermission(ctx, request)
-	case methodFsReadTextFile:
-		return dispatchConnCall(ctx, c, request, config.ReadTextFile)
-	case methodFsWriteTextFile:
-		return dispatchConnCall(ctx, c, request, config.WriteTextFile)
-	case methodTerminalCreate:
-		return dispatchConnCall(ctx, c, request, config.Terminal.Create)
-	case methodTerminalOutput:
-		return dispatchConnCall(ctx, c, request, config.Terminal.Output)
-	case methodTerminalWaitForExit:
-		return dispatchConnCall(ctx, c, request, config.Terminal.WaitForExit)
-	case methodTerminalKill:
-		return dispatchConnCall(ctx, c, request, config.Terminal.Kill)
-	case methodTerminalRelease:
-		return dispatchConnCall(ctx, c, request, config.Terminal.Release)
-	case methodElicitationCreate:
-		return c.createElicitation(ctx, request)
-	case methodElicitationComplete:
-		return nil, c.completeElicitation(ctx, request)
-	}
-
-	if isStandardMethod(request.Method) {
-		return nil, methodNotImplemented(request.Method)
-	}
-	return dispatchExtension(ctx, c, request, config.CallFallback, config.NotifyFallback)
-}
-
-func (c *ClientConn) session(id SessionID) *ClientSession {
-	handle, within := c.sessions.lookup(id, c.limits.SessionHandles, func(id SessionID) *ClientSession {
-		return &ClientSession{id: id, conn: c}
-	})
-	if !within {
-		c.tooManySessions()
-	}
-	return handle
-}
-
-// The three requests that open or reopen a session carry the same workspace
-// parameters, and the specification constrains all of them: an http or sse MCP
-// server and additionalDirectories are gated on what the agent advertised, and
-// every path must be absolute.
-func (c *ClientConn) checkSessionSetup(cwd string, servers []McpServer, directories []string) error {
-	if err := c.Peer().permitsSessionSetup(servers, directories); err != nil {
-		return err
-	}
-	if err := absolutePath("cwd", cwd); err != nil {
-		return err
-	}
-	if err := absoluteDirectories("additionalDirectories", directories); err != nil {
-		return err
-	}
-	return absoluteMCPCommands(servers)
-}
-
-func (c *ClientConn) createElicitation(ctx context.Context, request *jsonrpc.Request) (any, error) {
-	handlers := c.client.config.Elicitation
-	if handlers == nil {
-		return nil, methodNotImplemented(request.Method)
-	}
-	params, err := decodeParams[CreateElicitationRequest](request)
-	if err != nil {
-		return nil, err
-	}
-
-	var response *CreateElicitationResponse
-	switch mode := params.Value.(type) {
-	case *ElicitationFormMode:
-		if handlers.Form == nil {
-			return nil, elicitationForm.unadvertised()
-		}
-		form, compileErr := newCompiledForm(mode.RequestedSchema)
-		if compileErr != nil {
-			return nil, newError(ErrorCodeInvalidParams, "%s", compileErr)
-		}
-		response, err = handlers.Form(ctx, c, params, mode)
+		params, err := decodeParams[SessionNotification](request.Params)
 		if err != nil {
-			return nil, err
+			return invalidParams(request.Method, err)
 		}
-		if bad := form.validateResponse(ctx, response); bad != nil {
-			// The local answer violates the peer's valid schema, so blame belongs
-			// to this handler rather than to the peer's request.
-			return nil, newError(ErrorCodeInternalError, "%s", bad.Error())
+		c.client.config.SessionUpdate(ctx, c, params)
+		return nil
+	case methodElicitationComplete:
+		if refusal := agreed.refusesInbound(request.Method); refusal != nil {
+			return refusal
 		}
-
-	case *ElicitationURLMode:
-		if handlers.URL == nil {
-			return nil, elicitationURL.unadvertised()
+		params, err := decodeParams[CompleteElicitationNotification](request.Params)
+		if err != nil {
+			return invalidParams(request.Method, err)
 		}
-		reservation, reserveErr := c.elicitations.reserve(mode.ElicitationID, c.limits.OutstandingElicitations)
-		if reserveErr != nil {
-			if errors.Is(reserveErr, errElicitationIDInUse) {
-				return nil, newError(ErrorCodeInvalidParams, "%s", reserveErr)
-			}
-			return nil, newError(ErrorCodeInternalError, "%s", reserveErr)
-		}
-		response, err = handlers.URL(ctx, c, params, mode)
-		if err != nil || response == nil || !response.accepted() {
-			reservation.reject()
-		} else {
-			// The protocol state commits only to an accept the peer can receive.
-			// Response encoding normally happens after the handler returns; checking
-			// it here prevents a malformed union supplied by the handler from
-			// leaving an interaction outstanding after the peer received -32603.
-			if _, encodeErr := json.Marshal(response); encodeErr != nil {
-				reservation.reject()
-				err = fmt.Errorf("acp: URL elicitation response cannot be encoded: %w", encodeErr)
-			} else {
-				reservation.accept()
-			}
-		}
-
+		c.serveCompletion(ctx, params)
+		return nil
 	default:
-		// The catch-all arm included: guessing which known mode a future one
-		// resembles would be worse than saying it is not implemented.
-		return nil, newError(ErrorCodeInvalidParams,
-			"the elicitation names a mode this package does not implement")
-	}
-
-	if err != nil {
-		return nil, err
-	}
-	if response == nil {
-		return nil, nilHandlerResponse(request.Method)
-	}
-	return response, nil
-}
-
-// completeElicitation clears a URL elicitation and tells the application, in that
-// order.
-//
-// "Clients MUST ignore notifications referencing unknown or already-completed
-// IDs", and ignoring is the connection's to do rather than the application's: an
-// application cannot tell a completion for an interaction it never accepted from
-// one already closed, because it does not hold the set. A handler that is not set
-// changes nothing here — the elicitation is still closed, because the protocol
-// makes hearing about it optional and forgetting about it is not.
-func (c *ClientConn) completeElicitation(ctx context.Context, request *jsonrpc.Request) error {
-	params, err := decodeParams[CompleteElicitationNotification](request)
-	if err != nil {
-		return err
-	}
-	if !c.elicitations.receiveCompletion(params.ElicitationID) {
-		c.logger.Debug("acp: ignoring a completion for an unknown or finished elicitation",
-			slog.String("elicitationId", string(params.ElicitationID)))
+		if isStandardMethod(request.Method) {
+			return methodNotImplemented(request.Method)
+		}
+		serveExtensionNotification(ctx, c, request.Method, request.Params, c.client.config.NotifyFallback)
 		return nil
 	}
-	if handlers := c.client.config.Elicitation; handlers != nil && handlers.Complete != nil {
-		handlers.Complete(ctx, c, params)
-	}
-	return nil
 }
 
-// Registration has already happened in wire order, and forgetting it belongs
-// to the request lifecycle. If the turn was cancelled between then and now the
-// request has been answered, and the claim in respond is what stops this answer
-// being a second one.
-func (c *ClientConn) requestPermission(ctx context.Context, request *jsonrpc.Request) (any, error) {
-	params, err := decodeParams[RequestPermissionRequest](request)
-	if err != nil {
-		return nil, err
+// registerPermission files a permission request under its session's turn in wire
+// order. One arriving while the turn is being cancelled is answered cancelled
+// without a dialog the user would see and have thrown away.
+func (c *ClientConn) registerPermission(call *inboundRequest) registration {
+	request := paramsOf[RequestPermissionRequest](call)
+	admission, turn := c.turns.registerPermission(request.SessionID, call)
+	switch admission {
+	case permissionCancelled:
+		return answered(cancelledPermission(), nil)
+	case permissionOwned:
+		return dispatched(callHooks{finished: func(any) { turn.forgetPermission(call) }})
+	default:
+		return dispatched(callHooks{})
 	}
-	options, err := ownPermissionOptions(params.Options)
+}
+
+// servePermission holds the handler's outcome to the options the agent offered.
+func (c *ClientConn) servePermission(ctx context.Context, call *inboundRequest) (any, error) {
+	request := paramsOf[RequestPermissionRequest](call)
+	offered, err := ownPermissionOptions(request.Options)
 	if err != nil {
 		return nil, newError(ErrorCodeInvalidParams, "%s", err)
 	}
-
-	response, err := c.client.config.RequestPermission(ctx, c, params)
-	if err != nil {
-		return nil, err
+	response, err := c.client.config.RequestPermission(ctx, c, request)
+	if err != nil || response == nil {
+		return handlerAnswer(call.method, response, err)
 	}
-	if response == nil {
-		return nil, nilHandlerResponse(request.Method)
-	}
-	if invalid := options.validate(response.Outcome); invalid != nil {
-		return nil, newError(ErrorCodeInternalError, "%s", invalid)
+	if invalid := offered.validate(response.Outcome); invalid != nil {
+		return nil, fmt.Errorf("acp: the permission handler's outcome is invalid: %w", invalid)
 	}
 	return response, nil
 }
 
-func (c *ClientConn) register(request *jsonrpc.Request, call *inboundRequest) registration {
-	if request.Method != methodSessionRequestPermission {
-		return registration{dispatch: true}
-	}
-	session, ok := sessionOf(request)
-	if !ok {
-		// It will fail its own decode in the handler, with a better message.
-		return registration{dispatch: true}
-	}
-
-	admission, turn := c.turns.registerPermission(session, call)
-	switch admission {
-	case permissionOwned:
-	case permissionCancelled:
-		// The turn is being cancelled. Answering here rather than dispatching is
-		// the difference between a dialog the user never sees and one they see and
-		// whose answer is then thrown away.
-		return registration{result: &RequestPermissionResponse{
-			Outcome: &RequestPermissionOutcomeCancelled{},
-		}}
-	case permissionUnowned:
-		// The published grammar does not make permission requests children of a
-		// prompt. Without an active turn there is nothing for session/cancel to
-		// claim, but the request itself is still valid and cancellable through
-		// $/cancel_request.
-		return registration{dispatch: true}
-	}
-	return registration{
-		dispatch: true,
-		settled:  func() { turn.forgetPermission(call) },
-	}
+// answerCancelled claims a pending permission request now, on the cancelling
+// goroutine, because the claim decides the race with the handler.
+func (c *ClientConn) answerCancelled(call *inboundRequest) func() any {
+	return c.claimResponse(call, cancelledPermission(), nil)
 }
 
-// The claim is taken now, on whatever goroutine is asking, because it is what
-// decides the race. Where the write goes is the caller's to say: cancelPermissions
-// needs it on the wire before the cancellation notification, and ordered
-// delivery needs the write off its own loop.
-func (c *ClientConn) answerCancelled(call *inboundRequest) func() bool {
-	return c.claimResponse(call, &RequestPermissionResponse{
-		Outcome: &RequestPermissionOutcomeCancelled{},
-	}, nil)
+func cancelledPermission() *RequestPermissionResponse {
+	return &RequestPermissionResponse{Outcome: &RequestPermissionOutcomeCancelled{}}
 }

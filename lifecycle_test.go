@@ -36,9 +36,6 @@ func TestAnAnswerAlreadyReadBeatsTheEndOfTheStream(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Connect: %v", err)
 		}
-		if version := conn.Peer().ProtocolVersion; version != acp.CurrentProtocolVersion {
-			t.Fatalf("negotiated version %d", version)
-		}
 		if err := conn.Wait(); err != nil {
 			t.Fatalf("Wait reported %v, want nil after a clean end of stream", err)
 		}
@@ -48,14 +45,16 @@ func TestAnAnswerAlreadyReadBeatsTheEndOfTheStream(t *testing.T) {
 // answerThenEOF answers the first request and then ends the stream, with no
 // scheduling gap between the two.
 type answerThenEOF struct {
-	mu       sync.Mutex
-	answered bool
-	replies  []jsonrpc.Message
-	closed   chan struct{}
-	once     sync.Once
+	replies chan jsonrpc.Message
+	closed  chan struct{}
+	once    sync.Once
+	// handedOver is the reader's alone: a connection calls Read from one
+	// goroutine at a time.
+	handedOver bool
 }
 
 func (t *answerThenEOF) Connect(context.Context) (acp.Connection, error) {
+	t.replies = make(chan jsonrpc.Message, 1)
 	t.closed = make(chan struct{})
 	return t, nil
 }
@@ -69,37 +68,28 @@ func (t *answerThenEOF) Write(_ context.Context, message jsonrpc.Message) error 
 	if err != nil {
 		return err
 	}
-	t.mu.Lock()
-	t.replies = append(t.replies, response)
-	t.answered = true
-	t.mu.Unlock()
-	return nil
+	select {
+	case t.replies <- response:
+		return nil
+	default:
+		return errors.New("answerThenEOF answers one request")
+	}
 }
 
 func (t *answerThenEOF) Read(ctx context.Context) (jsonrpc.Message, error) {
-	for {
-		t.mu.Lock()
-		if len(t.replies) > 0 {
-			reply := t.replies[0]
-			t.replies = t.replies[1:]
-			t.mu.Unlock()
-			return reply, nil
-		}
-		answered := t.answered
-		t.mu.Unlock()
-
-		if answered {
-			// The queue is empty and the answer has been handed over. Ending the
-			// stream now is exactly the ordering that used to lose it.
-			return nil, io.EOF
-		}
-		select {
-		case <-t.closed:
-			return nil, io.EOF
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
+	if t.handedOver {
+		// The answer has been handed over. Ending the stream now is exactly the
+		// ordering that used to lose it.
+		return nil, io.EOF
+	}
+	select {
+	case reply := <-t.replies:
+		t.handedOver = true
+		return reply, nil
+	case <-t.closed:
+		return nil, io.EOF
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 

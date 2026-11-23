@@ -62,6 +62,8 @@
 // Capabilities are an authority boundary. Each side advertises what it serves
 // during initialize. The package rejects unadvertised calls in both directions
 // and rejects configurations that advertise methods without matching handlers.
+// A call refused before it was sent wraps [ErrNotAdvertised], so it cannot be
+// mistaken for an answer from the peer.
 //
 // # What is served
 //

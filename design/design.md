@@ -103,17 +103,22 @@ Almost all of the API lives in one package, `acp`, following `net/http`,
 import boundary inside a protocol whose two halves call each other.
 
 ```text
-github.com/Tangerg/acp                     the API: both peers, sessions, turns, the generated types
-github.com/Tangerg/acp/jsonrpc             the JSON-RPC message types a custom transport needs
-github.com/Tangerg/acp/internal/jsonrpc2   a fork of x/tools/internal/jsonrpc2_v2
-github.com/Tangerg/acp/internal/wire       the codec runtime the generated types are written against
+github.com/Tangerg/acp                         the API: both peers, sessions, turns, the generated types
+github.com/Tangerg/acp/jsonrpc                 the JSON-RPC envelope: messages, identifiers, decode errors
+github.com/Tangerg/acp/internal/wire           the codec runtime the generated types are written against
+github.com/Tangerg/acp/internal/jsonnumber     exact JSON integers, without float rounding
 github.com/Tangerg/acp/internal/cmd/schemagen  the generator
 ```
 
-`jsonrpc` is public and `jsonrpc2` is not, which is the same split the MCP SDK
-makes. A custom transport has to name the message type it carries, and nothing
-else about JSON-RPC is a caller's business: request lifecycle, cancellation and
-shutdown are the connection's.
+`jsonrpc` is public because a custom transport has to name the message type it
+carries, and nothing else about JSON-RPC is a caller's business: request
+lifecycle, cancellation and shutdown are the connection's. It defines the
+envelope types itself rather than aliasing an internal package, because an alias
+shows no fields or methods in the documentation a transport author reads. The
+envelope descends from `x/tools/internal/jsonrpc2_v2`, narrowed where ACP
+narrows JSON-RPC: identifiers keep explicit null apart from absence and accept
+only `int64` numbers, and an error object is carried as validated JSON whose
+grammar the generated `Error` owns.
 
 ### Generate and commit protocol types
 
@@ -137,9 +142,12 @@ guesses: a union it cannot discriminate, a numeric bound the Go type does not
 already enforce, or an inline object type stops generation with the definition
 named.
 
-JSON-RPC envelopes are deliberately not generated. `internal/jsonrpc2` owns
+JSON-RPC envelopes are deliberately not generated. Package `jsonrpc` owns
 JSON-RPC's grammar, and a second set of types for it would be two sources of
-truth for the one part of the wire the protocol did not invent.
+truth for the one part of the wire the protocol did not invent. Where a payload
+names a request — the schema's `RequestId` — the manifest binds the definition to
+`jsonrpc.ID` instead of generating a second identifier type, and generation stops
+if a release changes that definition's shape.
 
 ### Three JSON states
 
@@ -173,7 +181,7 @@ func (m Meta) Decode(key string, target any) (bool, error)
 
 It stores encoded JSON. What the protocol promises is unknown JSON, not Go object
 identity, and holding the encoded form is what makes a `Meta` copyable: a
-configuration and a `Peer()` snapshot both claim to be immutable, and an
+configuration and a `Negotiated` snapshot are both handed out as copies, and an
 arbitrary Go object with hidden mutable state inside one would make both a lie. It
 also means a value that cannot cross JSON fails at `Set`, naming the key, rather
 than at some later protocol write that cannot say what went wrong.
@@ -197,20 +205,34 @@ type Connection interface {
 This is the MCP Go SDK's abstraction, adopted because the argument for it holds
 here: a higher-level transport with methods for calls and notifications is harder
 to implement and pushes protocol concerns into something that should only move
-bytes. Four implementations ship:
+bytes. Four implementations ship, each constructor returning its concrete type:
 
 | Transport | Role |
 | --- | --- |
-| `NewCommandTransport` | spawns an agent and owns its pipes for a client |
-| `NewStdioTransport` | uses an agent's own stdin and stdout |
-| `NewInMemoryTransports` | two peers in one process; what this package's tests run over |
-| `NewIOTransport` | byte streams with one explicit release owner in `IOConfig` |
+| `CommandTransport` | spawns an agent and owns its pipes for a client |
+| `StdioTransport` | uses an agent's own stdin and stdout |
+| `InMemoryTransport` | two peers in one process; what this package's tests run over |
+| `IOTransport` | byte streams with one explicit release owner in `IOConfig` |
 
-`Close` unblocks both reads and writes. A queued byte-stream write can return its
-exact context error without committing bytes. Once writing starts, cancellation
-closes the streams and returns a wrapped error: commitment is uncertain, so the
-connection must end. `IOConfig.Close` must unblock I/O on both configured streams.
-A short write is also a failure, never a successful message.
+`Close` unblocks both reads and writes. A write honours its context only while it
+waits for the stream, where giving up commits nothing and the exact context error
+says so. From the first byte it finishes or fails, because cancellation cannot
+prove which prefix reached the peer. That is what keeps one caller's cancelled
+context — a turn the user stopped while its update was half written — from
+ending a connection every other session shares. `IOConfig.Close` must unblock
+I/O on both configured streams. A short write is a failure, never a message.
+
+A line framing delivered intact but JSON-RPC cannot decode is a
+`*jsonrpc.DecodeError`, not a broken stream. The connection answers it with
+parse-error or invalid-request, or fails the one call a malformed response
+names, and keeps reading. Ending the connection over one bad line would hand any
+peer a way to take down every session on it.
+
+A process's standard streams are not the connection's to close, and closing an
+inherited blocking descriptor would not interrupt a read anyway. `StdioTransport`
+therefore runs each blocking read and write on a goroutine that `Close` abandons,
+so `Agent.Run` returns when its context ends even while the client holds stdin
+open.
 
 The reader and writer are I/O views; only the configured close callback owns
 release. The connection invokes it once, including when cancellation and explicit
@@ -235,7 +257,8 @@ The agent's exit status is not the connection's error. An agent that exits
 non-zero after a shutdown request has still stopped. Expected exit status and
 bounded pipe drainage are ignored; unexpected copy errors and failure to reap
 remain connection errors. `transport_command.go` owns this process lifecycle,
-while `transport_stdio.go` owns byte framing and stream release.
+and `transport_io.go` owns byte framing and stream release for every byte-stream
+transport.
 
 `NewInMemoryTransports` carries messages rather than bytes. An in-memory
 transport that encoded and re-decoded would be testing the codec twice and hiding
@@ -303,18 +326,24 @@ documentation and in an IDE, and it composes with the language's zero values.
 
 ### A handler is given the handle its method is scoped to
 
-`Prompt`, `Cancel`, and `DeleteSession` take an `*AgentSession` because their
-published params require `sessionId`. The connection-scoped handlers once took
+`Prompt`, `Cancel`, and every other handler whose published params require
+`sessionId` take an `*AgentSession`. The connection-scoped handlers once took
 nothing, which meant a handler with no session could make no outbound call at all
 — and the case the schema describes for a request-scoped elicitation is exactly
 one of those: an agent asking for something from inside its own `authenticate`
 handler, before a session exists.
 
 `NewSession`, `Authenticate`, `Logout`, and `ListSessions` therefore take an
-`*AgentConn`. The division is generated from whether each method's params require
-`sessionId`, rather than mirrored in a handwritten list that can omit the next
-method. It also makes request-scoped elicitation reachable where the specification
-puts it rather than only from handlers that happen to hold a session.
+`*AgentConn`. Whether a method's params require `sessionId` is read from the
+schema's routing unions into the generated method table, and a session binding
+accepts only a request type that names its session, so the handle a handler is
+given is a compile-time fact rather than a convention. It also makes
+request-scoped elicitation reachable where the specification puts it rather than
+only from handlers that happen to hold a session.
+
+`Cancel` is optional. The connection cancels the running `Prompt` handler's
+context when `session/cancel` arrives, so the obligation is kept whether or not
+the application observes the notification.
 
 Every client handler receives `*ClientConn` after its context. A shared client
 can drive several agents, and two agents may use the same session identifier.
@@ -334,35 +363,37 @@ enforces them in both directions:
 
 - **Outbound**: a call the peer never advertised is refused before it is sent.
   The answer would be the same after a round trip, and refusing locally means a
-  developer reads an error naming the capability instead of a wire trace.
+  developer reads an error naming the capability instead of a wire trace. The
+  refusal wraps `ErrNotAdvertised` rather than carrying a wire code, because a
+  caller deciding what to do next needs to know that the peer never saw it.
 - **Inbound**: a request for a method this side never advertised is refused
   before it reaches a handler. The peer was told it was not there, and a
   capability that is only advertised is not a boundary.
 
-The table that maps method to gating capability is written once, quotes the
-schema's own words beside each row, and is checked against the generated method
-list in both directions, so a method added by a schema update cannot quietly
-arrive ungated.
+The table that maps method to gating capability is written once, because the
+schema links a method to its capability only in prose. Each row is one
+descriptor that both reads and writes its leaf, so the gate and the
+advertisement derived from the handlers cannot name different capabilities, and
+the table is checked against the generated method list in both directions, so a
+method added by a schema update cannot quietly arrive ungated.
 
-Four capabilities gate a request's parameters rather than the request itself, and
-the specification puts all four obligations on the client: prompt content is
-restricted to the advertised `promptCapabilities`, an `http` or `sse` MCP server
-requires the matching `mcpCapabilities`, `additionalDirectories` may be sent only
-to an agent that advertised it, and a boolean session configuration option may be
-set only by a client that advertised `session.configOptions.boolean`. These are
-checked on the way out too, and the refusal is invalid-params rather than
-method-not-found: the method is available, and it is what the caller put inside it
-that the agent never said it could take.
+Other capabilities gate what a payload carries rather than the method. A client
+may send only prompt content the agent's `promptCapabilities` admit, an `http`
+or `sse` MCP server only with the matching `mcpCapabilities`, and
+`additionalDirectories` or a system prompt only to an agent that advertised
+them. An agent may send notice, compaction, plan and subagent updates only to a
+client that advertised them. A boolean session configuration option is granted
+through the client's advertisement for both sides, which makes it the one
+capability a side reads about itself. Each rule is a method on the payload type
+it constrains, and every standard payload leaves through one boundary that calls
+it, so a rule is stated once and cannot be skipped by a path that forgot it.
+When a peer sends such a value anyway, the answer is invalid-params rather than
+method-not-found: the method is available, and it is what the sender put inside
+it that was never advertised.
 
-The fourth is the only one a side reads about itself, because the schema grants
-the boolean option type through the client's advertisement rather than the
-agent's. It was also the one nothing read at all: a capability decoded, carried in
-`PeerInfo` and never consulted. What found it was asking the question the method
-table already answers — every method has a gate — in the other direction: every
-capability is read by something. That check is now a test, listing each capability
-leaf with what reads it and holding the list against the gate table, so a
-capability added upstream cannot arrive as a grant this package accepts and never
-acts on.
+Every capability is read by something. A test walks the capability tree the
+schema defines and holds each leaf against what reads it, so a capability added
+upstream cannot arrive as a grant this package accepts and never acts on.
 
 They are deliberately not enforced inbound, and the difference is what a
 capability means in each case. A method capability is authority — whether an
@@ -390,15 +421,21 @@ performing one. `Agent.Connect` returns once the read loop is running; until
 are worth stating:
 
 - **Nothing this side sends can precede the initialize response.** The
-  agreement is negotiated when the request is served and published only once the
-  answer has been written, so an agent's own outbound call cannot overtake the
+  agreement is negotiated when the request is read and opened for this side's
+  own sends only once the answer has been written, so an agent's own outbound
+  call cannot overtake the
   response that told the client what was agreed. A boolean flag set after the
   write is inherently late: the client observes the answer *during* the write,
   and the request it sends next is served on a different goroutine.
-- **A rejected initialize does not poison the connection.** Invalid parameters
-  establish no agreement, so once the error response settles, the next queued or
-  later attempt may negotiate. Attempts are serialised in wire order, and every
-  attempt ordered after an accepted one is an invalid renegotiation.
+- **Initialize is judged in wire order.** It is negotiated when it is read rather
+  than when a goroutine gets to it, so a request that follows it on the wire is
+  served under the agreement it settled, and one that precedes it is refused.
+  A later initialize renegotiates, as the reference implementation allows; the
+  schema does not forbid it, and refusing it would be a local dialect.
+
+The agreement is a `Negotiated` value, stored once and never mutated. The gate
+reads the stored value directly; `ClientConn.Negotiated` and
+`AgentConn.Negotiated` hand callers a deep copy.
 
 The connection's completed lifetime removes it from its client's or agent's
 registry, including when completion races registration. `Conns` enumerates live
@@ -416,15 +453,20 @@ func (s *ClientSession) Prompt(ctx context.Context, params *PromptParams) (*Prom
 func (s *ClientSession) Cancel(ctx context.Context, params *CancelParams) error
 ```
 
-A handle binds the session identifier and nothing else. Twenty definitions in
-the schema carry a `sessionId`, and threading that string by hand through every
-operation that needs it invites mismatched identifiers. A terminal handle solves
-the same problem for the five terminal calls.
+A handle binds the session identifier to its connection and holds nothing else.
+Twenty definitions in the schema carry a `sessionId`, and threading that string
+by hand through every operation that needs it invites mismatched identifiers. A
+terminal handle solves the same problem for the five terminal calls.
+
+Whether a session exists is the application's fact, so the connection keeps no
+cache of handles that could disagree with it. Two handles for one session are
+interchangeable values; the per-session state the protocol does require — the
+active turn — is indexed by identifier and lives only while a turn does.
 
 Handles are connection-bound. A `SessionID` outlives the connection it came from;
 a handle does not, so loading the same identifier on a new connection returns a
-new handle. One that silently re-pointed at another transport would be a lifetime
-nobody could reason about.
+handle bound to that one. One that silently re-pointed at another transport would
+be a lifetime nobody could reason about.
 
 `ClientSession` and `AgentSession` are different types with different methods,
 because a client never calls `RequestPermission` and an agent never calls
@@ -435,14 +477,15 @@ Operations return both the response and the handle when the response contains
 more than an identifier. For example, `session/new` also returns modes,
 configuration options, and `_meta`.
 
-The connection publishes session handles in response order, including responses
-received after the original caller stopped waiting. Successful close and delete
-responses retire the cached handle at that same ordered boundary. The caller's
-return order cannot create or retire session identity.
+A close or delete answered resource-not-found leaves the same end state as a
+successful one, so it is reported as success, as the reference implementation
+does.
 
-Agent handlers receive a handle bound before dispatch. Prompt completion and
-session retirement use that handle's identity after the handler returns; changes
-to its request object cannot redirect those transitions to another session.
+A request's session is decoded once, by the generated codec, when the request is
+read. The turn rule, cancellation and the handler's handle all use that one
+reading; a second, more lenient decoder would let a message with two spellings of
+`sessionId` claim one session's turn and cancel another's. A handler that edits
+its request cannot redirect the turn's completion either.
 
 ### One prompt at a time
 
@@ -463,9 +506,17 @@ Completed turns leave the connection's index after their cancellation writes
 finish; no historical generation counter remains for every session ever seen.
 The prompt sender alone closes the turn's send-completion channel. Cancellation
 waits for that boundary before sending its notification, so a locally registered
-turn cannot be cancelled on the wire before its prompt arrives. A cancelled
-`Cancel` context returns without claiming the turn when it is already done on
-entry.
+turn cannot be cancelled on the wire before its prompt arrives. A prompt started
+while a cancellation of the same session is still being written waits for it
+rather than being refused.
+
+`ClientSession.Cancel` is committed once it starts: its context decides only
+whether it starts. Answering the pending permission requests cancelled cannot be
+undone, so stopping halfway would leave a turn this side considers cancelled and
+an agent that was never told. The remaining waits and the notification run under
+the connection's own bounded deadline, and a failure to write the notification
+ends the connection, because the two peers would otherwise disagree about the
+turn.
 
 ### Two cancellations, which are not the same thing
 
@@ -486,13 +537,17 @@ the connection takes them:
   response obligations until settlement, so one cannot overtake another's writes.
 - An agent whose turn is cancelled must still answer the prompt. The handler is
   free to return its context error, as model and tool libraries commonly do. The
-  connection turns a committed cancellation into
-  `StopReasonCancelled` rather than letting an abort error leak as `-32603`,
-  which the specification explicitly warns against.
+  connection turns a committed cancellation into `StopReasonCancelled` rather
+  than letting an abort error leak as `-32603`, which the specification
+  explicitly warns against, and keeps the `_meta` of a response the handler did
+  return.
 - A client must keep accepting `session/update` after it has cancelled, because
   the agent may have final tool-call updates to report before it answers. This is
   a rule for the application, not something the library can enforce, so it is
-  documented on `Cancel` and demonstrated in a runnable example.
+  documented on `Cancel` and demonstrated in a runnable example. The agent sends
+  those updates with a context that outlives the cancelled turn.
+- A permission request whose answer cancellation already claimed is not handed
+  to its handler, so the user is never shown a question nobody can answer.
 
 ### Ordered delivery, and the one rule it imposes
 
@@ -630,28 +685,29 @@ between the two implementations that agreed on it.
 ## Resource limits
 
 By default, a connection holds at most 1024 messages read but not yet delivered,
-1024 inbound calls, 1024 outbound calls waiting for responses, 1024 cached session
-handles, and 1024 URL elicitations in
-provisional, accepted, or completing states. Successful `session/close` and
-`session/delete` reclaim the named handle on both sides. Until then, a handle
-preserves caller-visible identity while the connection separately enforces one
-active prompt per session identifier.
+1024 inbound calls, 1024 outbound calls waiting for responses, and 1024 URL
+elicitations awaiting completion. Every breach reports `ErrLimitExceeded`,
+wrapping which bound it was. Sessions are not counted, because the connection
+holds no state per session beyond an active turn.
 
-Breaching the delivery, request, or session bound ends the connection with an
-error saying which. Refusing to read until the backlog drains would turn the
-documented rule that a notification handler must not wait on its own connection
-into a deadlock, because the response that would release it arrives on the read
-loop that is no longer reading. A URL reservation is different: creation can be
-refused before a new interaction exists, so exhausting that bound fails only the
-new elicitation and leaves the connection healthy. The pending-call limit likewise
-refuses new work with `ErrTooManyPendingCalls` before writing it, without closing
-the connection. Observed calls retain their slot after a waiter cancels because
-their late answer may still own a resource or protocol state.
+Breaching the delivery or request bound ends the connection. Refusing to read
+until the backlog drains would turn the documented rule that a notification
+handler must not wait on its own connection into a deadlock, because the
+response that would release it arrives on the read loop that is no longer
+reading. The pending-call limit refuses new work before writing it, without
+closing the connection. Observed calls retain their slot after a waiter cancels
+because their late answer may still own a resource or protocol state.
+
+The URL bound is different again, because the protocol makes
+`elicitation/complete` optional: an honest agent may never send it. Refusing new
+elicitations once the bound filled would let a long session break itself, so the
+oldest accepted interaction is forgotten instead, which costs only the duplicate
+check for an identifier that old.
 
 These counts bound how much state a peer can create. They are not memory proofs
 because one legal message can still be large.
 
-The five are `Limits` on both configurations, with a zero field taking the
+The four are `Limits` on both configurations, with a zero field taking the
 default and a negative one refused at construction. The delivery backlog is the
 one an honest connection most readily reaches: a turn's `session/update` stream
 is produced by an agent and consumed by a handler that may render it, so its depth
@@ -681,6 +737,13 @@ in the lifecycle rather than a failure, and `errors.Is` is how a client tells th
 apart. `ErrorCode` constants plus `errors.As` already cover ordinary inspection,
 and a sentinel per code would be API surface nobody asked for.
 
+The local sentinels answer the one question an `*Error` cannot: did the peer say
+this, or did it never see the request? `ErrNotAdvertised` is a local capability
+refusal, `ErrLimitExceeded` a local bound, and `ErrConnectionClosed` an operation
+on a connection that has ended, wrapping the failure that ended it when there was
+one. `Close` reports only what closing itself did; why the connection ended is
+`Wait`'s to report, so a deferred `Close` never returns somebody else's error.
+
 A handler's error is not relayed unless it is deliberately an ACP `Error`.
 Arbitrary Go errors routinely contain paths and host identifiers; the peer gets
 `-32603` and the detail goes to the configured logger. `nil` for a logger means
@@ -707,15 +770,11 @@ within its session. `AgentConn.CreateElicitation` elicits within the request bei
 served, which is what the schema means by a request-scoped elicitation: the phases
 before any session exists.
 
-That second one decided how `ElicitationRequestScope` is generated. It names a
-`RequestId`, and this API does not surface JSON-RPC request identifiers — a caller
-names a method by calling the operation for it, and the same holds for the request
-that operation is answering. Exporting one to satisfy a scope would hand out the
-plumbing the rest of the design withholds. So the definition is on the manifest's
-internal list, the connection fills the scope in from the context the request
-travels on, and the arms that carry it are exported types wrapping an unexported
-one. A client can tell a request-scoped elicitation from a session-scoped one by
-its arm; neither side is handed the identifier.
+An agent never spells a request-scoped elicitation's `RequestId`: the
+connection fills the scope in from the context the request travels on. A client
+receives it as `ElicitationRequestScope.RequestID`, a `jsonrpc.ID`, because the
+schema puts it on the wire for the client to correlate with the request it
+answers, and a client cannot match what it cannot read.
 
 The context retains the original inbound request record. The operation checks
 that the record belongs to this connection. The unanswered map owns both send
@@ -759,7 +818,7 @@ The identifier is reserved before create work starts, so concurrent requests
 cannot reuse it. The response commits that reservation only for the known
 `accept` action; decline, cancellation, a custom future action, and failure roll
 it back. Once accepted, the ID remains unique until a completion is successfully
-written.
+written or the bound described under resource limits forgets it.
 
 Completion has its own in-flight state. Removing the ID before the write would
 make a context deadline lose an interaction even when the transport proved it
@@ -841,14 +900,14 @@ A design document is a claim about code. These are the checks that keep the two
 in agreement:
 
 - **The specification's own obligations**: the schema carries the standard's prose
-  in its descriptions, and 24 of those sentences are normative. They are the part
+  in its descriptions, and 62 of those sentences are normative. They are the part
   of the standard a generator cannot implement — not shapes but obligations — so
   each one is quoted and classified as this package's to keep or an application's,
   with where. The list is held against the schema in both directions: a release
   that adds an obligation fails rather than waiting to be noticed, and a row
   cannot outlive the clause it answers. Being classified is all it asserts; that a
   clause is satisfied is asserted by the tests each row names.
-- **Cross-SDK fixtures**: 147 expected outcomes come from the reference
+- **Cross-SDK fixtures**: 165 expected outcomes come from the reference
   TypeScript SDK's own deserialisation machinery, regenerated from the pinned
   schema and replayed by `go test` with no network. Re-running the oracle
   reproduces every previously recorded answer byte for byte, which is what makes
@@ -871,7 +930,10 @@ in agreement:
   and a person drove it, including the stop button. Every property Zed sent
   survives this package's types unchanged.
 - **Wire fuzzing**: two targets assert that normalisation reaches a fixed point
-  because schema-directed recovery can quietly break that property.
+  because schema-directed recovery can quietly break that property, and a third
+  that byte-stream framing does not depend on where reads split a stream.
+- **Doc links**: a test resolves every bracketed link in a doc comment, so a
+  rename cannot leave documentation naming something that no longer exists.
 - **Concurrency**: `testing/synctest` covers cancellation and shutdown, under
   `-race`, on Linux, macOS, and Windows.
 - **Reachability**: the check reports an exported operation with no caller-side
@@ -931,8 +993,8 @@ the unstable grammar itself needs a library generated from it, and this is not o
 
 ### The module major tracks the protocol major
 
-Upstream is publishing `schema-v2.0.0-alpha` releases alongside the stable v1
-line. A protocol major is a different grammar, so the question it raises is not
+Upstream is publishing `schema-v2.0.0` pre-releases, now in beta, alongside the
+stable v1 line. A protocol major is a different grammar, so the question it raises is not
 when to implement it but where it lives, and answering that after the work has
 started is how a stopgap gets chosen.
 
@@ -971,8 +1033,9 @@ but a second one being kept alive inside every method.
 
 How much of a different grammar it is was measured rather than assumed.
 The initial comparison of `schema-v2.0.0-alpha.3` against v1.21.0 found
-40 definitions gone, 45 new,
-and 11 of the 25 methods removed against 2 added. The removals are not
+40 definitions gone, 45 new, and 11 of the 25 methods removed against 2 added;
+`schema-v2.0.0-beta.3` against v1.34.1 still removes the same 11 and adds 4. The
+removals are not
 peripheral — all five `terminal/*` methods and both `fs/*` methods stop existing,
 `authenticate` and `logout` become `auth/login` and `auth/logout`, `session/load`
 and `session/set_mode` go. Terminals reappear as arms of `SessionUpdate` and
@@ -988,12 +1051,11 @@ of. That is two dependency lines and a fallback, against a branch inside every
 operation forever. It is also exactly what Go's major-version rule exists to
 express, and pre-1.0 is the cheapest moment this choice will ever be available.
 
-Until the v2 schema stabilises, the pin stays on the v1 line and the alphas are
-watched rather than implemented. Implementing an alpha would encode a dialect
-that is still changing, which is the local dialect AGENTS.md rules out, arrived at
-by being early rather than by disagreeing. The alpha changelog's other entries —
-terminal authentication stabilised, session compaction added — are what decides
-when the work starts.
+Until the v2 schema stabilises, the pin stays on the v1 line and the
+pre-releases are watched rather than implemented. Implementing a beta would
+encode a dialect that is still changing, which is the local dialect
+`PROJECT_RULES.md` rules out, arrived at by being early rather than by
+disagreeing. A stable `schema-v2.0.0` release is what starts the work.
 
 `scripts/release.sh` is the only release path. The module proxy and checksum
 database make published tags immutable. The script therefore verifies before it

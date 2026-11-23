@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"sync"
 	"testing"
-	"time"
 
-	"github.com/Tangerg/acp/internal/jsonrpc2"
 	"github.com/Tangerg/acp/jsonrpc"
 )
+
+// documentedDefault is the bound Limits promises for a zero field.
+const documentedDefault = 1024
 
 // What a connection will hold for protocol work, and what it does when either
 // side asks for more.
@@ -37,7 +38,7 @@ func TestABacklogPastItsBoundEndsTheConnection(t *testing.T) {
 	stream, agentConn := connectRawAgent(t, agent)
 	defer agentConn.Close() //nolint:errcheck // idempotent.
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), deadlockGuard)
 	defer cancel()
 	handshakeRaw(ctx, t, stream)
 
@@ -68,12 +69,12 @@ func TestTooManyInflightRequestsIsRefused(t *testing.T) {
 	conn := newTestAgentConnWith(Limits{InflightRequests: testBound})
 
 	for id := range testBound {
-		if _, err := conn.requests.accept(t.Context(), jsonrpcTestID(id)); err != nil {
+		if _, err := conn.requests.accept(t.Context(), inboundFor(jsonrpcTestID(id))); err != nil {
 			t.Fatalf("request %d was refused below the bound: %v", id, err)
 		}
 	}
 
-	_, err := conn.requests.accept(t.Context(), jsonrpcTestID(testBound))
+	_, err := conn.requests.accept(t.Context(), inboundFor(jsonrpcTestID(testBound)))
 	if !errors.Is(err, errTooManyInflight) {
 		t.Fatalf("the request past the bound was answered %v, want the in-flight bound", err)
 	}
@@ -82,53 +83,23 @@ func TestTooManyInflightRequestsIsRefused(t *testing.T) {
 	completed := conn.requests.serving[jsonrpcTestID(0)]
 	completed.settle()
 	completed.finish()
-	if _, err := conn.requests.accept(t.Context(), jsonrpcTestID(testBound)); err != nil {
+	if _, err := conn.requests.accept(t.Context(), inboundFor(jsonrpcTestID(testBound))); err != nil {
 		t.Fatalf("a request was refused after one finished: %v", err)
 	}
 }
 
-// A peer that keeps naming fresh sessions without closing them ends the
-// connection. Serving session/close is what reclaims an agent's cached entry;
-// merely holding a handle on the application's side is not what makes the
-// population grow.
-func TestTooManySessionsEndsTheConnection(t *testing.T) {
-	// A real transport, because this bound ends the connection and ending one
-	// closes what it was reading.
-	agent := blockingAgent(t, Limits{SessionHandles: testBound}, make(chan struct{}), make(chan struct{}))
+// Sessions are not a connection-owned population: a handle holds only its
+// identifier and connection, so a long-lived connection may open any number.
+func TestManySessionsDoNotEndTheConnection(t *testing.T) {
+	agent := blockingAgent(t, Limits{}, make(chan struct{}), make(chan struct{}))
 	_, conn := connectRawAgent(t, agent)
-
-	var last *AgentSession
-	for index := range testBound + 1 {
-		last = conn.session(SessionID(fmt.Sprintf("sess-%d", index)))
-	}
-
-	// The handle past the bound is still real, so whatever was mid-flight fails on
-	// the connection ending rather than on a nil pointer.
-	if last == nil || last.Conn() != conn {
-		t.Fatal("the handle minted past the bound is not attached to this connection")
-	}
-	if !conn.ended() {
-		t.Fatal("naming more sessions than the bound left the connection open")
-	}
-	if err := conn.life.terminal; !errors.Is(err, errTooManySessions) {
-		t.Fatalf("the connection ended with %v, want the session bound", err)
-	}
-}
-
-// A handle already minted is returned again rather than counted again, so a peer
-// reusing its sessions never approaches the bound.
-func TestRepeatingASessionDoesNotConsumeTheBound(t *testing.T) {
-	agent := blockingAgent(t, Limits{SessionHandles: testBound}, make(chan struct{}), make(chan struct{}))
-	_, conn := connectRawAgent(t, agent)
-
-	first := conn.session("sess-1")
-	for range testBound * 2 {
-		if again := conn.session("sess-1"); again != first {
-			t.Fatal("one identifier produced two handles, so the one-prompt rule holds for neither")
+	for index := range documentedDefault * 2 {
+		if session := conn.session(SessionID(fmt.Sprintf("sess-%d", index))); session.Conn() != conn {
+			t.Fatal("a session handle is not attached to its connection")
 		}
 	}
-	if conn.ended() {
-		t.Fatal("repeating one session ended the connection")
+	if conn.life.ended() {
+		t.Fatal("naming many sessions ended the connection")
 	}
 }
 
@@ -140,28 +111,24 @@ func TestAZeroLimitTakesItsDefault(t *testing.T) {
 	if resolved.QueuedDeliveries != 7 {
 		t.Fatalf("QueuedDeliveries resolved to %d, want the stated 7", resolved.QueuedDeliveries)
 	}
-	if resolved.InflightRequests != defaultInflightRequests {
+	if resolved.InflightRequests != documentedDefault {
 		t.Fatalf("InflightRequests resolved to %d, want the default %d",
-			resolved.InflightRequests, defaultInflightRequests)
+			resolved.InflightRequests, documentedDefault)
 	}
-	if resolved.PendingCalls != defaultPendingCalls {
-		t.Fatalf("PendingCalls resolved to %d, want the default %d", resolved.PendingCalls, defaultPendingCalls)
+	if resolved.PendingCalls != documentedDefault {
+		t.Fatalf("PendingCalls resolved to %d, want the default %d", resolved.PendingCalls, documentedDefault)
 	}
-	if resolved.SessionHandles != defaultSessionHandles {
-		t.Fatalf("SessionHandles resolved to %d, want the default %d",
-			resolved.SessionHandles, defaultSessionHandles)
-	}
-	if resolved.OutstandingElicitations != defaultOutstandingElicitations {
+	if resolved.OutstandingElicitations != documentedDefault {
 		t.Fatalf("OutstandingElicitations resolved to %d, want the default %d",
-			resolved.OutstandingElicitations, defaultOutstandingElicitations)
+			resolved.OutstandingElicitations, documentedDefault)
 	}
 
 	// And the connection reads the resolved value, so the bound in an error message
 	// is the effective one rather than the field the caller left zero.
 	conn := newTestAgentConnWith(Limits{})
-	if conn.limits.QueuedDeliveries != defaultQueuedDeliveries {
+	if conn.limits.QueuedDeliveries != documentedDefault {
 		t.Fatalf("the link holds bound %d, want the resolved default %d",
-			conn.limits.QueuedDeliveries, defaultQueuedDeliveries)
+			conn.limits.QueuedDeliveries, documentedDefault)
 	}
 }
 
@@ -187,15 +154,14 @@ func TestANegativeLimitIsRefusedAtConstruction(t *testing.T) {
 		Prompt: func(context.Context, *AgentSession, *PromptRequest) (*PromptResponse, error) {
 			return &PromptResponse{}, nil
 		},
-		Cancel: func(context.Context, *AgentSession, *CancelNotification) {},
-		Limits: Limits{SessionHandles: -1},
+		Limits: Limits{OutstandingElicitations: -1},
 	})
 	if agentErr == nil {
 		t.Fatal("NewAgent accepted a negative bound")
 	}
 }
 
-func jsonrpcTestID(n int) jsonrpc.ID { return jsonrpc2.Int64ID(int64(n)) }
+func jsonrpcTestID(n int) jsonrpc.ID { return jsonrpc.Int64ID(int64(n)) }
 
 // blockingAgent serves nothing: the first handler to run reports that it arrived
 // and then waits, which is how a test gets a peer that outruns this side.
@@ -242,12 +208,10 @@ func handshakeRaw(ctx context.Context, t *testing.T, stream Connection) {
 func waitEnded(ctx context.Context, t *testing.T, conn *AgentConn, want error) {
 	t.Helper()
 
-	for !conn.ended() {
-		select {
-		case <-ctx.Done():
-			t.Fatalf("the connection never ended; want %v", want)
-		case <-time.After(time.Millisecond):
-		}
+	select {
+	case <-conn.life.released:
+	case <-ctx.Done():
+		t.Fatalf("the connection never ended; want %v", want)
 	}
 	if err := conn.life.terminal; !errors.Is(err, want) {
 		t.Fatalf("the connection ended with %v, want %v", err, want)

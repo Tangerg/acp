@@ -9,17 +9,13 @@ import (
 )
 
 // ElicitationHandlers is a client's ability to put an elicitation in front of the
-// user.
+// user. The two modes are two independent capabilities, so they are two fields,
+// and each advertises itself. Both arrive through one method, so a mode with no
+// handler is refused with invalid-params: the method was advertised, the mode
+// inside it was not.
 //
-// The two modes are two independent capabilities the way the two file-system
-// booleans are, so they are two fields and not one, and each advertises itself.
-// Both arrive through one method, so a mode with no handler is refused with
-// invalid-params rather than method-not-found: the method was advertised, and it
-// is the mode inside it that was not.
-//
-// The mode is passed to a handler alongside the request it came from. It is that
-// request's own Value, already asserted by the dispatcher that used it to choose
-// the handler.
+// A handler receives the request and its Value, already asserted to the mode
+// that chose the handler.
 type ElicitationHandlers struct {
 	Form func(
 		ctx context.Context,
@@ -28,9 +24,9 @@ type ElicitationHandlers struct {
 		mode *ElicitationFormMode,
 	) (*CreateElicitationResponse, error)
 
-	// Returning accept from URL consents to start the out-of-band interaction and
-	// keeps its ID outstanding until the agent sends a completion. Every other
-	// action releases the ID with the response.
+	// Returning accept from URL consents to start the out-of-band interaction
+	// and keeps its ID outstanding until the agent sends a completion; every
+	// other action releases the ID.
 	URL func(
 		ctx context.Context,
 		conn *ClientConn,
@@ -38,33 +34,29 @@ type ElicitationHandlers struct {
 		mode *ElicitationURLMode,
 	) (*CreateElicitationResponse, error)
 
-	// Complete is optional even when URL is set, because the protocol makes
-	// sending one optional: an agent "MAY send elicitation/complete". A client
-	// that leaves it nil still tracks each accepted interaction and ignores a
-	// completion it does not recognise; it just does not hear about the ones it
-	// does. Setting it without URL is refused, because nothing could ever call it.
+	// Complete is optional even with URL set, because an agent "MAY send
+	// elicitation/complete". Without it the client still tracks accepted
+	// interactions and ignores completions it does not recognise.
 	Complete func(ctx context.Context, conn *ClientConn, notification *CompleteElicitationNotification)
 }
 
-// check refuses at construction a group that advertises elicitation and renders
-// no mode, and one whose completion handler no mode could ever reach.
+// check refuses a group that renders no mode, and a completion handler no mode
+// could reach.
 func (e *ElicitationHandlers) check() error {
 	if e == nil {
 		return nil
 	}
 	if e.Form == nil && e.URL == nil {
-		return errors.New(
-			"acp: ElicitationHandlers serves neither mode; set Form, URL, or both")
+		return errors.New("acp: ElicitationHandlers serves neither mode; set Form, URL, or both")
 	}
 	if e.URL == nil && e.Complete != nil {
-		return errors.New(
-			"acp: ElicitationHandlers.Complete is set without URL, so it could never run")
+		return errors.New("acp: ElicitationHandlers.Complete is set without URL, so it could never run")
 	}
 	return nil
 }
 
-// A mode with no handler is left absent rather than set false: the schema's
-// capability objects use a present `{}` as the only yes.
+// capabilities derives the advertisement. A mode without a handler is absent
+// rather than false: a present `{}` is the only yes.
 func (e *ElicitationHandlers) capabilities() Opt[ElicitationCapabilities] {
 	if e == nil {
 		return Opt[ElicitationCapabilities]{}
@@ -79,22 +71,37 @@ func (e *ElicitationHandlers) capabilities() Opt[ElicitationCapabilities] {
 	return OptValue(advertised)
 }
 
-// CreateElicitationParams is an elicitation without its scope, because the
-// operation supplies that: a session handle elicits within its session and a
-// connection within the request it is serving. This is the division every handle
-// here makes — a caller never spells a session identifier either — and it is what
-// keeps the request scope unexported, since the scope it names is a JSON-RPC
-// request identifier this API does not hand out.
+// unserved reports the modes a stated advertisement claims that no handler
+// renders. Advertising fewer modes than the handlers serve is the client's
+// choice.
+func (e *ElicitationHandlers) unserved(stated ClientCapabilities) []string {
+	var unserved []string
+	for _, mode := range []struct {
+		elicitationMode
+		served bool
+	}{
+		{elicitationForm, e != nil && e.Form != nil},
+		{elicitationURL, e != nil && e.URL != nil},
+	} {
+		if mode.advertisedIn(stated) && !mode.served {
+			unserved = append(unserved, mode.capability+" advertises a mode with no handler that renders it")
+		}
+	}
+	return unserved
+}
+
+// CreateElicitationParams is an elicitation without its scope, which the
+// operation supplies: a session handle elicits within its session, a connection
+// within the request it is serving.
 type CreateElicitationParams struct {
-	// Required.
+	// Message is shown to the user.
 	Message string
 
-	// Required: *[ElicitationFormMode] or *[ElicitationURLMode], with its own
-	// Value left nil. A scope set here would be replaced by the operation, and
-	// replacing a caller's value in silence is worse than refusing it.
+	// Mode is *[ElicitationFormMode] or *[ElicitationURLMode], with its Value
+	// left nil: the Value is the scope, and the operation sets it.
 	Mode CreateElicitationRequestValue
 
-	// Session scope only, which is what an agent relaying an MCP server's
+	// ToolCallID is for session scope only, as an agent relaying an MCP server's
 	// elicitation during a tool call needs. [AgentConn.CreateElicitation] refuses
 	// it rather than dropping it.
 	ToolCallID Opt[ToolCallID]
@@ -102,93 +109,124 @@ type CreateElicitationParams struct {
 	Meta Opt[Meta]
 }
 
-// The mode is copied before the scope is written into it: the value is the
-// caller's, and an agent holding one prepared schema and eliciting with it twice
-// would otherwise find the second call carrying the first call's scope.
+// An elicitationScope writes the operation's scope into a mode.
+type elicitationScope interface {
+	apply(mode CreateElicitationRequestValue, params *CreateElicitationParams) error
+}
+
+type sessionScope struct {
+	session SessionID
+}
+
+func (s sessionScope) apply(mode CreateElicitationRequestValue, params *CreateElicitationParams) error {
+	scope := ElicitationSessionScope{SessionID: s.session, ToolCallID: params.ToolCallID}
+	switch mode := mode.(type) {
+	case *ElicitationFormMode:
+		mode.Value = &ElicitationFormModeSession{ElicitationSessionScope: scope}
+	case *ElicitationURLMode:
+		mode.Value = &ElicitationURLModeSession{ElicitationSessionScope: scope}
+	}
+	return nil
+}
+
+type requestScope struct {
+	request jsonrpc.ID
+}
+
+func (s requestScope) apply(mode CreateElicitationRequestValue, _ *CreateElicitationParams) error {
+	scope := ElicitationRequestScope{RequestID: s.request}
+	switch mode := mode.(type) {
+	case *ElicitationFormMode:
+		mode.Value = &ElicitationFormModeRequest{ElicitationRequestScope: scope}
+	case *ElicitationURLMode:
+		mode.Value = &ElicitationURLModeRequest{ElicitationRequestScope: scope}
+	}
+	return nil
+}
+
+// createElicitation sends an elicitation in a scope. The mode is copied before
+// the scope is written into it, because it is the caller's: an agent eliciting
+// twice with one prepared schema would otherwise send the first call's scope.
 func (c *AgentConn) createElicitation(
 	ctx context.Context,
 	params *CreateElicitationParams,
-	scope func(CreateElicitationRequestValue) (CreateElicitationRequestValue, error),
+	scope elicitationScope,
 	parent *inboundRequest,
 ) (*CreateElicitationResponse, error) {
 	if params == nil {
-		return nil, paramsRequired("CreateElicitation", "Message and Mode")
+		params = new(CreateElicitationParams)
 	}
-	mode, modeErr := checkedMode(params.Mode)
-	if modeErr != nil {
-		return nil, modeErr
-	}
-	if err := c.awaitHandshake(ctx, methodElicitationCreate); err != nil {
+	mode, err := checkedMode(params.Mode)
+	if err != nil {
 		return nil, err
 	}
-	if err := c.Peer().permits(methodElicitationCreate); err != nil {
-		return nil, err
-	}
-	if err := c.Peer().permitsElicitationMode(mode); err != nil {
-		return nil, err
-	}
-
-	scoped, scopeErr := scope(deepCopy(mode))
-	if scopeErr != nil {
+	scoped := deepCopy(mode)
+	if scopeErr := scope.apply(scoped, params); scopeErr != nil {
 		return nil, scopeErr
 	}
 	var form *compiledForm
 	if formMode, isForm := scoped.(*ElicitationFormMode); isForm {
-		var compileErr error
-		form, compileErr = newCompiledForm(formMode.RequestedSchema)
-		if compileErr != nil {
-			return nil, compileErr
+		if form, err = newCompiledForm(formMode.RequestedSchema); err != nil {
+			return nil, err
 		}
 	}
+	request := &CreateElicitationRequest{Message: params.Message, Meta: params.Meta, Value: scoped}
 
-	request := &CreateElicitationRequest{
-		Message: params.Message,
-		Meta:    params.Meta,
-		Value:   scoped,
-	}
-	response := new(CreateElicitationResponse)
 	if url, isURL := scoped.(*ElicitationURLMode); isURL {
-		reservation, err := c.elicitations.reserve(url.ElicitationID, c.limits.OutstandingElicitations)
-		if err != nil {
-			return nil, err
-		}
-		call, err := c.sendElicitation(ctx, request, parent, func(answer *jsonrpc.Response) error {
-			if decodeErr := decodeResponse(answer, response); decodeErr != nil {
-				reservation.reject()
-				return decodeErr
-			}
-			if response.accepted() {
-				reservation.accept()
-			} else {
-				reservation.reject()
-			}
-			return nil
-		}, reservation.reject)
-		if err != nil {
-			reservation.reject()
-			return nil, err
-		}
-		if _, awaitErr := c.await(ctx, call); awaitErr != nil {
-			return nil, awaitErr
-		}
-		return response, nil
+		return c.createURLElicitation(ctx, request, url.ElicitationID, parent)
 	}
-
 	call, err := c.sendElicitation(ctx, request, parent, nil, nil)
 	if err != nil {
 		return nil, err
 	}
+	response := new(CreateElicitationResponse)
 	if awaitErr := c.awaitInto(ctx, call, response); awaitErr != nil {
 		return nil, awaitErr
 	}
-	if form != nil {
-		if bad := form.validateResponse(ctx, response); bad != nil {
-			return nil, bad
-		}
+	if bad := form.validateResponse(ctx, response); bad != nil {
+		return nil, bad
 	}
 	return response, nil
 }
 
+// createURLElicitation reserves the ID before the request can reach the wire.
+// The response, even one arriving after the caller left, alone decides whether
+// the interaction became outstanding.
+func (c *AgentConn) createURLElicitation(
+	ctx context.Context,
+	request *CreateElicitationRequest,
+	id ElicitationID,
+	parent *inboundRequest,
+) (*CreateElicitationResponse, error) {
+	reservation, err := c.elicitations.reserve(id)
+	if err != nil {
+		return nil, err
+	}
+	response := new(CreateElicitationResponse)
+	call, err := c.sendElicitation(ctx, request, parent, func(answer *jsonrpc.Response) error {
+		if decodeErr := decodeResponse(answer, response); decodeErr != nil {
+			reservation.reject()
+			return decodeErr
+		}
+		if response.accepted() {
+			reservation.accept()
+		} else {
+			reservation.reject()
+		}
+		return nil
+	}, reservation.reject)
+	if err != nil {
+		reservation.reject()
+		return nil, err
+	}
+	if _, awaitErr := c.await(ctx, call); awaitErr != nil {
+		return nil, awaitErr
+	}
+	return response, nil
+}
+
+// sendElicitation holds a request-scoped elicitation's parent send gate during
+// the write, so the write commits before the parent's answer.
 func (c *AgentConn) sendElicitation(
 	ctx context.Context,
 	request *CreateElicitationRequest,
@@ -202,88 +240,82 @@ func (c *AgentConn) sendElicitation(
 		}
 		defer parent.finishSending()
 	}
-	return c.send(ctx, methodElicitationCreate, request, accept, abandon)
+	return c.sendStandard(ctx, methodElicitationCreate, request, accept, abandon)
 }
 
-// The catch-all arm exists so a mode this package does not know survives being
-// decoded from a peer. Sending one is the opposite: a discriminant this side made
-// up.
+// checkedMode refuses what this side cannot send. The catch-all arm exists so a
+// mode this package does not know survives decoding; sending one would be a
+// discriminant this side made up.
 func checkedMode(mode CreateElicitationRequestValue) (CreateElicitationRequestValue, error) {
 	switch mode := mode.(type) {
-	case nil:
-		return nil, paramsRequired("CreateElicitation", "Mode")
-
 	case *ElicitationFormMode:
-		// A typed nil is a legal interface value and reaches this arm, so it is
-		// checked before the field is read rather than after.
 		if mode == nil {
-			return nil, paramsRequired("CreateElicitation", "Mode")
+			break
 		}
 		if mode.Value != nil {
 			return nil, errScopeIsTheOperations
 		}
 		return mode, nil
-
 	case *ElicitationURLMode:
 		if mode == nil {
-			return nil, paramsRequired("CreateElicitation", "Mode")
+			break
 		}
 		if mode.Value != nil {
 			return nil, errScopeIsTheOperations
 		}
 		return mode, nil
-
+	case nil:
 	default:
-		return nil, fmt.Errorf(
-			"acp: CreateElicitationParams.Mode is %T, which is not a mode this package can send; "+
-				"use *ElicitationFormMode or *ElicitationURLMode", mode)
+		return nil, fmt.Errorf("acp: CreateElicitationParams.Mode is %T, which is not a mode this package can "+
+			"send; use *ElicitationFormMode or *ElicitationURLMode", mode)
 	}
+	return nil, errors.New("acp: CreateElicitationParams.Mode is required")
 }
 
-// An elicitationMode is one of the two shapes a client can render: its wire
-// spelling, and the capability that advertises it.
-//
-// The two are one value because they are one fact stated twice. Every refusal
-// names both, the gate table gates on the path, and construction checks the
-// advertisement against the handler — so a spelling that lived apart from its
-// path could report one mode while gating another.
+var errScopeIsTheOperations = errors.New(
+	"acp: the Value of an elicitation mode is its scope, which the operation sets; leave it nil and choose " +
+		"the scope by calling AgentSession.CreateElicitation or AgentConn.CreateElicitation")
+
+// An elicitationMode is one of the two shapes a client can render, as the
+// parameter capability that advertises it.
 type elicitationMode struct {
 	parameterCapability
-	// advertised reads the one field under the elicitation capability that says
-	// whether this mode is offered.
-	advertised func(ElicitationCapabilities) bool
+	// leaf is the capability's path under clientCapabilities.
+	leaf string
+	get  func(ElicitationCapabilities) bool
 }
 
-// The wire spellings. The generated codec emits the same two strings as the
-// union's discriminant, so a refusal naming a different one would name a mode no
-// peer can have sent.
-const (
-	elicitationModeForm = "form"
-	elicitationModeURL  = "url"
+// advertisedIn reads the mode from a client advertisement; an absent elicitation
+// object advertises no mode.
+func (m elicitationMode) advertisedIn(client ClientCapabilities) bool {
+	elicitation, _ := client.Elicitation.Get()
+	return m.get(elicitation)
+}
 
-	elicitationCapability = "clientCapabilities.elicitation"
-)
+func newElicitationMode(tag, leaf string, get func(ElicitationCapabilities) bool) elicitationMode {
+	mode := elicitationMode{leaf: leaf, get: get}
+	mode.parameterCapability = parameterCapability{
+		value:      fmt.Sprintf("a %q elicitation", tag),
+		capability: "clientCapabilities." + leaf,
+		advertised: func(n *Negotiated) bool { return mode.advertisedIn(n.ClientCapabilities) },
+	}
+	return mode
+}
 
 var (
-	elicitationForm = elicitationMode{
-		parameterCapability: elicitationOf(elicitationModeForm),
-		advertised:          func(c ElicitationCapabilities) bool { return hasCapability(c.Form) },
-	}
-	elicitationURL = elicitationMode{
-		parameterCapability: elicitationOf(elicitationModeURL),
-		advertised:          func(c ElicitationCapabilities) bool { return hasCapability(c.URL) },
-	}
+	elicitationForm = newElicitationMode(elicitationFormModeTag, "elicitation.form",
+		func(c ElicitationCapabilities) bool { return hasCapability(c.Form) })
+	elicitationURL = newElicitationMode(elicitationURLModeTag, "elicitation.url",
+		func(c ElicitationCapabilities) bool { return hasCapability(c.URL) })
 )
 
-// An absent elicitation object advertises no mode, so the zero value answers
-// without a branch of its own.
-func (m elicitationMode) advertisedBy(client ClientCapabilities) bool {
-	elicitation, _ := client.Elicitation.Get()
-	return m.advertised(elicitation)
+// anyElicitationMode reports whether a client can render anything. The RFD is
+// explicit that a present elicitation object with no mode advertises no modes,
+// so it does not advertise the method either.
+func anyElicitationMode(client ClientCapabilities) bool {
+	return elicitationForm.advertisedIn(client) || elicitationURL.advertisedIn(client)
 }
 
-// elicitationModeOf names the wire arm, so that the capability check and the
-// refusal it produces read the same value rather than two parallel switches.
 func elicitationModeOf(value CreateElicitationRequestValue) (elicitationMode, bool) {
 	switch value.(type) {
 	case *ElicitationFormMode:
@@ -295,40 +327,90 @@ func elicitationModeOf(value CreateElicitationRequestValue) (elicitationMode, bo
 	}
 }
 
-func elicitationOf(mode string) parameterCapability {
-	return parameterCapability{
-		kind:       mode,
-		noun:       "elicitation",
-		capability: elicitationCapability + "." + mode,
+// registerElicitation reserves a URL elicitation's ID in wire order, before its
+// handler can show it, and commits the reservation only when an accepting answer
+// reaches the peer.
+func (c *ClientConn) registerElicitation(call *inboundRequest) registration {
+	request := paramsOf[CreateElicitationRequest](call)
+	url, isURL := request.Value.(*ElicitationURLMode)
+	handlers := c.client.config.Elicitation
+	if !isURL || url == nil || handlers.URL == nil {
+		return dispatched(callHooks{})
+	}
+	reservation, err := c.elicitations.reserve(url.ElicitationID)
+	if errors.Is(err, errElicitationIDInUse) {
+		return answered(nil, newError(ErrorCodeInvalidParams, "%s", err))
+	}
+	if err != nil {
+		return answered(nil, err)
+	}
+	return dispatched(callHooks{finished: func(written any) {
+		if response, ok := written.(*CreateElicitationResponse); ok && response.accepted() {
+			reservation.accept()
+			return
+		}
+		reservation.reject()
+	}})
+}
+
+// serveElicitation routes an elicitation to the handler for its mode. A form is
+// compiled before the handler sees it and the handler's answer is held to it.
+func (c *ClientConn) serveElicitation(ctx context.Context, call *inboundRequest) (any, error) {
+	request := paramsOf[CreateElicitationRequest](call)
+	handlers := c.client.config.Elicitation
+	switch mode := request.Value.(type) {
+	case *ElicitationFormMode:
+		if handlers.Form == nil {
+			return nil, elicitationForm.refusedInbound()
+		}
+		form, err := newCompiledForm(mode.RequestedSchema)
+		if err != nil {
+			return nil, newError(ErrorCodeInvalidParams, "%s", err)
+		}
+		response, err := handlers.Form(ctx, c, request, mode)
+		if err != nil || response == nil {
+			return response, err
+		}
+		if bad := form.validateResponse(ctx, response); bad != nil {
+			// The answer violates the peer's valid schema, so the fault is this
+			// handler's rather than the request's.
+			return nil, fmt.Errorf("acp: the form handler's answer is invalid: %w", bad)
+		}
+		return response, nil
+	case *ElicitationURLMode:
+		if handlers.URL == nil {
+			return nil, elicitationURL.refusedInbound()
+		}
+		return handlers.URL(ctx, c, request, mode)
+	default:
+		// The catch-all included: guessing which known mode a future one resembles
+		// would be worse than saying it is not implemented.
+		return nil, newError(ErrorCodeInvalidParams, "the elicitation names a mode this package does not implement")
 	}
 }
 
-var errScopeIsTheOperations = errors.New(
-	"acp: the Value of an elicitation mode is its scope, which the operation sets; " +
-		"leave it nil and choose the scope by calling AgentSession.CreateElicitation " +
-		"or AgentConn.CreateElicitation")
+// serveCompletion clears a URL elicitation and then tells the application.
+// "Clients MUST ignore notifications referencing unknown or already-completed
+// IDs", and only the connection holds the set to tell them apart.
+func (c *ClientConn) serveCompletion(ctx context.Context, notification *CompleteElicitationNotification) {
+	if !c.elicitations.receiveCompletion(notification.ElicitationID) {
+		return
+	}
+	if handlers := c.client.config.Elicitation; handlers.Complete != nil {
+		handlers.Complete(ctx, c, notification)
+	}
+}
 
-// The request a handler is serving travels on the context rather than on a handle
-// because there is no handle for it: the only thing identifying an inbound call is
-// an identifier this API does not hand out. The connection knows it already — it
-// has to, to answer — so the context is where a handler reaches it without anybody
-// spelling it.
+// The request a handler is serving travels on its context, because no handle
+// names an inbound call: its identifier is not handed out. The connection knows
+// it already, to answer it.
 type servingRequestKey struct{}
 
-// servedRequest is the identity of the call a handler is answering: which one,
-// and which method. The method is there because the identifier alone does not say
-// whether the request has a session, and a request-scoped elicitation is defined
-// as one outside a session.
-type servedRequest struct {
-	request *inboundRequest
-	method  string
+func withServingRequest(ctx context.Context, request *inboundRequest) context.Context {
+	return context.WithValue(ctx, servingRequestKey{}, request)
 }
 
-func withServingRequest(ctx context.Context, request *inboundRequest, method string) context.Context {
-	return context.WithValue(ctx, servingRequestKey{}, servedRequest{request, method})
-}
-
-func servingRequest(ctx context.Context) (*inboundRequest, string, bool) {
-	served, serving := ctx.Value(servingRequestKey{}).(servedRequest)
-	return served.request, served.method, serving
+func servingRequest(ctx context.Context) (*inboundRequest, bool) {
+	request, serving := ctx.Value(servingRequestKey{}).(*inboundRequest)
+	return request, serving
 }

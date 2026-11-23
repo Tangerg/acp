@@ -42,7 +42,6 @@ func TestAnAgentDoesNotShareItsConfigurationWithItsCaller(t *testing.T) {
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 		Capabilities: &acp.AgentCapabilities{
 			SessionCapabilities: acp.SessionCapabilities{
 				Meta: acp.OptValue(mustMeta(t, map[string]any{"nested": map[string]any{"depth": 2}})),
@@ -71,7 +70,7 @@ func TestAnAgentDoesNotShareItsConfigurationWithItsCaller(t *testing.T) {
 		t.Fatalf("NewClient: %v", err)
 	}
 	session := connectAndOpen(t, client, agent)
-	peer := session.Conn().Peer()
+	peer := session.Conn().Negotiated()
 
 	if encoded := text(t, peer.AgentMeta); strings.Contains(encoded, "tampered") {
 		t.Errorf("the agent's _meta went out as %s", encoded)
@@ -108,7 +107,6 @@ func TestPeerHandsOutASnapshotNobodyElseHolds(t *testing.T) {
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 	})
 	if err != nil {
 		t.Fatalf("NewAgent: %v", err)
@@ -117,7 +115,7 @@ func TestPeerHandsOutASnapshotNobodyElseHolds(t *testing.T) {
 	conn := session.Conn()
 
 	// Reach as deep as the value goes and change it.
-	held := conn.Peer()
+	held := conn.Negotiated()
 	if meta, ok := held.AgentMeta.Get(); ok {
 		if err := meta.Set("nested", map[string]any{"depth": "tampered"}); err != nil {
 			t.Fatalf("tamper nested metadata: %v", err)
@@ -131,7 +129,7 @@ func TestPeerHandsOutASnapshotNobodyElseHolds(t *testing.T) {
 	}
 	held.AgentCapabilities.LoadSession = true
 
-	fresh := conn.Peer()
+	fresh := conn.Negotiated()
 	if encoded := text(t, fresh); strings.Contains(encoded, "tampered") {
 		t.Fatalf("a second Peer reported %s, so the first snapshot was the connection's own", encoded)
 	}
@@ -153,7 +151,7 @@ func TestMetaDecodesIntoTheRequestedType(t *testing.T) {
 	}
 	session := connectAndOpen(t, client, testAgent(t, nil))
 
-	meta, ok := session.Conn().Peer().ClientMeta.Get()
+	meta, ok := session.Conn().Negotiated().ClientMeta.Get()
 	if !ok {
 		t.Fatal("the snapshot carries no client _meta")
 	}
@@ -215,7 +213,7 @@ func TestMetaDoesNotRetainArbitraryGoObjects(t *testing.T) {
 	}
 	session := connectAndOpen(t, client, testAgent(t, nil))
 
-	meta, ok := session.Conn().Peer().ClientMeta.Get()
+	meta, ok := session.Conn().Negotiated().ClientMeta.Get()
 	if !ok {
 		t.Fatal("the snapshot carries no client _meta")
 	}

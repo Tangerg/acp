@@ -2,8 +2,11 @@ package acp_test
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/Tangerg/acp/internal/wire"
 )
 
 // The encoder's promise over every generated type, which is where a generator bug
@@ -30,7 +33,8 @@ func TestEveryGeneratedTypeNormalisesToAFixedPointOrRefuses(t *testing.T) {
 				// member spelled "" — so refusing is correct, and the only thing to
 				// hold it to is that the refusal is this package's own rather than a
 				// panic or a codec that got halfway.
-				if !strings.Contains(err.Error(), "acp: ") {
+				var pathErr *wire.PathError
+				if !strings.Contains(err.Error(), "acp: ") && !errors.As(err, &pathErr) {
 					t.Fatalf("refused with %v, which is not this package saying why", err)
 				}
 				refused++

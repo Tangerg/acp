@@ -252,7 +252,7 @@ func TestTheBaselineHandlersAreRequired(t *testing.T) {
 	if err == nil {
 		t.Fatal("an agent with no handlers at all was accepted")
 	}
-	for _, missing := range []string{"NewSession", "Prompt", "Cancel"} {
+	for _, missing := range []string{"NewSession", "Prompt"} {
 		if !strings.Contains(err.Error(), missing) {
 			t.Errorf("the failure does not name the missing %s handler: %v", missing, err)
 		}
@@ -461,7 +461,6 @@ func TestAnEmptyIdentifierIsAcceptedBecauseTheSchemaDeclaresNoMinimum(t *testing
 			created <- failure
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 	})
 	if err != nil {
 		t.Fatalf("NewAgent: %v", err)

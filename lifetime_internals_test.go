@@ -12,7 +12,10 @@ import (
 	"github.com/Tangerg/acp/jsonrpc"
 )
 
-func TestAnInterruptedWriteKeepsItsErrorWhenTheReaderEndsFirst(t *testing.T) {
+// A caller's deadline does not interrupt a write that has begun: cancellation
+// cannot prove which prefix reached the peer, so the write finishes or the
+// connection ends, and only Close ends it.
+func TestACallersDeadlineDoesNotInterruptAWriteInProgress(t *testing.T) {
 	for name, operation := range map[string]func(context.Context, *AgentConn) error{
 		"call": func(ctx context.Context, conn *AgentConn) error {
 			return conn.Call(ctx, "_test/write", nil, nil)
@@ -24,31 +27,34 @@ func TestAnInterruptedWriteKeepsItsErrorWhenTheReaderEndsFirst(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				conn := newTestAgentConn()
-				conn.handshake.begin()
-				conn.handshake.accept(PeerInfo{})
-				conn.handshake.publish(nil)
 				reader, peerWriter := io.Pipe()
 				peerReader, writer := io.Pipe()
 				t.Cleanup(func() { _ = errors.Join(peerReader.Close(), peerWriter.Close()) })
 				conn.transport = newIOConnection(IOConfig{
 					Reader: reader, Writer: writer,
-					Close: func() error {
-						readErr := reader.Close()
-						// Let the read failure reach the connection before its pending write
-						// is unblocked. Both are consequences of the same stream release.
-						<-conn.life.ctx.Done()
-						return errors.Join(readErr, writer.Close())
-					},
-				})
+					Close: func() error { return errors.Join(reader.Close(), writer.Close()) },
+				}, false)
 				conn.run()
-				t.Cleanup(func() { _ = conn.Close() })
 				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 				defer cancel()
-				if err := operation(ctx, conn); !errors.Is(err, context.DeadlineExceeded) {
-					t.Errorf("operation = %v, want the interrupted write's deadline", err)
+				done := make(chan error, 1)
+				go func() { done <- operation(ctx, conn) }()
+
+				time.Sleep(2 * time.Second)
+				synctest.Wait()
+				select {
+				case err := <-done:
+					t.Fatalf("the operation returned %v while its write was still in progress", err)
+				default:
 				}
-				if err := conn.Wait(); !errors.Is(err, io.ErrClosedPipe) {
-					t.Errorf("Wait = %v, want the connection's first read failure", err)
+				if err := conn.Close(); err != nil {
+					t.Fatalf("Close: %v", err)
+				}
+				if err := <-done; err == nil || errors.Is(err, context.DeadlineExceeded) {
+					t.Errorf("operation = %v, want the closed write's failure", err)
+				}
+				if err := conn.Wait(); err != nil {
+					t.Errorf("Wait = %v, want nil for a local close", err)
 				}
 			})
 		})
@@ -56,8 +62,8 @@ func TestAnInterruptedWriteKeepsItsErrorWhenTheReaderEndsFirst(t *testing.T) {
 }
 
 func TestDrainingPreservesNotificationsAndCancelsRequestWork(t *testing.T) {
-	for _, duringDelivery := range []bool{false, true} {
-		t.Run(map[bool]string{false: "before delivery", true: "during delivery"}[duringDelivery], func(t *testing.T) {
+	for name, duringDelivery := range map[string]bool{"before delivery": false, "during delivery": true} {
+		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				conn := newTestClientConn()
 				notifications := make(chan error, 1)
@@ -72,14 +78,13 @@ func TestDrainingPreservesNotificationsAndCancelsRequestWork(t *testing.T) {
 						}
 						notifications <- ctx.Err()
 					},
-					CallFallback: func(ctx context.Context, _ *ClientConn, _ *ExtRequest) (json.RawMessage, error) {
+					CallFallback: func(ctx context.Context, _ *ClientConn, _ *ExtRequest) (any, error) {
 						requests <- ctx.Err()
 						return json.RawMessage(`{}`), nil
 					},
 				}}
-				conn.handshake.begin()
-				conn.handshake.accept(PeerInfo{})
-				conn.handshake.publish(nil)
+				conn.negotiation.accept(Negotiated{})
+				conn.negotiation.open()
 				conn.transport = &invalidMessageStream{}
 				if duringDelivery && !conn.admit(rawNotification("_test/active", `{}`)) {
 					t.Fatal("could not enqueue the active notification")
@@ -88,13 +93,13 @@ func TestDrainingPreservesNotificationsAndCancelsRequestWork(t *testing.T) {
 					t.Fatal("could not enqueue the messages")
 				}
 				if duringDelivery {
-					conn.life.run(conn.deliverLoop)
+					conn.life.start(conn.deliverLoop)
 					<-entered
 				}
 				conn.endReading(nil)
 				close(conn.life.readEnded)
 				if !duringDelivery {
-					conn.life.run(conn.deliverLoop)
+					conn.life.start(conn.deliverLoop)
 				}
 				if err := conn.Wait(); err != nil {
 					t.Fatal(err)

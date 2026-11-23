@@ -104,7 +104,7 @@ func record(
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	seen := &observations{}
+	seen := newObservations()
 	client, err := interopClient(seen)
 	if err != nil {
 		return nil, err
@@ -127,6 +127,10 @@ func record(
 	if closeErr != nil {
 		return nil, closeErr
 	}
+	messages, err := recorder.messages()
+	if err != nil {
+		return nil, err
+	}
 
 	return &Transcript{
 		Comment: "Recorded by internal/cmd/interop against an agent built on the reference " +
@@ -134,7 +138,7 @@ func record(
 		Scenario:   name,
 		Provenance: provenance,
 		Observed:   seen.snapshot(),
-		Messages:   recorder.messages(),
+		Messages:   messages,
 	}, nil
 }
 
@@ -175,12 +179,21 @@ type Observed struct {
 type observations struct {
 	mu sync.Mutex
 	Observed
+	// updated closes at the first update, which is how a scenario knows a turn is
+	// under way.
+	updated     chan struct{}
+	updatedOnce sync.Once
+}
+
+func newObservations() *observations {
+	return &observations{updated: make(chan struct{})}
 }
 
 func (o *observations) update(text string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.Updates = append(o.Updates, text)
+	o.updatedOnce.Do(func() { close(o.updated) })
 }
 
 func (o *observations) snapshot() Observed {
@@ -354,16 +367,12 @@ func playCancel(ctx context.Context, conn *acp.ClientConn, seen *observations) e
 		prompted <- promptErr
 	}()
 
-	// Wait for the first update, which is how this side knows the turn is under
-	// way rather than sleeping and hoping.
-	for range 600 {
-		seen.mu.Lock()
-		started := len(seen.Updates) > 0
-		seen.mu.Unlock()
-		if started {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-seen.updated:
+	case promptErr := <-prompted:
+		return fmt.Errorf("the turn ended before its first update: %w", promptErr)
+	case <-ctx.Done():
+		return fmt.Errorf("waiting for the turn's first update: %w", ctx.Err())
 	}
 	if cancelErr := session.Cancel(ctx, nil); cancelErr != nil {
 		return cancelErr
@@ -434,8 +443,8 @@ func playElicitation(ctx context.Context, conn *acp.ClientConn, seen *observatio
 }
 
 // describeScope names which of the two scopes an elicitation arrived under,
-// without naming the identifier that distinguishes them: a request scope carries
-// a JSON-RPC id, and this API does not hand those out.
+// without the request identifier a request scope carries: a replaying client
+// mints its own identifiers, so the recorded one would not match.
 func describeScope(scope acp.ElicitationFormModeValue) string {
 	switch scope := scope.(type) {
 	case *acp.ElicitationFormModeSession:
@@ -454,8 +463,9 @@ func describeScope(scope acp.ElicitationFormModeValue) string {
 type recordingTransport struct {
 	inner acp.Transport
 
-	mu  sync.Mutex
-	log []Recorded
+	mu       sync.Mutex
+	log      []Recorded
+	writeErr error
 }
 
 func (t *recordingTransport) Connect(ctx context.Context) (acp.Connection, error) {
@@ -466,20 +476,35 @@ func (t *recordingTransport) Connect(ctx context.Context) (acp.Connection, error
 	return &recordingConnection{inner: stream, transport: t}, nil
 }
 
-func (t *recordingTransport) record(from string, message jsonrpc.Message) {
+// record fails rather than leave a gap: a transcript missing a message would
+// replay as a different exchange.
+func (t *recordingTransport) record(from string, message jsonrpc.Message) error {
 	encoded, err := jsonrpc.EncodeMessage(message)
 	if err != nil {
-		return
+		return fmt.Errorf("recording a message from the %s: %w", from, err)
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.log = append(t.log, Recorded{From: from, Message: encoded})
+	return nil
 }
 
-func (t *recordingTransport) messages() []Recorded {
+func (t *recordingTransport) writeFailed(err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.log
+	if t.writeErr == nil {
+		t.writeErr = err
+	}
+}
+
+// messages is the transcript, or the write failure that makes it untrue.
+func (t *recordingTransport) messages() ([]Recorded, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.writeErr != nil {
+		return nil, fmt.Errorf("a recorded message was never written: %w", t.writeErr)
+	}
+	return t.log, nil
 }
 
 type recordingConnection struct {
@@ -492,13 +517,25 @@ func (c *recordingConnection) Read(ctx context.Context) (jsonrpc.Message, error)
 	if err != nil {
 		return nil, err
 	}
-	c.transport.record("agent", message)
+	if recordErr := c.transport.record("agent", message); recordErr != nil {
+		return nil, recordErr
+	}
 	return message, nil
 }
 
+// Write records a message before writing it, because the agent may answer before
+// the write returns and the transcript has to keep wire order. A failed write
+// then makes the whole recording fail rather than hold a message the agent never
+// read.
 func (c *recordingConnection) Write(ctx context.Context, message jsonrpc.Message) error {
-	c.transport.record("client", message)
-	return c.inner.Write(ctx, message)
+	if err := c.transport.record("client", message); err != nil {
+		return err
+	}
+	if err := c.inner.Write(ctx, message); err != nil {
+		c.transport.writeFailed(err)
+		return err
+	}
+	return nil
 }
 
 func (c *recordingConnection) Close() error { return c.inner.Close() }

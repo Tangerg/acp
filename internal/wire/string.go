@@ -18,7 +18,7 @@ type StringConstraints struct {
 // storage bytes or display graphemes.
 func (c StringConstraints) Validate(value string) error {
 	if c.MinLength > math.MaxInt || utf8.RuneCountInString(value) < int(c.MinLength) {
-		return fmt.Errorf("acp: string has fewer than %d characters", c.MinLength)
+		return fmt.Errorf("string has fewer than %d characters", c.MinLength)
 	}
 	if !c.AbsoluteURI {
 		return nil

@@ -3,35 +3,22 @@ package acp
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"github.com/Tangerg/acp/jsonrpc"
 )
 
 // ErrPromptInProgress refuses a second concurrent prompt on one session.
-//
-// The protocol has no way to say which turn a session/cancel means: the
-// notification carries only a session identifier — no turn and no request
-// identifier. That is only coherent if a session has at most one active turn, so
-// a second overlapping prompt is refused locally rather than left to scheduling,
-// and pending permission requests can then be indexed by session without
-// ambiguity.
-//
-// A session is safe for concurrent use; that is a separate question from whether
-// two prompts may overlap, and the answer to the first is yes while the answer to
-// the second is no.
+// session/cancel carries only a session identifier, which is coherent only if a
+// session has at most one active turn. A session is still safe for concurrent
+// use; it is overlapping prompts that are refused.
 var ErrPromptInProgress = errors.New("acp: prompt already in progress for this session")
 
-// A ClientSession is one conversation, as the client sees it.
-//
-// It binds the session identifier and nothing else. Session identifiers appear
-// across many protocol operations, so binding one prevents mismatched identifiers
-// without expanding the handle's lifetime or responsibility.
-//
-// Handles are connection-bound. A [SessionID] outlives the connection it came
-// from, but a handle does not: LoadSession on a new connection returns a new
-// handle. A handle that silently re-pointed at another transport would be a
-// lifetime nobody can reason about, so callers keep the identifier and ask for a
-// fresh handle.
+// A ClientSession is one conversation, as the client sees it. It binds the
+// session identifier to its connection and holds no other state, so two handles
+// for one session are interchangeable: compare them by [ClientSession.ID]. A
+// [SessionID] outlives its connection; a handle does not, so reopening a session
+// on another connection gives a handle bound to that one.
 type ClientSession struct {
 	id   SessionID
 	conn *ClientConn
@@ -41,189 +28,114 @@ func (s *ClientSession) ID() SessionID { return s.id }
 
 func (s *ClientSession) Conn() *ClientConn { return s.conn }
 
-// Prompt runs one turn and blocks until it ends.
+// Prompt runs one turn and blocks until it ends. While it is outstanding the
+// agent streams session/update notifications and may call back into this client.
 //
-// While it is outstanding the agent streams session/update notifications and may
-// call back into this client — for permission before a sensitive tool call, and
-// for the filesystem and terminal operations that do the work. That is why both
-// peers serve requests: an agent answering a prompt is simultaneously a caller.
-//
-// Cancelling ctx cancels the JSON-RPC request and returns ctx.Err(). It does not
-// end the turn: [ClientSession.Cancel] does that, and the two are different
-// operations for a reason the protocol insists on. See [ClientSession.Cancel].
-//
-// The turn outlives this call when that happens. The agent still owes an answer,
-// and the session is not free for the next prompt until the connection accepts
-// that answer. A caller who wants the session back promptly should call Cancel,
-// which is the operation that ends a turn.
+// Cancelling ctx stops this call waiting and cancels the JSON-RPC request; it
+// does not end the turn, which outlives the call until the agent answers.
+// [ClientSession.Cancel] ends a turn. A prompt started while a cancellation of
+// the same session is still being written waits for it to finish.
 func (s *ClientSession) Prompt(ctx context.Context, params *PromptParams) (*PromptResponse, error) {
-	conn := s.conn
-	if params != nil {
-		if err := conn.Peer().permitsPromptContent(params.Prompt); err != nil {
-			return nil, err
-		}
-	}
-	turn, claimed := conn.turns.begin(s.id)
-	if !claimed {
-		return nil, ErrPromptInProgress
-	}
-
-	request := &PromptRequest{SessionID: s.id}
-	if params != nil {
-		request.Prompt = params.Prompt
-		request.Meta = params.Meta
-	}
-
-	// The response observer ends the turn even when this caller has left. Losing
-	// the connection without an answer discharges the same obligation.
-	finish := turn.complete
-	call, err := conn.send(ctx, methodSessionPrompt, request, func(*jsonrpc.Response) error {
-		finish()
-		return nil
-	}, finish)
-	turn.finishSending()
+	turn, err := s.conn.turns.begin(ctx, s.id)
 	if err != nil {
-		finish()
 		return nil, err
 	}
-
+	// The response observer ends the turn even after this caller has left, and
+	// losing the connection without an answer ends it too.
+	call, err := s.conn.sendStandard(ctx, methodSessionPrompt, params.bind(s.id),
+		func(*jsonrpc.Response) error {
+			turn.complete()
+			return nil
+		}, turn.complete)
+	turn.finishSending()
+	if err != nil {
+		turn.complete()
+		return nil, err
+	}
 	result := new(PromptResponse)
-	if awaitErr := conn.awaitInto(ctx, call, result); awaitErr != nil {
+	if awaitErr := s.conn.awaitInto(ctx, call, result); awaitErr != nil {
 		return nil, awaitErr
 	}
 	return result, nil
 }
 
-// Cancel ends the current turn.
+// Cancel ends the current turn. The agent must still answer the outstanding
+// prompt, with the cancelled stop reason, and may send final tool-call updates
+// before it does, so a client keeps accepting session/update after cancelling.
 //
-// It is a notification, and sending it does not end the turn by itself: the
-// protocol requires the agent to answer the outstanding session/prompt with the
-// cancelled stop reason, and requires this client to keep accepting session/update
-// until it does — the agent may still have final tool-call updates to report.
-//
-// This is not the same as cancelling a Prompt's context. That cancels one
-// JSON-RPC request and stops this side waiting; this cancels a turn and leaves the
-// request outstanding, on purpose, so that the agent can answer it.
+// The cancellation is committed once it starts: ctx gates only whether it
+// starts. Pending permission requests for the session are answered cancelled
+// before session/cancel is sent, and the notification waits for the prompt it
+// names to be on the wire; a failure to write it ends the connection, because
+// the two peers would otherwise disagree about the turn.
 func (s *ClientSession) Cancel(ctx context.Context, params *CancelParams) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// The pending permission requests are claimed and answered first — before the
-	// notification goes out and before this returns. See cancel.go.
-	cancellation := s.conn.turns.beginCancellation(s.id)
+	conn := s.conn
+	cancellation := conn.turns.beginCancellation(s.id)
 	defer cancellation.finish()
 	for _, call := range cancellation.pending {
-		//nolint:contextcheck // the answer is the connection's obligation, not this caller's.
-		if write := s.conn.answerCancelled(call); write != nil {
+		//nolint:contextcheck // a committed cancellation's answers are the connection's to write.
+		if write := conn.answerCancelled(call); write != nil {
 			write()
 			continue
 		}
-		// The permission handler may have won the answer claim immediately before
-		// cancellation. Its response still has to reach the wire before
-		// session/cancel; a claimed answer is not yet an observed one.
+		// The handler won the answer immediately before cancellation; its answer
+		// still has to reach the wire before session/cancel.
 		<-call.settled
 	}
-	// And the turn is held until the notification is on the wire. It names only
-	// the session, so a prompt that started before it went out would be the turn
-	// the agent applies it to.
-	if err := cancellation.awaitPrompt(ctx); err != nil {
+	select {
+	case <-cancellation.promptSent():
+	case <-conn.over():
+		return conn.life.failure()
+	}
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(conn.life.ctx), responseWriteTimeout)
+	defer cancel()
+	//nolint:contextcheck // a committed cancellation is the connection's to finish, past ctx.
+	if err := conn.notifyStandard(writeCtx, methodSessionCancel, params.bind(s.id)); err != nil {
+		conn.logger.Error("sending session/cancel failed; ending the connection", slog.Any("error", err))
+		conn.endReading(err)
 		return err
 	}
-
-	notification := &CancelNotification{SessionID: s.id}
-	if params != nil {
-		notification.Meta = params.Meta
-	}
-	return s.conn.notify(ctx, methodSessionCancel, notification)
+	return nil
 }
 
-// SetMode switches the agent's mode for this session.
-//
-// No capability gates it: an agent offers modes by returning them from
-// [ClientConn.NewSession], so an agent that offered none has nothing to set and
-// answers method-not-found.
-func (s *ClientSession) SetMode(ctx context.Context, params *SetModeParams) (*SetSessionModeResponse, error) {
-	request := &SetSessionModeRequest{SessionID: s.id}
-	if params != nil {
-		request.ModeID = params.ModeID
-		request.Meta = params.Meta
-	}
-	response := new(SetSessionModeResponse)
-	if err := s.conn.call(ctx, methodSessionSetMode, request, response); err != nil {
-		return nil, err
-	}
-	return response, nil
+// SetMode switches the agent's mode for this session. No capability gates it:
+// an agent offers modes by returning them from session/new.
+func (s *ClientSession) SetMode(ctx context.Context, params *SetSessionModeParams) (*SetSessionModeResponse, error) {
+	return callFor[SetSessionModeResponse](ctx, &s.conn.connection, methodSessionSetMode, params.bind(s.id))
 }
 
-// SetConfigOption sets one of the session configuration options the agent
-// offered. Which options exist, and which values they take, come from the agent:
-// session/new returns them and every answer here returns the full set again.
+// SetConfigOption sets one of the configuration options the agent offered.
 func (s *ClientSession) SetConfigOption(
 	ctx context.Context,
-	params *SetConfigOptionParams,
+	params *SetSessionConfigOptionParams,
 ) (*SetSessionConfigOptionResponse, error) {
-	if params == nil {
-		return nil, paramsRequired("SetConfigOption", "ConfigID and Value")
-	}
-	if err := s.conn.Peer().permitsConfigOptionValue(params.Value); err != nil {
-		return nil, err
-	}
-	request := &SetSessionConfigOptionRequest{
-		SessionID: s.id,
-		ConfigID:  params.ConfigID,
-		Value:     params.Value,
-		Meta:      params.Meta,
-	}
-	response := new(SetSessionConfigOptionResponse)
-	if err := s.conn.call(ctx, methodSessionSetConfigOption, request, response); err != nil {
-		return nil, err
-	}
-	return response, nil
+	return callFor[SetSessionConfigOptionResponse](ctx, &s.conn.connection, methodSessionSetConfigOption,
+		params.bind(s.id))
 }
 
-// Close ends the session and frees what the agent holds for it.
-//
-// The agent must cancel any work still running for the session before it frees
-// anything, so an outstanding [ClientSession.Prompt] answers with the cancelled
-// stop reason rather than being abandoned. After success, the connection removes
-// this handle from its identity cache. Callers should discard it; a later
-// operation that reopens the same identifier receives a new handle.
+// Close ends the session and frees what the agent holds for it. The agent
+// cancels work still running for the session first, so an outstanding Prompt
+// answers with the cancelled stop reason. An agent answering resource-not-found
+// has no such session, which leaves the same end state, so that is a successful
+// close.
 //
 // Gated on agentCapabilities.sessionCapabilities.close.
-func (s *ClientSession) Close(ctx context.Context, params *CloseParams) (*CloseSessionResponse, error) {
-	if err := s.conn.Peer().permits(methodSessionClose); err != nil {
-		return nil, err
+func (s *ClientSession) Close(ctx context.Context, params *CloseSessionParams) (*CloseSessionResponse, error) {
+	response, err := callFor[CloseSessionResponse](ctx, &s.conn.connection, methodSessionClose, params.bind(s.id))
+	if errors.Is(err, &Error{Code: ErrorCodeResourceNotFound}) {
+		return new(CloseSessionResponse), nil
 	}
-	request := &CloseSessionRequest{SessionID: s.id}
-	if params != nil {
-		request.Meta = params.Meta
-	}
-	response := new(CloseSessionResponse)
-	if err := s.conn.callObserved(ctx, methodSessionClose, request, func(answer *jsonrpc.Response) error {
-		if decodeErr := decodeResponse(answer, response); decodeErr != nil {
-			return decodeErr
-		}
-		s.conn.sessions.forget(s.id)
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return response, nil
+	return response, err
 }
 
-// An AgentSession is the same conversation as the agent sees it.
-//
-// A different set of operations, so a different type. A client never calls
-// RequestPermission and an agent never calls Prompt; one type carrying both method
-// sets would make those calls compile and fail at runtime, which is a worse place
-// to find out.
-//
-// An agent never constructs one: the connection hands it to the handlers whose
-// requests carry a session identifier. The handle is valid for as long as the
-// session is, not merely for the handler call — an agent that spawns work for a
-// turn keeps the handle to send session/update from it, and that is the ordinary
-// case rather than an escape. What it must not outlive is the connection: calling
-// through it after Close returns [ErrConnectionClosed].
+// An AgentSession is the same conversation as the agent sees it: a different
+// set of operations, so a different type. It binds the session identifier to its
+// connection and holds no other state. A handler may keep it beyond its own
+// call, to send session/update from spawned work; it must not outlive the
+// connection.
 type AgentSession struct {
 	id   SessionID
 	conn *AgentConn
@@ -235,61 +147,32 @@ func (s *AgentSession) Conn() *AgentConn { return s.conn }
 
 // Update sends the client one piece of a turn's output.
 //
-// A client keeps accepting these after it has sent a cancellation, because an
-// agent may still have final tool-call updates to report before it answers the
-// prompt.
+// After the client cancels the turn its handler's context is done, and an
+// update sent with it fails; final tool-call updates for a cancelled turn are
+// sent with a context that outlives it, such as context.WithoutCancel.
 func (s *AgentSession) Update(ctx context.Context, params *SessionUpdateParams) error {
-	if params == nil {
-		return paramsRequired("Update", "Update")
-	}
-	if err := s.conn.awaitHandshake(ctx, methodSessionUpdate); err != nil {
-		return err
-	}
-	if err := s.conn.Peer().validateSessionUpdate(params.Update); err != nil {
-		return err
-	}
-	notification := &SessionNotification{
-		SessionID: s.id,
-		Update:    params.Update,
-		Meta:      params.Meta,
-	}
-	return s.conn.notify(ctx, methodSessionUpdate, notification)
+	return s.conn.notifyStandard(ctx, methodSessionUpdate, params.bind(s.id))
 }
 
-// RequestPermission asks the user to approve a tool call.
-//
-// A client that cancels the turn while this is outstanding answers it with the
-// cancelled outcome rather than dropping it, so this returns an outcome either
-// way and never hangs on a turn that has ended.
+// RequestPermission asks the user to approve a tool call. A client that cancels
+// the turn answers it with the cancelled outcome, so it never hangs on a turn
+// that has ended. An outcome selecting an option that was not offered is refused.
 func (s *AgentSession) RequestPermission(
 	ctx context.Context,
 	params *RequestPermissionParams,
 ) (*RequestPermissionResponse, error) {
-	if params == nil {
-		return nil, paramsRequired("RequestPermission", "ToolCall and Options")
-	}
-	content, _ := params.ToolCall.Content.Get()
-	locations, _ := params.ToolCall.Locations.Get()
-	if err := absoluteToolCallPaths(content, locations); err != nil {
-		return nil, err
-	}
-	options := deepCopy(params.Options)
-	identities, err := ownPermissionOptions(options)
-	if err != nil {
-		return nil, newError(ErrorCodeInvalidParams, "%s", err)
-	}
-	request := &RequestPermissionRequest{
-		SessionID: s.id,
-		ToolCall:  params.ToolCall,
-		Options:   options,
-		Meta:      params.Meta,
-	}
-	response, err := callGated[RequestPermissionResponse](ctx, s.conn, methodSessionRequestPermission, request)
+	request := deepCopy(params.bind(s.id))
+	offered, err := ownPermissionOptions(request.Options)
 	if err != nil {
 		return nil, err
 	}
-	if invalid := identities.validate(response.Outcome); invalid != nil {
-		return nil, newError(ErrorCodeInvalidParams, "%s", invalid)
+	response, err := callFor[RequestPermissionResponse](ctx, &s.conn.connection, methodSessionRequestPermission,
+		request)
+	if err != nil {
+		return nil, err
+	}
+	if invalid := offered.validate(response.Outcome); invalid != nil {
+		return nil, invalid
 	}
 	return response, nil
 }
@@ -299,104 +182,41 @@ func (s *AgentSession) CreateElicitation(
 	ctx context.Context,
 	params *CreateElicitationParams,
 ) (*CreateElicitationResponse, error) {
-	scope := func(mode CreateElicitationRequestValue) (CreateElicitationRequestValue, error) {
-		within := ElicitationSessionScope{SessionID: s.id, ToolCallID: params.ToolCallID}
-		switch mode := mode.(type) {
-		case *ElicitationFormMode:
-			mode.Value = &ElicitationFormModeSession{ElicitationSessionScope: within}
-		case *ElicitationURLMode:
-			mode.Value = &ElicitationURLModeSession{ElicitationSessionScope: within}
-		}
-		return mode, nil
-	}
-	return s.conn.createElicitation(ctx, params, scope, nil)
+	return s.conn.createElicitation(ctx, params, sessionScope{session: s.id}, nil)
 }
 
 // ReadTextFile reads a text file from the client's workspace.
 //
 // Gated on clientCapabilities.fs.readTextFile.
-func (s *AgentSession) ReadTextFile(
-	ctx context.Context,
-	params *ReadTextFileParams,
-) (*ReadTextFileResponse, error) {
-	if params == nil {
-		return nil, paramsRequired("ReadTextFile", "Path")
-	}
-	if err := absolutePath("path", params.Path); err != nil {
-		return nil, err
-	}
-	request := &ReadTextFileRequest{
-		SessionID: s.id,
-		Path:      params.Path,
-		Line:      params.Line,
-		Limit:     params.Limit,
-		Meta:      params.Meta,
-	}
-	return callGated[ReadTextFileResponse](ctx, s.conn, methodFsReadTextFile, request)
+func (s *AgentSession) ReadTextFile(ctx context.Context, params *ReadTextFileParams) (*ReadTextFileResponse, error) {
+	return callFor[ReadTextFileResponse](ctx, &s.conn.connection, methodFsReadTextFile, params.bind(s.id))
 }
 
 // WriteTextFile writes a text file in the client's workspace.
 //
-// Gated on clientCapabilities.fs.writeTextFile, which is a second boolean: reading
-// and writing are two capabilities and not one.
+// Gated on clientCapabilities.fs.writeTextFile.
 func (s *AgentSession) WriteTextFile(
 	ctx context.Context,
 	params *WriteTextFileParams,
 ) (*WriteTextFileResponse, error) {
-	if params == nil {
-		return nil, paramsRequired("WriteTextFile", "Path and Content")
-	}
-	if err := absolutePath("path", params.Path); err != nil {
-		return nil, err
-	}
-	request := &WriteTextFileRequest{
-		SessionID: s.id,
-		Path:      params.Path,
-		Content:   params.Content,
-		Meta:      params.Meta,
-	}
-	return callGated[WriteTextFileResponse](ctx, s.conn, methodFsWriteTextFile, request)
+	return callFor[WriteTextFileResponse](ctx, &s.conn.connection, methodFsWriteTextFile, params.bind(s.id))
 }
 
 // CreateTerminal runs a command in the client's workspace and returns a handle to
-// it.
+// it, with the response for its _meta.
 //
-// Gated on clientCapabilities.terminal, one boolean covering all five terminal
-// methods — so a client that advertises it implements all five, and a handle from
-// here can use any of them.
+// Cancellation can race a terminal the client already created. A late success
+// is released on a bounded cleanup budget, because the caller can no longer own
+// it; a cleanup failure is logged.
 //
-// The response is returned as well as the handle, because it carries _meta besides
-// the identifier and returning only a handle would make that unreachable.
-//
-// Cancellation can race a terminal already created by the client. A late success
-// is released on a bounded cleanup context because the caller can no longer own
-// it. A network or remote cleanup failure is logged; it cannot guarantee that the
-// client's process was released.
+// Gated on clientCapabilities.terminal.
 func (s *AgentSession) CreateTerminal(
 	ctx context.Context,
 	params *CreateTerminalParams,
 ) (*TerminalHandle, *CreateTerminalResponse, error) {
-	if params == nil {
-		return nil, nil, paramsRequired("CreateTerminal", "Command")
-	}
-	if cwd, set := params.Cwd.Get(); set {
-		if err := absolutePath("cwd", cwd); err != nil {
-			return nil, nil, err
-		}
-	}
-	request := &CreateTerminalRequest{
-		SessionID:       s.id,
-		Command:         params.Command,
-		Args:            params.Args,
-		Env:             params.Env,
-		Cwd:             params.Cwd,
-		OutputByteLimit: params.OutputByteLimit,
-		Meta:            params.Meta,
-	}
 	creation := &terminalCreation{session: s}
-	call, err := beginGatedCall(ctx, s.conn, methodTerminalCreate, request, creation.accept)
+	call, err := s.conn.sendStandard(ctx, methodTerminalCreate, params.bind(s.id), creation.accept, nil)
 	if err != nil {
-		creation.abandon() //nolint:contextcheck // cleanup owns a new deadline after the caller leaves.
 		return nil, nil, err
 	}
 	if _, awaitErr := s.conn.await(ctx, call); awaitErr != nil {
@@ -405,31 +225,4 @@ func (s *AgentSession) CreateTerminal(
 	}
 	handle, response := creation.take()
 	return handle, response, nil
-}
-
-// A sessionRequest is a request that names the session it belongs to, which is
-// what lets one dispatch path hand a handle to every handler that needs one.
-type sessionRequest interface {
-	sessionID() SessionID
-}
-
-func (x *LoadSessionRequest) sessionID() SessionID            { return x.SessionID }
-func (x *SetSessionModeRequest) sessionID() SessionID         { return x.SessionID }
-func (x *SetSessionConfigOptionRequest) sessionID() SessionID { return x.SessionID }
-func (x *ResumeSessionRequest) sessionID() SessionID          { return x.SessionID }
-
-func dispatchSessionCall[Request sessionRequest, Response any](
-	ctx context.Context,
-	c *AgentConn,
-	request *jsonrpc.Request,
-	handle func(context.Context, *AgentSession, Request) (*Response, error),
-) (any, error) {
-	if handle == nil {
-		return nil, methodNotImplemented(request.Method)
-	}
-	// The session comes from the decoded params, so the handle is bound inside
-	// rather than chosen before the payload is known to name one.
-	return dispatchCall(ctx, request, func(ctx context.Context, params *Request) (*Response, error) {
-		return handle(ctx, c.session((*params).sessionID()), *params)
-	})
 }

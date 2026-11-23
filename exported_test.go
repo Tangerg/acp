@@ -28,8 +28,8 @@ var handWritten = map[string]string{
 	"Opt":                    "opt.go — the presence-aware optional the schema's absent/null/present distinction needs",
 	"OptNull":                "opt.go — constructs the null state",
 	"OptValue":               "opt.go — constructs the present state",
-	"PeerInfo": "peer.go — the snapshot initialize negotiates, which the schema has no single " +
-		"type for: it is two capability objects and two identifications, one of each per peer",
+	"Negotiated": "negotiated.go — what initialize settled, which the schema has no single type " +
+		"for: two capability objects and two identifications, one of each per peer",
 
 	// The two peers, their configuration, and their connections. The schema
 	// describes messages; who sends them and how a connection is owned is this
@@ -49,7 +49,7 @@ var handWritten = map[string]string{
 	// a handle that binds it is this package's.
 	"ClientSession":  "session.go — one conversation as the client sees it: it drives turns",
 	"AgentSession":   "session.go — the same conversation as the agent sees it: a different set of operations",
-	"TerminalHandle": "workspace.go — one terminal, binding both identifiers its five methods need",
+	"TerminalHandle": "terminal.go — one terminal, binding both identifiers its five methods need",
 	"TerminalHandlers": "client.go — the terminal capability's complete handler set, which is all five " +
 		"or none because the capability is one boolean",
 	"ElicitationHandlers": "elicitation.go — the elicitation handler group, whose two fields advertise " +
@@ -62,11 +62,15 @@ var handWritten = map[string]string{
 	"Transport":             "transport.go — what a connection is established over",
 	"Connection":            "transport.go — an established bidirectional message stream",
 	"NewInMemoryTransports": "transport_memory.go — two transports connected to each other",
+	"InMemoryTransport":     "transport_memory.go — one end of an in-memory pair",
 	"NewStdioTransport":     "transport_stdio.go — the agent's side of a local connection",
-	"NewIOTransport":        "transport_stdio.go — newline-delimited JSON over configured byte streams",
-	"IOConfig":              "transport_stdio.go — read and write views with one explicit resource-release owner",
-	"NewCommandTransport":   "transport_stdio.go — the client's side: it starts the agent as a subprocess",
-	"CommandConfig":         "transport_stdio.go — the command to run and how long it is given to stop",
+	"StdioTransport":        "transport_stdio.go — this process's standard streams, abandoned rather than closed at Close",
+	"NewIOTransport":        "transport_io.go — newline-delimited JSON over configured byte streams",
+	"IOTransport":           "transport_io.go — the byte-stream transport NewIOTransport returns",
+	"IOConfig":              "transport_io.go — read and write views with one explicit resource-release owner",
+	"NewCommandTransport":   "transport_command.go — the client's side: it starts the agent as a subprocess",
+	"CommandTransport":      "transport_command.go — the subprocess transport NewCommandTransport returns",
+	"CommandConfig":         "transport_command.go — the command to run and how long it is given to stop",
 
 	// The extension boundary, which is how anyone implements an ACP extension at
 	// all. The schema's Ext* definitions are unconstrained placeholders and carry
@@ -75,12 +79,13 @@ var handWritten = map[string]string{
 	"ExtNotification": "extension.go — a notification for one",
 
 	// The sentinels, which exist only where control flow needs one.
-	"ErrAuthRequired":        "error.go — how an agent says authenticate first, which is control flow",
-	"ErrRequestCancelled":    "error.go — a peer's -32800, which does not prove anybody cancelled anything",
-	"ErrConnectionClosed":    "error.go — a local state rather than a wire error: nobody sent it",
-	"ErrPromptInProgress":    "session.go — one prompt at a time per session, because session/cancel names no turn",
-	"ErrTerminalReleased":    "workspace.go — a released terminal identifier is the client's to reuse, so the handle is spent",
-	"ErrTooManyPendingCalls": "limits.go — outbound backpressure before a request reaches the transport",
+	"ErrAuthRequired":     "error.go — how an agent says authenticate first, which is control flow",
+	"ErrRequestCancelled": "error.go — a peer's -32800, which does not prove anybody cancelled anything",
+	"ErrConnectionClosed": "error.go — a local state rather than a wire error: nobody sent it",
+	"ErrPromptInProgress": "session.go — one prompt at a time per session, because session/cancel names no turn",
+	"ErrTerminalReleased": "terminal.go — a released terminal identifier is the client's to reuse, so the handle is spent",
+	"ErrLimitExceeded":    "limits.go — a configured bound was reached, which callers branch on for backpressure",
+	"ErrNotAdvertised":    "error.go — a local refusal of what the peer never advertised, distinct from any peer error",
 }
 
 // The manifest decides generation scope and schema/exported.txt records what that

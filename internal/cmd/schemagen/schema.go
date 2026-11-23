@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -16,20 +17,21 @@ import (
 // A Schema is one JSON Schema node, holding every keyword the published Agent
 // Client Protocol schema uses and nothing else. A keyword this struct does not
 // name is a keyword the generator has never seen, and [checkKnownKeywords]
-// reports it rather than letting it be silently ignored.
+// reports it rather than letting it be silently ignored. Where a known keyword
+// is legal is the planner's to enforce: each planning step refuses the keywords
+// it does not consume.
 type Schema struct {
 	Ref         string `json:"$ref"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
 
-	Type      TypeSet           `json:"type"`
-	Format    string            `json:"format"`
-	Const     json.RawMessage   `json:"const"`
-	Enum      []json.RawMessage `json:"enum"`
-	Default   json.RawMessage   `json:"default"`
-	Minimum   *json.Number      `json:"minimum"`
-	Maximum   *json.Number      `json:"maximum"`
-	MinLength *uint64           `json:"minLength"`
+	Type      TypeSet         `json:"type"`
+	Format    string          `json:"format"`
+	Const     json.RawMessage `json:"const"`
+	Default   json.RawMessage `json:"default"`
+	Minimum   *json.Number    `json:"minimum"`
+	Maximum   *json.Number    `json:"maximum"`
+	MinLength *uint64         `json:"minLength"`
 
 	Properties map[string]*Schema `json:"properties"`
 	Required   []string           `json:"required"`
@@ -40,8 +42,8 @@ type Schema struct {
 	OneOf []*Schema `json:"oneOf"`
 	Not   *Schema   `json:"not"`
 
-	AdditionalProperties  json.RawMessage `json:"additionalProperties"`
-	UnevaluatedProperties json.RawMessage `json:"unevaluatedProperties"`
+	AdditionalProperties  *BoolOrSchema `json:"additionalProperties"`
+	UnevaluatedProperties *BoolOrSchema `json:"unevaluatedProperties"`
 	Discriminator         *struct {
 		PropertyName string `json:"propertyName"`
 	} `json:"discriminator"`
@@ -56,8 +58,7 @@ type Schema struct {
 
 	// PropertyOrder is the order Properties appear in the document. Go maps do
 	// not have one, and the generated field order, the encoded key order and the
-	// golden fixtures all depend on it: a message should be readable against the
-	// schema that defines it.
+	// golden fixtures all depend on it.
 	PropertyOrder []string `json:"-"`
 
 	// Keywords is every keyword this node actually carried, so an unrecognised
@@ -65,20 +66,19 @@ type Schema struct {
 	Keywords []string `json:"-"`
 }
 
-// knownKeywords is the closed set this generator implements. It is spelled out
-// rather than derived from the struct tags because two fields deliberately have
-// none: PropertyOrder and Keywords are derived, not decoded.
-var knownKeywords = map[string]bool{
-	"$ref": true, "title": true, "description": true,
-	"type": true, "format": true, "const": true, "enum": true,
-	"default": true, "minimum": true, "maximum": true, "minLength": true,
-	"properties": true, "required": true, "items": true,
-	"allOf": true, "anyOf": true, "oneOf": true, "not": true,
-	"additionalProperties": true, "unevaluatedProperties": true,
-	"discriminator":                  true,
-	"x-deserialize-default-on-error": true, "x-deserialize-skip-invalid-items": true,
-	"x-deserialize-default-on-null": true,
-	"x-method":                      true, "x-side": true, "x-docs-ignore": true,
+// knownKeywords is the closed set this generator implements, derived from the
+// decoded fields' tags so that the allow-list and the decoder cannot disagree.
+var knownKeywords = schemaKeywords()
+
+func schemaKeywords() map[string]bool {
+	known := make(map[string]bool)
+	for field := range reflect.TypeFor[Schema]().Fields() {
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if name != "" && name != "-" {
+			known[name] = true
+		}
+	}
+	return known
 }
 
 func (s *Schema) UnmarshalJSON(data []byte) error {
@@ -101,31 +101,50 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// A BoolOrSchema is a keyword whose value is either a boolean or a subschema,
+// parsed once so that every pass reads the same answer.
+type BoolOrSchema struct {
+	Bool   *bool
+	Schema *Schema
+}
+
+func (b *BoolOrSchema) UnmarshalJSON(data []byte) error {
+	var flag bool
+	if err := json.Unmarshal(data, &flag); err == nil {
+		b.Bool = &flag
+		return nil
+	}
+	b.Schema = new(Schema)
+	return b.Schema.UnmarshalJSON(data)
+}
+
+// IsTrue reports the boolean true, which admits any value.
+func (b *BoolOrSchema) IsTrue() bool { return b != nil && b.Bool != nil && *b.Bool }
+
 // Nullable reports whether the schema permits null, either as a member of a type
-// set or as an anyOf arm. The two spellings appear 222 times between them and
-// mean the same thing.
+// set or as an anyOf arm. The two spellings mean the same thing.
 func (s *Schema) Nullable() bool {
-	if s.Type.Has("null") {
+	if s.Type.Has(jsonNull) {
 		return true
 	}
 	for _, arm := range s.AnyOf {
-		if arm.Type.Has("null") {
+		if arm.Type.Has(jsonNull) {
 			return true
 		}
 	}
 	return false
 }
 
+// definitionPointer is the prefix every local $ref carries.
+const definitionPointer = "#/$defs/"
+
 // RefName is the definition name a $ref points at, or the empty string.
 func (s *Schema) RefName() string {
-	if s.Ref == "" {
+	name, local := strings.CutPrefix(s.Ref, definitionPointer)
+	if !local {
 		return ""
 	}
-	const prefix = "#/$defs/"
-	if !strings.HasPrefix(s.Ref, prefix) {
-		return ""
-	}
-	return s.Ref[len(prefix):]
+	return name
 }
 
 // SoleRef unwraps the two spellings the schema uses to say "this property is
@@ -140,7 +159,7 @@ func (s *Schema) SoleRef() string {
 	}
 	var refs []string
 	for _, arm := range s.AnyOf {
-		if arm.Type.Has("null") && arm.RefName() == "" {
+		if arm.Type.Has(jsonNull) && arm.RefName() == "" {
 			continue
 		}
 		refs = append(refs, arm.RefName())
@@ -151,17 +170,25 @@ func (s *Schema) SoleRef() string {
 	return ""
 }
 
-// Arms returns the union arms, whichever keyword spells them.
-//
-// The keyword itself is not reported because it decides nothing: oneOf and anyOf
-// are both used for closed unions and for open ones, and what makes a union open
-// is a `not` catch-all arm or a bare-typed arm.
+// Arms returns the union arms, whichever keyword spells them. The keyword decides
+// nothing: what makes a union open is a `not` catch-all arm or a bare-typed arm.
 func (s *Schema) Arms() []*Schema {
 	if len(s.OneOf) > 0 {
 		return s.OneOf
 	}
 	return s.AnyOf
 }
+
+// JSON Schema's type names, which several passes compare against.
+const (
+	jsonString  = "string"
+	jsonInteger = "integer"
+	jsonNumber  = "number"
+	jsonBoolean = "boolean"
+	jsonObject  = "object"
+	jsonArray   = "array"
+	jsonNull    = "null"
+)
 
 // A TypeSet is JSON Schema's `type`, which is either one name or a list of them.
 type TypeSet []string
@@ -189,7 +216,7 @@ func (t TypeSet) Has(name string) bool {
 func (t TypeSet) Base() string {
 	var base string
 	for _, n := range t {
-		if n == "null" {
+		if n == jsonNull {
 			continue
 		}
 		if base != "" {
@@ -205,6 +232,8 @@ type Document struct {
 	Defs map[string]*Schema `json:"$defs"`
 }
 
+// loadDocument validates the schema as JSON Schema, refuses keywords the
+// generator does not implement, and decodes it.
 func loadDocument(data []byte) (*Document, error) {
 	standard, err := jsonschema.UnmarshalJSON(bytes.NewReader(data))
 	if err != nil {
@@ -240,6 +269,9 @@ func loadDocument(data []byte) (*Document, error) {
 		return nil
 	}); validationErr != nil {
 		return nil, fmt.Errorf("validate JSON Schema: %w", validationErr)
+	}
+	if keywordErr := checkKnownKeywords(data); keywordErr != nil {
+		return nil, keywordErr
 	}
 
 	var doc Document
@@ -313,12 +345,9 @@ func rawProperty(data []byte, name string) (json.RawMessage, bool) {
 }
 
 // checkKnownKeywords walks every node reachable from the document and reports
-// the first keyword the generator does not implement.
-//
-// The alternative is a generator that ignores what it does not understand, and a
-// schema bump that adds a constraint would then silently produce types that do
-// not enforce it. This is the difference between a generator that is behind and
-// a generator that is wrong.
+// the first keyword the generator does not implement. A generator that ignored
+// what it did not understand would turn a schema bump that adds a constraint into
+// types that silently do not enforce it.
 func checkKnownKeywords(raw []byte) error {
 	return visitDefinitions(raw, func(path string, node map[string]json.RawMessage) error {
 		for _, key := range sortedKeys(node) {
@@ -341,7 +370,7 @@ func visitDefinitions(raw []byte, visit func(string, map[string]json.RawMessage)
 	// drops what it does not name, and what it drops is exactly what this exists
 	// to find.
 	for _, name := range sortedKeys(top.Defs) {
-		if err := visitNode("#/$defs/"+escapePointer(name), top.Defs[name], visit); err != nil {
+		if err := visitNode(definitionPointer+escapePointer(name), top.Defs[name], visit); err != nil {
 			return err
 		}
 	}
@@ -413,9 +442,9 @@ func kind(data []byte) byte {
 	return 0
 }
 
-// sortedKeys keeps every pass over the schema deterministic. Go map iteration is
-// not, and a generator whose output — or whose first reported error — depends on
-// it cannot be checked by regenerating it.
+// sortedKeys keeps every pass over the schema deterministic: a generator whose
+// output, or whose first reported error, depends on map order cannot be checked
+// by regenerating it.
 func sortedKeys[V any](m map[string]V) []string {
 	return slices.Sorted(maps.Keys(m))
 }

@@ -4,6 +4,102 @@ This file records caller-visible changes, newest first. The module is pre-1.0, s
 a minor release may change its public API. Each released entry will include
 migration instructions.
 
+## Unreleased
+
+### Protocol
+
+- The schema pin moves from `schema-v1.29.1` to `schema-v1.34.1`, and the
+  reference SDK to 2.9.1. Plans, state, subagent and session-message updates,
+  system prompts and session cancellation capabilities are generated, and every
+  new capability is enforced: an agent sends plan, subagent, notice and
+  compaction updates only to a client that advertised them, and a client sends a
+  system prompt only to an agent that advertised it.
+- A second `initialize` renegotiates instead of being refused, as the reference
+  implementation allows. Initialize is judged in wire order, so a request that
+  follows it on the wire is always served under its agreement.
+- `"params": null` is accepted wherever the method's params require no
+  property, instead of being refused or, on an agent, crashing the process.
+- A line that is not a valid message is answered with `-32700` or `-32600`, or
+  fails the one call a malformed response names, and the connection keeps
+  reading. A standard notification sent with an id is answered `-32601`. A request
+  reusing the id of one still being served is refused alone instead of ending
+  the connection.
+- An `authenticate` with no handler is answered `-32601` before its method id is
+  checked. Invalid `authMethods` entries in an initialize response are dropped and
+  logged instead of failing the handshake.
+- `session/close` and `session/delete` answered resource-not-found succeed,
+  because the end state is the same.
+- Unhandled `_`-prefixed notifications are ignored silently, as the protocol asks.
+
+### Breaking changes
+
+- `ClientConn.Peer` and `AgentConn.Peer` are now `Negotiated`, returning a
+  `Negotiated` value. The `ProtocolVersion` field is gone: a connection only ever
+  speaks `CurrentProtocolVersion`. Rename `conn.Peer()` to `conn.Negotiated()`.
+- Projection types follow their request names: `CloseParams` is
+  `CloseSessionParams`, `SetModeParams` is `SetSessionModeParams`, and
+  `SetConfigOptionParams` is `SetSessionConfigOptionParams`.
+- A call or value the peer never advertised is refused with an error wrapping
+  `ErrNotAdvertised` instead of an `*Error` carrying a wire code, so a local
+  refusal cannot be mistaken for the peer's answer. Replace checks for
+  `ErrorCodeMethodNotFound` or `ErrorCodeInvalidParams` on outbound calls with
+  `errors.Is(err, acp.ErrNotAdvertised)`.
+- `ErrTooManyPendingCalls` is replaced by `ErrLimitExceeded`, which every
+  `Limits` breach wraps with the bound it names. `Limits.SessionHandles` is
+  removed, because the connection no longer caches session handles;
+  `Limits.OutstandingElicitations` bounds URL interactions awaiting completion.
+- `Close` reports only a failure to release what the connection owns. Why the
+  connection ended is `Wait`'s to report, so a deferred `Close` no longer returns
+  an error this caller did not cause. An operation on an ended connection returns
+  an error wrapping both `ErrConnectionClosed` and the failure that ended it.
+- `CallFallback` returns `any`, which the connection encodes, instead of
+  `json.RawMessage`. A fallback returning raw JSON keeps working unchanged.
+- The transport constructors return their concrete types: `*CommandTransport`,
+  `*StdioTransport`, `*IOTransport` and `*InMemoryTransport`. Each still
+  satisfies `Transport`.
+- Package `jsonrpc` defines its types instead of aliasing an internal package.
+  `jsonrpc.Error` is removed; `Response.Error` is the raw error object, which
+  `acp.Error` decodes. Build identifiers with `StringID`, `Int64ID` and `NullID`.
+  A custom transport returns the `*jsonrpc.DecodeError` from `DecodeMessage` for
+  an undecodable message, and the connection keeps reading.
+- `ElicitationRequestScope` is exported. A client reads a request-scoped
+  elicitation's `RequestID` from it; an agent still never sets the scope.
+
+### Added
+
+- `Meta.All` enumerates `_meta` entries, so a proxy can forward keys it does not
+  understand.
+- `AgentConfig.Cancel` is optional. The connection cancels the running `Prompt`
+  handler's context whether or not it is set.
+
+### Fixed
+
+- A request's `sessionId` is decoded once. A second, case-insensitive decoder
+  let one message claim a session's turn and cancel another's.
+- Opening more than 1024 sessions no longer ends the connection.
+- `StdioTransport` never closes the process's standard streams, and `Agent.Run`
+  returns when its context ends even while the client holds stdin open.
+- A write honours its context only while it waits for the stream; cancelling one
+  caller no longer tears down a connection other sessions share. An interrupted
+  write is no longer reported as a clean close.
+- `ClientSession.Cancel` is committed once it starts. Its context decides only
+  whether it starts; a failure to send `session/cancel` after pending permission
+  requests were answered ends the connection instead of leaving the peers
+  disagreeing about the turn. A prompt started while a cancellation is being
+  written waits for it instead of returning `ErrPromptInProgress`.
+- A permission request whose answer cancellation already claimed is not handed to
+  its handler, so the user is not shown a question nobody can answer.
+- A cancelled prompt keeps the `_meta` of the response its handler returned.
+- `Agent.Run` waits for running handlers even when closing fails.
+- A form elicitation accepted without content is validated as `{}`, so required
+  fields are enforced.
+- A handler response the negotiated capabilities do not permit is logged with
+  its method before the peer is answered `-32603`.
+- A failed subprocess start reports the start error alone.
+- Failure logs carry the method and error as attributes.
+- URL elicitations awaiting completion forget the oldest at the bound instead of
+  refusing new ones, because completing one is optional.
+
 ## v0.3.0 — 2026-10-22
 
 ### Fixed

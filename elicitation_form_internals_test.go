@@ -19,8 +19,12 @@ func TestFormSchemaIsCompiledBeforeTheHandlerRuns(t *testing.T) {
 			return &CreateElicitationResponse{Value: &CreateElicitationResponseDecline{}}, nil
 		},
 	}}}}
-	_, err := conn.createElicitation(t.Context(), rawCall(1, methodElicitationCreate,
+	params, decodeErr := decodeParams[CreateElicitationRequest](json.RawMessage(
 		`{"mode":"form","sessionId":"s","message":"form","requestedSchema":{"type":"object","properties":{"field":{"type":"string","pattern":"["}}}}`))
+	if decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	_, err := conn.serveElicitation(t.Context(), &inboundRequest{method: methodElicitationCreate, params: params})
 	if called {
 		t.Error("an invalid form reached the application handler")
 	}

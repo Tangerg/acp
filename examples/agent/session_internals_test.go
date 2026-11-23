@@ -29,7 +29,6 @@ func connectExampleAgent(t *testing.T, config *acp.ClientConfig) (*acp.ClientCon
 	agent, err := acp.NewAgent(&acp.AgentConfig{
 		NewSession: conversations.newSession,
 		Prompt:     conversations.prompt,
-		Cancel:     func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 	})
 	if err != nil {
 		t.Fatal(err)

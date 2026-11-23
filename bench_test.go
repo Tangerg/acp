@@ -80,7 +80,6 @@ func BenchmarkPromptTurn(b *testing.B) {
 			}
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 	})
 	if err != nil {
 		b.Fatal(err)

@@ -20,20 +20,10 @@ func UnmarshalValue[T any](data []byte) (T, error) {
 	}
 	var err error
 	switch target := any(&v).(type) {
-	case *int:
-		*target, err = jsonnumber.Parse[int](data)
-	case *int8:
-		*target, err = jsonnumber.Parse[int8](data)
-	case *int16:
-		*target, err = jsonnumber.Parse[int16](data)
 	case *int32:
 		*target, err = jsonnumber.Parse[int32](data)
 	case *int64:
 		*target, err = jsonnumber.Parse[int64](data)
-	case *uint:
-		*target, err = jsonnumber.Parse[uint](data)
-	case *uint8:
-		*target, err = jsonnumber.Parse[uint8](data)
 	case *uint16:
 		*target, err = jsonnumber.Parse[uint16](data)
 	case *uint32:
@@ -43,6 +33,14 @@ func UnmarshalValue[T any](data []byte) (T, error) {
 	default:
 		err = json.Unmarshal(data, &v)
 	}
+	return v, err
+}
+
+// UnmarshalOwned decodes a value whose type owns its whole grammar, including
+// whether null is one of its values.
+func UnmarshalOwned[T any](data []byte) (T, error) {
+	var v T
+	err := json.Unmarshal(data, &v)
 	return v, err
 }
 

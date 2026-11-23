@@ -84,15 +84,19 @@ func run(logger *slog.Logger) error {
 	}
 	// Close ends the connection and the agent with it: the transport closes the
 	// agent's stdin, waits, and only then signals.
-	defer func() { _ = conn.Close() }()
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			logger.Error("stopping the agent failed", "error", closeErr)
+		}
+	}()
 
-	if agent, named := conn.Peer().AgentInfo.Get(); named {
+	if agent, named := conn.Negotiated().AgentInfo.Get(); named {
 		fmt.Printf("connected to %s %s\n", agent.Name, agent.Version)
 	}
 
-	session, _, err := conn.NewSession(ctx, &acp.NewSessionRequest{Cwd: root, McpServers: []acp.McpServer{}})
+	session, _, err := conn.NewSession(ctx, &acp.NewSessionRequest{Cwd: root})
 	if errors.Is(err, acp.ErrAuthRequired) {
-		// A step in the lifecycle rather than a failure: conn.Peer().AuthMethods
+		// A step in the lifecycle rather than a failure: conn.Negotiated().AuthMethods
 		// says what this agent accepts, and conn.Authenticate answers it.
 		return errors.New("this agent wants authentication, which this example does not do")
 	}

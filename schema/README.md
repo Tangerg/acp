@@ -64,7 +64,7 @@ Generation scope is the transitive `$ref` closure of a committed root set, so
 adding an operation is a diff in one file and the size of the exported surface is
 an output CI checks rather than a number maintained in prose.
 
-A definition is a root for one of four reasons, and the manifest keeps them
+A definition is listed for one of five reasons, and the manifest keeps them
 apart because they retire at different times:
 
 - **`payloads`**: request, response, and notification payloads for implemented
@@ -74,6 +74,9 @@ apart because they retire at different times:
   `Error` is exported
 - **`internal`**: protocol plumbing the connection needs but callers must not
   name; every entry records why it stays unexported
+- **`bindings`**: definitions whose grammar a hand-written Go type already owns,
+  such as `RequestId`, which is `jsonrpc.ID`. Generation emits no second type and
+  stops if a release changes the definition's shape
 - **`probes`**: definitions rooted only to exercise a wire shape no implemented
   payload reaches yet. The list empties as the payload roots grow to reach the
   same shapes; every entry records the shape it proves

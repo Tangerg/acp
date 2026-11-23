@@ -5,9 +5,14 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/Tangerg/acp"
 )
+
+// deadlockGuard bounds a test that would otherwise hang on a lost answer. It is
+// never the behaviour under test, so one generous value serves every test.
+const deadlockGuard = 30 * time.Second
 
 // The vocabulary the tests are written in. A helper belongs here once a second
 // file needs it; one that only ever serves a single test stays beside that test.
@@ -65,7 +70,6 @@ func testAgent(
 			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
 		},
 		Prompt: prompt,
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 	})
 	if err != nil {
 		t.Fatalf("NewAgent: %v", err)

@@ -3,6 +3,7 @@ package acp_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -77,9 +78,8 @@ func TestPermissionOptionsRejectDuplicateIdentitiesBeforeDelivery(t *testing.T) 
 	if _, err := session.Prompt(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
-	var failure *acp.Error
-	if err := <-result; !errors.As(err, &failure) || failure.Code != acp.ErrorCodeInvalidParams {
-		t.Errorf("duplicate permission options = %v, want invalid params", err)
+	if err := <-result; err == nil || !strings.Contains(err.Error(), "offered more than once") {
+		t.Errorf("duplicate permission options = %v, want a local refusal naming the duplicate", err)
 	}
 	if delivered.Load() {
 		t.Error("the ambiguous request reached the permission UI")

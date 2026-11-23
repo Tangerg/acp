@@ -64,7 +64,10 @@ func TestIOTransportSharesItsReleaseFailureAcrossConcurrentClosers(t *testing.T)
 	}
 }
 
-func TestByteStreamWritesRespectCancellationWhileQueuedAndWhileWriting(t *testing.T) {
+// A write waiting for the stream honours its context and returns the exact
+// no-commit signal. A write that has begun is not interrupted by its context,
+// because cancellation cannot prove which prefix reached the peer; Close ends it.
+func TestByteStreamWritesHonourCancellationOnlyUntilTheyBegin(t *testing.T) {
 	for _, queued := range []bool{false, true} {
 		name := "writing"
 		if queued {
@@ -89,38 +92,31 @@ func TestByteStreamWritesRespectCancellationWhileQueuedAndWhileWriting(t *testin
 			}
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			checked := &checkedWriteContext{Context: ctx, checked: make(chan struct{})}
 			returned := make(chan error, 1)
-			go func() { returned <- stream.Write(checked, message) }()
+			go func() { returned <- stream.Write(ctx, message) }()
 			if !queued {
 				<-writer.entered
 			}
-			<-checked.checked
 			cancel()
-			completed := false
-			select {
-			case writeErr := <-returned:
-				completed = true
-				if !errors.Is(writeErr, context.Canceled) {
-					t.Errorf("Write returned %v, want cancellation", writeErr)
-				}
-				if queued && writeErr != context.Canceled { //nolint:errorlint // exact identity promises no bytes were committed.
+			if queued {
+				writeErr := <-returned
+				if writeErr != context.Canceled { //nolint:errorlint // exact identity promises no bytes were committed.
 					t.Errorf("a queued write returned %v instead of the no-commit signal", writeErr)
 				}
-				if !queued && writeErr == context.Canceled { //nolint:errorlint // a started byte write cannot promise no commitment.
-					t.Error("an interrupted byte write claimed no bytes were committed")
+			} else {
+				select {
+				case writeErr := <-returned:
+					t.Fatalf("a write in progress returned %v when its context was cancelled", writeErr)
+				case <-time.After(50 * time.Millisecond):
 				}
-			case <-time.After(5 * time.Second):
-				t.Error("Write remained blocked after its context was cancelled")
 			}
 			if err := stream.Close(); err != nil {
 				t.Fatal(err)
 			}
 			if queued {
 				<-first
-			}
-			if !completed {
-				<-returned
+			} else if writeErr := <-returned; writeErr == nil {
+				t.Error("a write ended by Close reported success")
 			}
 			if writes := writer.writes.Load(); writes != 1 {
 				t.Errorf("underlying writes = %d, want only the first write", writes)
@@ -146,20 +142,6 @@ func (w *blockedStreamWriter) Write([]byte) (int, error) {
 func (w *blockedStreamWriter) Close() error {
 	w.once.Do(func() { close(w.closed) })
 	return nil
-}
-
-// Capture the initial check so cancellation happens after a writer entered Write,
-// even if it has not yet acquired the stream gate.
-type checkedWriteContext struct {
-	context.Context //nolint:containedctx // wraps one test call to observe its cancellation check.
-	checked         chan struct{}
-	once            sync.Once
-}
-
-func (c *checkedWriteContext) Err() error {
-	err := c.Context.Err()
-	c.once.Do(func() { close(c.checked) })
-	return err
 }
 
 func TestAClosedByteStreamRefusesBufferedReadsAndFurtherWrites(t *testing.T) {

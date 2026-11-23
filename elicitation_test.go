@@ -344,7 +344,6 @@ func TestARequestScopedElicitationNamesTheRequestBeingServed(t *testing.T) {
 		) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel:      func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 		AuthMethods: []acp.AuthMethod{&acp.AuthMethodAgent{ID: "token", Name: "Token"}},
 
 		// No session exists here, and none will until the client is authenticated.
@@ -410,7 +409,6 @@ func TestARequestScopeCannotEscapeItsConnectionOrItsRequest(t *testing.T) {
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel:      func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 		AuthMethods: []acp.AuthMethod{&acp.AuthMethodAgent{ID: "token", Name: "Token"}},
 		Authenticate: func(ctx context.Context, conn *acp.AgentConn, _ *acp.AuthenticateRequest) (*acp.AuthenticateResponse, error) {
 			contexts <- ctx
@@ -490,20 +488,18 @@ func TestAModeTheClientDidNotAdvertiseIsRefusedBeforeTheWire(t *testing.T) {
 		t.Fatalf("Prompt: %v", err)
 	}
 
-	// The mode is a parameter capability, so the refusal is invalid-params: the
-	// method is there and it is what was put inside it that was not advertised.
-	var refusal *acp.Error
-	if !errors.As(urlErr, &refusal) || refusal.Code != acp.ErrorCodeInvalidParams {
-		t.Fatalf("a url elicitation to a form-only client failed with %v, want invalid params", urlErr)
+	// The mode is a parameter capability the client did not advertise, refused
+	// locally before anything is sent.
+	if !errors.Is(urlErr, acp.ErrNotAdvertised) {
+		t.Fatalf("a url elicitation to a form-only client failed with %v, want ErrNotAdvertised", urlErr)
 	}
-	if !strings.Contains(refusal.Message, "clientCapabilities.elicitation.url") {
-		t.Errorf("the refusal says %q, which does not name the capability", refusal.Message)
+	if !strings.Contains(urlErr.Error(), "clientCapabilities.elicitation.url") {
+		t.Errorf("the refusal says %q, which does not name the capability", urlErr)
 	}
 
-	// The completion is gated on the url mode as a method, so it is method-not-found.
-	var completion *acp.Error
-	if !errors.As(completeErr, &completion) || completion.Code != acp.ErrorCodeMethodNotFound {
-		t.Fatalf("elicitation/complete to a form-only client failed with %v, want method not found", completeErr)
+	// The completion is gated on the url mode as a method, refused locally.
+	if !errors.Is(completeErr, acp.ErrNotAdvertised) {
+		t.Fatalf("elicitation/complete to a form-only client failed with %v, want ErrNotAdvertised", completeErr)
 	}
 	if served != 0 {
 		t.Error("a refused elicitation still reached the client's handler")
@@ -756,8 +752,8 @@ func TestElicitationRefusesWhatACallerGetsWrong(t *testing.T) {
 		err   error
 		wants string
 	}{
-		"an elicitation with no params":     {noParams, "Message and Mode"},
-		"a completion with no params":       {noCompletionParams, "ElicitationID"},
+		"an elicitation with no params":     {noParams, "Mode is required"},
+		"a completion with no params":       {noCompletionParams, "is not outstanding"},
 		"a url mode carrying its own scope": {scopedURL, "scope"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -933,7 +929,6 @@ func TestTheOutstandingURLElicitationBoundIsTheConfiguredOne(t *testing.T) {
 		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 		Prompt: func(
 			ctx context.Context,
 			session *acp.AgentSession,
@@ -966,11 +961,12 @@ func TestTheOutstandingURLElicitationBoundIsTheConfiguredOne(t *testing.T) {
 	if first != nil {
 		t.Fatalf("the first elicitation was refused within the bound: %v", first)
 	}
-	if second == nil || !strings.Contains(second.Error(), "URL elicitation limit exceeded (limit 1)") {
-		t.Fatalf("the elicitation past the bound was answered %v, want the configured bound", second)
+	// Completing an accepted interaction is optional, so the bound forgets the
+	// oldest outstanding one rather than refusing the next.
+	if second != nil {
+		t.Fatalf("the elicitation past the bound was refused: %v", second)
 	}
 
-	// Still usable: this bound refuses the operation and nothing else.
 	if _, err := session.Prompt(context.Background(), &acp.PromptParams{}); err != nil {
 		t.Fatalf("the connection did not survive a refused elicitation: %v", err)
 	}

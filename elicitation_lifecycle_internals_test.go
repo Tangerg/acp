@@ -9,24 +9,24 @@ import (
 )
 
 func TestURLLifecycleCommitsOnlyAcceptedElicitations(t *testing.T) {
-	var elicitations urlElicitations
+	elicitations := newURLElicitations(1)
 
-	declined, err := elicitations.reserve("same", 1)
+	declined, err := elicitations.reserve("same")
 	if err != nil {
 		t.Fatalf("reserve declined elicitation: %v", err)
 	}
-	if _, duplicateErr := elicitations.reserve("same", 1); !errors.Is(duplicateErr, errElicitationIDInUse) {
+	if _, duplicateErr := elicitations.reserve("same"); !errors.Is(duplicateErr, errElicitationIDInUse) {
 		t.Fatalf("duplicate reservation returned %v, want errElicitationIDInUse", duplicateErr)
 	}
-	if _, limitErr := elicitations.reserve("other", 1); !errors.Is(limitErr, errTooManyElicitations) {
-		t.Fatalf("reservation past the bound returned %v, want errTooManyElicitations", limitErr)
+	if _, limitErr := elicitations.reserve("other"); !errors.Is(limitErr, ErrLimitExceeded) {
+		t.Fatalf("a reservation past a bound held by a provisional one returned %v, want ErrLimitExceeded", limitErr)
 	}
 	if _, outstanding := elicitations.beginCompletion("same"); outstanding {
 		t.Fatal("a provisional elicitation was treated as accepted")
 	}
 	declined.reject()
 
-	accepted, err := elicitations.reserve("same", 1)
+	accepted, err := elicitations.reserve("same")
 	if err != nil {
 		t.Fatalf("the declined elicitation did not release its ID: %v", err)
 	}
@@ -45,14 +45,14 @@ func TestURLLifecycleCommitsOnlyAcceptedElicitations(t *testing.T) {
 		t.Fatal("a completion known not to have been sent could not be retried")
 	}
 	retry.sent()
-	if _, err := elicitations.reserve("same", 1); err != nil {
+	if _, err := elicitations.reserve("same"); err != nil {
 		t.Fatalf("a completed elicitation did not release its ID: %v", err)
 	}
 }
 
 func TestCallerCancellationStillObservesAStateOwningResponse(t *testing.T) {
-	var elicitations urlElicitations
-	reservation, err := elicitations.reserve("late", 1)
+	elicitations := newURLElicitations(1)
+	reservation, err := elicitations.reserve("late")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,9 +85,9 @@ func TestCallerCancellationStillObservesAStateOwningResponse(t *testing.T) {
 }
 
 func TestAStaleCompletionCannotChangeAReusedID(t *testing.T) {
-	var elicitations urlElicitations
+	elicitations := newURLElicitations(1)
 
-	first, err := elicitations.reserve("same", 1)
+	first, err := elicitations.reserve("same")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestAStaleCompletionCannotChangeAReusedID(t *testing.T) {
 	}
 	stale.sent()
 
-	second, err := elicitations.reserve("same", 1)
+	second, err := elicitations.reserve("same")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,5 +107,27 @@ func TestAStaleCompletionCannotChangeAReusedID(t *testing.T) {
 
 	if !elicitations.receiveCompletion("same") {
 		t.Fatal("the stale transaction changed the newer elicitation")
+	}
+}
+
+// Completing an accepted interaction is optional, so the bound forgets the oldest
+// outstanding one rather than refusing the next elicitation.
+func TestTheOldestOutstandingElicitationIsForgottenAtTheBound(t *testing.T) {
+	elicitations := newURLElicitations(2)
+	for _, id := range []ElicitationID{"first", "second"} {
+		reservation, err := elicitations.reserve(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reservation.accept()
+	}
+	if _, err := elicitations.reserve("third"); err != nil {
+		t.Fatalf("a new elicitation was refused at the bound: %v", err)
+	}
+	if elicitations.receiveCompletion("first") {
+		t.Fatal("the oldest outstanding elicitation was not the one forgotten")
+	}
+	if !elicitations.receiveCompletion("second") {
+		t.Fatal("a newer outstanding elicitation was forgotten")
 	}
 }

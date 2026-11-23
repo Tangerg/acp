@@ -1,12 +1,12 @@
 {
   "schema": {
-    "tag": "schema-v1.29.1",
-    "sha256": "0d0b1ca83c4872e5473f68926a894c7a8203b59b118e2a79bfe43dd76fbcbc1a",
+    "tag": "schema-v1.34.1",
+    "sha256": "79fbeccc5cb5668259ee35ff7440ffd79eaf813742366ac06f707b98bbf789db",
     "metaSha256": "061edb6efa8fb2aa2792459a86ec7268de5fe665bba48b2ffe7939df01481f88"
   },
   "typescript": {
     "repository": "https://github.com/agentclientprotocol/typescript-sdk",
-    "commit": "0f8c75079ae07e6edd2feb626f5598a92632eead"
+    "commit": "ab16fb07b4e7e5dd8e55633b42930857223c4cd0"
   },
   "tools": {
     "nodeMajor": 22,

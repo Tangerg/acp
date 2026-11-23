@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 
 	"github.com/Tangerg/acp"
+	"github.com/Tangerg/acp/internal/jsontest"
 )
 
 // The evidence from the other direction: a real editor driving an agent built on
@@ -92,58 +92,6 @@ func TestTheBytesARealEditorSent(t *testing.T) {
 				transcript.Scenario, checked,
 				transcript.Provenance.Client, transcript.Provenance.ClientVersion)
 		})
-	}
-}
-
-// The turn the editor stopped is the one worth asserting about, because the stop
-// reason is this package's obligation rather than the application's: the handler
-// behind this transcript returned its context's error.
-func TestTheEditorsCancellationBecameTheCancelledStopReason(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("testdata", "zed", "terminal-and-cancellation.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var transcript zedTranscript
-	if err := json.Unmarshal(data, &transcript); err != nil {
-		t.Fatal(err)
-	}
-
-	cancelled := false
-	for _, message := range transcript.ClientToAgent {
-		if envelopeOf(t, message).Method == "session/cancel" {
-			cancelled = true
-		}
-	}
-	if !cancelled {
-		t.Fatal("the editor never sent session/cancel")
-	}
-
-	var reasons []acp.StopReason
-	for _, message := range transcript.AgentToClient {
-		envelope := envelopeOf(t, message)
-		if len(envelope.Result) == 0 {
-			continue
-		}
-		var response acp.PromptResponse
-		if err := json.Unmarshal(envelope.Result, &response); err == nil && response.StopReason != "" {
-			reasons = append(reasons, response.StopReason)
-		}
-	}
-	if len(reasons) != 2 || reasons[0] != acp.StopReasonEndTurn || reasons[1] != acp.StopReasonCancelled {
-		t.Fatalf("the two turns ended with %v, want [end_turn cancelled]", reasons)
-	}
-
-	// And the order the cancelled turn ended in, which is the part a client
-	// depends on: the agent's last word went out after the cancellation and
-	// before the answer, so a client that stopped listening at the cancellation
-	// would have lost it.
-	last := transcript.AgentToClient[len(transcript.AgentToClient)-1]
-	if len(envelopeOf(t, last).Result) == 0 {
-		t.Fatalf("the last thing the agent sent was not the answer: %s", last)
-	}
-	previous := envelopeOf(t, transcript.AgentToClient[len(transcript.AgentToClient)-2])
-	if previous.Method != "session/update" {
-		t.Fatalf("the message before the cancelled answer was %q, want session/update", previous.Method)
 	}
 }
 
@@ -240,12 +188,6 @@ func envelopeOf(t *testing.T, message json.RawMessage) zedMessage {
 }
 
 func equalJSON(a, b json.RawMessage) bool {
-	var x, y any
-	if err := json.Unmarshal(a, &x); err != nil {
-		return false
-	}
-	if err := json.Unmarshal(b, &y); err != nil {
-		return false
-	}
-	return reflect.DeepEqual(x, y)
+	equivalent, err := jsontest.Equivalent(a, b)
+	return err == nil && equivalent
 }

@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -152,13 +153,11 @@ func (w *ObjectWriter) Embed(raw []byte) {
 	if w.err != nil {
 		return
 	}
-	if kind(raw) != '{' {
+	raw = bytes.TrimSpace(raw)
+	if kind(raw) != '{' || raw[len(raw)-1] != '}' {
 		w.err = fmt.Errorf("an embedded value must be an object, got %s", describe(raw))
 		return
 	}
-	// json.Marshal emits no insignificant whitespace, so the byte after '{' is
-	// either '}' for an empty object or the first key's opening quote. An empty
-	// one contributes nothing.
 	body := raw[1 : len(raw)-1]
 	if kind(body) == 0 {
 		return
@@ -242,8 +241,8 @@ func describe(data []byte) string {
 	}
 }
 
-// SatisfiesOneAlternative reports whether the retained properties decode as one of
-// the alternatives a catch-all arm is a union of.
+// SatisfiesAnyAlternative reports whether the retained properties decode as any of
+// the alternatives a catch-all arm is a union of, which is anyOf's rule.
 //
 // A catch-all arm is not everything that is not a known arm. It has a schema of
 // its own, and when that schema is a union — the elicitation modes each carry a
@@ -254,7 +253,7 @@ func describe(data []byte) string {
 // looking for its property names.
 //
 // No alternatives means the arm is not a union and every value satisfies it.
-func SatisfiesOneAlternative(
+func SatisfiesAnyAlternative(
 	extra map[string]json.RawMessage,
 	alternatives ...func([]byte) error,
 ) bool {

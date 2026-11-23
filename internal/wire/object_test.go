@@ -252,7 +252,7 @@ var errStub = errors.New("stub failure")
 // An alternative is satisfied by decoding as it, not by naming the properties it
 // requires: a numeric sessionId names what the session scope needs and is still
 // not one.
-func TestSatisfiesOneAlternative(t *testing.T) {
+func TestSatisfiesAnyAlternative(t *testing.T) {
 	type session struct {
 		SessionID string `json:"sessionId"`
 	}
@@ -325,8 +325,8 @@ func TestSatisfiesOneAlternative(t *testing.T) {
 			if test.name == "no alternatives" {
 				alternatives = nil
 			}
-			if got := wire.SatisfiesOneAlternative(test.extra, alternatives...); got != test.want {
-				t.Fatalf("SatisfiesOneAlternative = %t, want %t (%s)", got, test.want, test.why)
+			if got := wire.SatisfiesAnyAlternative(test.extra, alternatives...); got != test.want {
+				t.Fatalf("SatisfiesAnyAlternative = %t, want %t (%s)", got, test.want, test.why)
 			}
 		})
 	}

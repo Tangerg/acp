@@ -2,24 +2,25 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"go/format"
-	"slices"
 	"strconv"
-	"strings"
 )
 
 // The x-side values, which are also the names of meta.json's three directories.
-// Three passes compare against them: the directory a method is listed in, the
-// annotation its payloads carry, and the Go constant the table emits.
 const (
 	sideNameAgent    = "agent"
 	sideNameClient   = "client"
 	sideNameProtocol = "protocol"
-	sideNameBoth     = "both"
 )
+
+// sideConstants maps each x-side value to the Go constant the table emits.
+var sideConstants = map[string]string{
+	sideNameAgent:    "sideAgent",
+	sideNameClient:   "sideClient",
+	sideNameProtocol: "sideProtocol",
+}
 
 // A MethodTable is meta.json: the protocol's method directory, keyed by an
 // identifier and valued by the wire name.
@@ -30,39 +31,50 @@ type MethodTable struct {
 	ProtocolMethods map[string]string `json:"protocolMethods"`
 }
 
+// A methodShape is whether a method expects a response.
+type methodShape int
+
+const (
+	shapeRequest methodShape = iota
+	shapeNotification
+)
+
 // A Method is one entry of the generated table.
 type Method struct {
 	// Name is the wire name: "session/prompt".
 	Name string
 	// GoName is the unexported constant, from meta.json's identifier for the
-	// method rather than from the wire name, because that identifier is what
-	// upstream chose to call it.
+	// method, because that identifier is what upstream chose to call it.
 	GoName            string
 	Side              string
-	Shape             string
+	Shape             methodShape
 	RequiresSessionID bool
-	// Payloads are the definitions annotated with this method, which is what the
-	// cross-check against meta.json is made of.
+	// Payloads are the definitions annotated with this method.
 	Payloads []string
 }
 
+// The schema's routing unions: the envelopes whose params or result list every
+// payload of their kind. They are what says whether a payload is a request, a
+// notification or a response.
+var (
+	requestEnvelopes      = []string{"ClientRequest", "AgentRequest"}
+	notificationEnvelopes = []string{"ClientNotification", "AgentNotification"}
+	responseEnvelopes     = []string{"ClientResponse", "AgentResponse"}
+)
+
+// sessionIDDefinition is the definition a payload's required property refers to
+// when the payload is scoped to a session.
+const sessionIDDefinition = "SessionId"
+
 // planMethods builds the method table from meta.json and cross-checks it against
-// the schema's own annotations.
-//
-// Neither source is sufficient alone. meta.json is the method directory but says
-// nothing about whether a method expects a response; the schema's x-method and
-// x-side annotations say that but are spread across 74 payload definitions. So
-// both are read, and a disagreement stops generation — which is the check
-// design.md asks CI for, made structural instead of periodic.
+// the schema's own annotations and routing unions. A disagreement between them
+// stops generation.
 func planMethods(doc *Document, table *MethodTable) ([]*Method, error) {
 	if table.Version != 1 {
 		return nil, fmt.Errorf("meta.json declares version %d, and only 1 is implemented", table.Version)
 	}
 
-	// The wire name is the identity. A method listed under both directions is one
-	// method that either peer may send, not two that share a name.
 	byName := make(map[string]*Method)
-	sides := map[string][]string{sideNameAgent: nil, sideNameClient: nil, sideNameProtocol: nil}
 	for _, group := range []struct {
 		side    string
 		methods map[string]string
@@ -71,17 +83,13 @@ func planMethods(doc *Document, table *MethodTable) ([]*Method, error) {
 		{sideNameClient, table.ClientMethods},
 		{sideNameProtocol, table.ProtocolMethods},
 	} {
-		for identifier, name := range group.methods {
-			sides[group.side] = append(sides[group.side], name)
-			method, seen := byName[name]
-			if !seen {
-				method = &Method{Name: name, GoName: "method" + goName(identifier)}
-				byName[name] = method
+		for _, identifier := range sortedKeys(group.methods) {
+			name := group.methods[identifier]
+			if existing, seen := byName[name]; seen {
+				return nil, fmt.Errorf("meta.json lists %q under both %s and %s, and a method served by "+
+					"either peer is not implemented", name, existing.Side, group.side)
 			}
-			if method.GoName != "method"+goName(identifier) {
-				return nil, fmt.Errorf("meta.json gives %q two identifiers, %s and method%s",
-					name, method.GoName, goName(identifier))
-			}
+			byName[name] = &Method{Name: name, GoName: "method" + goName(identifier), Side: group.side}
 		}
 	}
 
@@ -92,23 +100,21 @@ func planMethods(doc *Document, table *MethodTable) ([]*Method, error) {
 		}
 		method, listed := byName[annotated.Method]
 		if !listed {
-			return nil, fmt.Errorf("#/$defs/%s is annotated with method %q, which meta.json does not list",
-				name, annotated.Method)
+			return nil, fmt.Errorf("%s%s is annotated with method %q, which meta.json does not list",
+				definitionPointer, name, annotated.Method)
+		}
+		if annotated.Side != method.Side {
+			return nil, fmt.Errorf("meta.json lists %q as %s but %s says x-side %s",
+				method.Name, method.Side, name, annotated.Side)
 		}
 		method.Payloads = append(method.Payloads, name)
-		if method.Side == "" {
-			method.Side = annotated.Side
-		}
-		if method.Side != annotated.Side {
-			return nil, fmt.Errorf("the payloads of %q disagree about x-side: %s and %s",
-				annotated.Method, method.Side, annotated.Side)
-		}
 	}
 
+	routes := routingPayloads(doc)
 	methods := make([]*Method, 0, len(byName))
 	for _, name := range sortedKeys(byName) {
 		method := byName[name]
-		if err := finishMethod(doc, method, sides); err != nil {
+		if err := finishMethod(doc, method, routes); err != nil {
 			return nil, err
 		}
 		methods = append(methods, method)
@@ -116,124 +122,150 @@ func planMethods(doc *Document, table *MethodTable) ([]*Method, error) {
 	return methods, nil
 }
 
-func finishMethod(doc *Document, method *Method, sides map[string][]string) error {
+// payloadRoutes is which routing union lists each payload.
+type payloadRoutes struct {
+	requests, notifications, responses map[string]bool
+}
+
+func routingPayloads(doc *Document) payloadRoutes {
+	collect := func(envelopes []string, property string) map[string]bool {
+		listed := make(map[string]bool)
+		for _, envelope := range envelopes {
+			if schema := doc.Defs[envelope]; schema != nil {
+				for _, name := range envelopeRefs(schema, property) {
+					listed[name] = true
+				}
+			}
+		}
+		return listed
+	}
+	return payloadRoutes{
+		requests:      collect(requestEnvelopes, "params"),
+		notifications: collect(notificationEnvelopes, "params"),
+		responses:     collect(responseEnvelopes, "result"),
+	}
+}
+
+// envelopeRefs returns the definitions an envelope's property, in any of the
+// envelope's arms, refers to.
+func envelopeRefs(envelope *Schema, property string) []string {
+	var refs []string
+	for _, arm := range append([]*Schema{envelope}, envelope.Arms()...) {
+		if schema := arm.Properties[property]; schema != nil {
+			refs = append(refs, collectRefs(schema)...)
+		}
+	}
+	return refs
+}
+
+func collectRefs(schema *Schema) []string {
+	if schema == nil {
+		return nil
+	}
+	refs := []string{}
+	if name := schema.RefName(); name != "" {
+		refs = append(refs, name)
+	}
+	for _, list := range [][]*Schema{schema.AllOf, schema.AnyOf, schema.OneOf} {
+		for _, child := range list {
+			refs = append(refs, collectRefs(child)...)
+		}
+	}
+	return refs
+}
+
+func finishMethod(doc *Document, method *Method, routes payloadRoutes) error {
 	if len(method.Payloads) == 0 {
 		return fmt.Errorf("meta.json lists %q, which no payload in the schema is annotated with", method.Name)
 	}
 
-	// The directory meta.json puts a method in and the x-side its payloads carry
-	// are two statements of one fact, and a release where they part company is one
-	// this generator should not paper over.
-	inAgent := slices.Contains(sides[sideNameAgent], method.Name)
-	inClient := slices.Contains(sides[sideNameClient], method.Name)
-	expected := sideNameProtocol
-	switch {
-	case inAgent && inClient:
-		expected = sideNameBoth
-	case inAgent:
-		expected = sideNameAgent
-	case inClient:
-		expected = sideNameClient
-	}
-	if method.Side != expected {
-		return fmt.Errorf("meta.json lists %q as %s but its payloads say x-side %s",
-			method.Name, expected, method.Side)
-	}
-
-	// Whether a method expects a response is not stated anywhere; it follows from
-	// which payloads exist. A method with a response payload is a request, one
-	// with a notification payload is a notification, and one the schema defines
-	// both ways is either.
-	var request, notification bool
+	// A method has a response exactly when one of its payloads is listed as a
+	// response result. A request payload without one, or a notification payload
+	// with one, contradicts the routing unions.
+	var request, notification, response bool
+	var params []string
 	for _, payload := range method.Payloads {
 		switch {
-		case strings.HasSuffix(payload, "Notification"):
-			notification = true
-		case strings.HasSuffix(payload, "Response"):
+		case routes.responses[payload]:
+			response = true
+		case routes.requests[payload]:
 			request = true
-		}
-		if !strings.HasSuffix(payload, "Response") &&
-			slices.Contains(doc.Defs[payload].Required, "sessionId") {
-			method.RequiresSessionID = true
+			params = append(params, payload)
+		case routes.notifications[payload]:
+			notification = true
+			params = append(params, payload)
+		default:
+			// A protocol-level payload is routed by no envelope.
+			params = append(params, payload)
 		}
 	}
 	switch {
 	case request && notification:
-		method.Shape = "shapeEither"
-	case request:
-		method.Shape = "shapeRequest"
-	case notification:
-		method.Shape = "shapeNotification"
+		return fmt.Errorf("%q is routed both as a request and as a notification, which is not implemented",
+			method.Name)
+	case request && !response:
+		return fmt.Errorf("%q is routed as a request but no response payload is annotated with it", method.Name)
+	case notification && response:
+		return fmt.Errorf("%q is routed as a notification but has a response payload", method.Name)
+	case response:
+		method.Shape = shapeRequest
 	default:
-		return fmt.Errorf("the payloads of %q are %v, none of which says whether it expects a response",
-			method.Name, method.Payloads)
+		method.Shape = shapeNotification
+	}
+
+	for _, payload := range params {
+		schema := doc.Defs[payload]
+		for _, property := range schema.Required {
+			if schema.Properties[property].SoleRef() == sessionIDDefinition {
+				method.RequiresSessionID = true
+			}
+		}
 	}
 	return nil
 }
 
-// emitMethods writes the method table.
-//
-// Every name in it is unexported. A caller of this package names a method by
-// calling the operation for it, never by spelling the string; the one place a
-// string crosses the boundary is the extension API, and there it is checked
-// against this table rather than looked up in it.
+// emitMethods writes the method table. Every name in it is unexported: a caller
+// names a method by calling the operation for it, and the extension API checks a
+// string against this table rather than looking it up in it.
 func emitMethods(methods []*Method, table *MethodTable) ([]byte, error) {
 	var out bytes.Buffer
 	out.WriteString(comment("", []string{
 		generatedHeader,
 		"",
 		fmt.Sprintf("Source: schema/meta.json, version %d, cross-checked against the x-method and", table.Version),
-		"x-side annotations in schema/schema.json.",
+		"x-side annotations and the routing unions in schema/schema.json.",
 	}))
 	out.WriteString("\npackage acp\n\n")
 
-	out.WriteString(comment("", []string{
-		"The wire names of the methods the specification defines. Unexported because a",
-		"caller names a method by calling the operation for it: the method strings, the",
-		"request identifiers and the envelope are all plumbing, and a caller who has to",
-		"know them has been handed the plumbing.",
-	}))
-	out.WriteString("const (\n")
+	out.WriteString("// The wire names of the methods the specification defines.\nconst (\n")
 	for _, method := range methods {
 		fmt.Fprintf(&out, "\t%s = %s\n", method.GoName, strconv.Quote(method.Name))
 	}
 	out.WriteString(")\n\n")
 
-	out.WriteString(comment("", []string{
-		"A methodSide is which peer serves a method. Both directions carry requests:",
-		"fourteen of the specification's methods run from the agent to the client, so",
-		"this is not a client library with a server mode bolted on.",
-	}))
-	out.WriteString("type methodSide uint8\n\nconst (\n")
+	out.WriteString("// A methodSide is which peer serves a method.\ntype methodSide uint8\n\nconst (\n")
 	out.WriteString("\t// sideAgent is served by the agent, so a client sends it.\n\tsideAgent methodSide = iota\n")
 	out.WriteString("\t// sideClient is served by the client, so an agent sends it.\n\tsideClient\n")
-	out.WriteString("\t// sideBoth may be sent by either peer.\n\tsideBoth\n")
 	out.WriteString("\t// sideProtocol belongs to the connection rather than to either peer.\n\tsideProtocol\n)\n\n")
 
-	out.WriteString(comment("", []string{
-		"A methodShape is whether a method expects a response. The schema does not say",
-		"so directly; it follows from which payloads it defines for the method.",
-	}))
-	out.WriteString("type methodShape uint8\n\nconst (\n")
+	out.WriteString("// A methodShape is whether a method expects a response.\ntype methodShape uint8\n\nconst (\n")
 	out.WriteString("\t// shapeRequest expects a response.\n\tshapeRequest methodShape = iota\n")
-	out.WriteString("\t// shapeNotification has none.\n\tshapeNotification\n")
-	out.WriteString("\t// shapeEither is defined both ways, so neither form contradicts the schema.\n\tshapeEither\n)\n\n")
+	out.WriteString("\t// shapeNotification has none.\n\tshapeNotification\n)\n\n")
 
 	out.WriteString("type methodDescriptor struct {\n\tside              methodSide\n\tshape             methodShape\n\trequiresSessionID bool\n}\n\n")
 
 	out.WriteString(comment("", []string{
 		"standardMethods is every method the specification defines, and the set the",
-		"extension API reserves.",
-		"",
-		"An unrestricted method string on Call and Notify would be a hole through every",
-		"invariant this package has: a caller could pass session/prompt and bypass the",
-		"generated params type, the outbound validation, the session-ID binding and the",
-		"capability gate. A standard method has exactly one path through the typed codec,",
-		"and this is what says which names those are.",
+		"extension API reserves: a standard method has exactly one path through the",
+		"typed codec, the capability gate and the session binding.",
 	}))
 	out.WriteString("var standardMethods = map[string]methodDescriptor{\n")
 	for _, method := range methods {
-		fmt.Fprintf(&out, "\t%s: {side: %s, shape: %s", method.GoName, sideConstant(method.Side), method.Shape)
+		shape := "shapeRequest"
+		if method.Shape == shapeNotification {
+			shape = "shapeNotification"
+		}
+		fmt.Fprintf(&out, "\t%s: {side: %s, shape: %s", method.GoName, sideConstants[method.Side], shape)
 		if method.RequiresSessionID {
 			out.WriteString(", requiresSessionID: true")
 		}
@@ -241,10 +273,7 @@ func emitMethods(methods []*Method, table *MethodTable) ([]byte, error) {
 	}
 	out.WriteString("}\n\n")
 
-	out.WriteString(comment("", []string{
-		"isStandardMethod reports whether the specification defines name, which is what",
-		"the extension API refuses and what a fallback handler is not offered.",
-	}))
+	out.WriteString("// isStandardMethod reports whether the specification defines name.\n")
 	out.WriteString("func isStandardMethod(name string) bool {\n")
 	out.WriteString("\t_, standard := standardMethods[name]\n\treturn standard\n}\n")
 
@@ -255,18 +284,9 @@ func emitMethods(methods []*Method, table *MethodTable) ([]byte, error) {
 	return formatted, nil
 }
 
-func sideConstant(side string) string {
-	return map[string]string{
-		sideNameAgent:    "sideAgent",
-		sideNameClient:   "sideClient",
-		sideNameBoth:     "sideBoth",
-		sideNameProtocol: "sideProtocol",
-	}[side]
-}
-
 func loadMethodTable(data []byte) (*MethodTable, error) {
 	var table MethodTable
-	if err := json.Unmarshal(data, &table); err != nil {
+	if err := strictDecode(data, &table); err != nil {
 		return nil, err
 	}
 	if len(table.AgentMethods) == 0 || len(table.ClientMethods) == 0 {

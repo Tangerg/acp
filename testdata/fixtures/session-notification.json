@@ -326,7 +326,18 @@
           }
         }
       },
-      "accepted": false
+      "accepted": true,
+      "normalized": {
+        "sessionId": "sess-1",
+        "update": {
+          "plan": {
+            "planId": "plan-1",
+            "content": "# steps",
+            "type": "markdown"
+          },
+          "sessionUpdate": "plan_update"
+        }
+      }
     },
     {
       "name": "a plan removal",
@@ -338,7 +349,14 @@
           "planId": "plan-1"
         }
       },
-      "accepted": false
+      "accepted": true,
+      "normalized": {
+        "sessionId": "sess-1",
+        "update": {
+          "planId": "plan-1",
+          "sessionUpdate": "plan_removed"
+        }
+      }
     },
     {
       "name": "available commands",

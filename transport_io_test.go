@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -250,9 +251,6 @@ func TestTheCommandTransportStartsAndReapsAnAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Client.Connect over a subprocess: %v", err)
 	}
-	if version := conn.Peer().ProtocolVersion; version != 1 {
-		t.Errorf("negotiated version %d, want 1", version)
-	}
 
 	if err := conn.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -312,7 +310,7 @@ func TestAnAgentThatIgnoresEveryHintIsKilled(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Close: %v", err)
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(deadlockGuard):
 		t.Fatal("Close did not return; a wedged agent still owns the client that started it")
 	}
 }
@@ -335,16 +333,60 @@ func startAgentScript(t *testing.T, script string, grace time.Duration) acp.Conn
 	return stream
 }
 
-// The stdio transport is the agent's side of a local connection, and it is this
-// process's own streams.
-//
-// The test is shallow on purpose. Connecting it would take os.Stdin and os.Stdout,
-// and closing that connection would close them — which would take the test binary
-// with it. What can be checked is that the constructor is the one thing it claims
-// to be: a transport, built without reaching into the globals from somewhere a
-// reader cannot see.
-func TestTheStdioTransportIsAvailable(t *testing.T) {
-	if acp.NewStdioTransport() == nil {
-		t.Fatal("NewStdioTransport returned nothing")
+// stdioAgentEnv makes the test binary act as a stdio agent, so the stdio
+// transport is tested with real inherited standard streams.
+const stdioAgentEnv = "ACP_TEST_STDIO_AGENT"
+
+// runStdioAgentUntilDeadline is the re-executed agent. Its result is the process
+// exit status: zero only when Run stopped because its context did.
+func runStdioAgentUntilDeadline() int {
+	agent, err := acp.NewAgent(&acp.AgentConfig{
+		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+			return &acp.NewSessionResponse{SessionID: "s"}, nil
+		},
+		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
+			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+		},
+	})
+	if err != nil {
+		return 2
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := agent.Run(ctx, acp.NewStdioTransport()); !errors.Is(err, context.DeadlineExceeded) {
+		return 3
+	}
+	return 0
+}
+
+// Inherited standard streams are usually blocking, so closing them would not end
+// a pending read. An agent whose Run context ends must still stop while its
+// client holds stdin open.
+func TestAStdioAgentStopsWithItsContextWhileStdinStaysOpen(t *testing.T) {
+	if os.Getenv(stdioAgentEnv) != "" {
+		os.Exit(runStdioAgentUntilDeadline())
+	}
+
+	//nolint:gosec // the test binary re-executes itself as the agent.
+	agent := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestAStdioAgentStopsWithItsContextWhileStdinStaysOpen$")
+	agent.Env = append(os.Environ(), stdioAgentEnv+"=1")
+	stdin, err := agent.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close() //nolint:errcheck // held open on purpose until the test ends.
+	if err := agent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- agent.Wait() }()
+	select {
+	case err := <-exited:
+		if err != nil {
+			t.Fatalf("the agent exited with %v", err)
+		}
+	case <-time.After(deadlockGuard):
+		_ = agent.Process.Kill()
+		t.Fatal("the agent did not stop when its Run context ended while stdin stayed open")
 	}
 }

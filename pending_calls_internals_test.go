@@ -6,7 +6,6 @@ import (
 	"errors"
 	"testing"
 	"testing/synctest"
-	"time"
 
 	"github.com/Tangerg/acp/jsonrpc"
 )
@@ -16,7 +15,7 @@ func TestCancelledTerminalCreatesRemainBoundedUntilTheirResponsesArrive(t *testi
 	agent := blockingAgent(t, Limits{PendingCalls: bound}, make(chan struct{}), make(chan struct{}))
 	stream, conn := connectRawAgent(t, agent)
 	defer func() { _ = conn.Close() }()
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), deadlockGuard)
 	defer cancel()
 	if err := stream.Write(ctx, rawCall(1, methodInitialize, `{"protocolVersion":1,"clientCapabilities":{"terminal":true}}`)); err != nil {
 		t.Fatal(err)
@@ -56,7 +55,7 @@ func TestCancelledTerminalCreatesRemainBoundedUntilTheirResponsesArrive(t *testi
 			t.Fatalf("read %T, want cancellation", message)
 		}
 	}
-	if _, _, err := session.CreateTerminal(ctx, &CreateTerminalParams{Command: "/bin/true"}); !errors.Is(err, ErrTooManyPendingCalls) {
+	if _, _, err := session.CreateTerminal(ctx, &CreateTerminalParams{Command: "/bin/true"}); !errors.Is(err, ErrLimitExceeded) {
 		t.Fatalf("create past quota returned %v", err)
 	}
 	conn.calls.mu.Lock()
@@ -65,7 +64,7 @@ func TestCancelledTerminalCreatesRemainBoundedUntilTheirResponsesArrive(t *testi
 	if retained != bound {
 		t.Errorf("retained %d calls, want bounded pending creates %d", retained, bound)
 	}
-	if conn.ended() {
+	if conn.life.ended() {
 		t.Fatal("outbound backpressure closed the connection")
 	}
 
@@ -180,7 +179,7 @@ func TestPendingCallAdmissionReleasesUnsentAndCompletedReservations(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pending.begin(nil, nil); !errors.Is(err, ErrTooManyPendingCalls) {
+	if _, err := pending.begin(nil, nil); !errors.Is(err, ErrLimitExceeded) {
 		t.Fatalf("full admission returned %v", err)
 	}
 	pending.retire(first.id)

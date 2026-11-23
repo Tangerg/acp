@@ -6,265 +6,113 @@ import (
 	"iter"
 	"slices"
 	"sync"
+
+	"github.com/Tangerg/acp/jsonrpc"
 )
 
-// A connection is what both ends of a link have: the link itself, and the peer
-// the handshake settled on.
-//
-// Embedding it rather than repeating it is what stops a session reaching through
-// two objects to make a call. It also puts the initialization phase in one place:
-// the read loop is running before the handshake completes on either side, because
-// on one side the answer arrives on it and on the other the question does, and
-// anything else that arrives first would reach application code before there was a
-// negotiated peer to judge it against.
+// A connection is what both ends of a link have: the link and the agreement the
+// handshake settled. Every standard payload this side sends goes through its
+// outbound methods, which hold the payload to that agreement.
 type connection struct {
 	*link
-	handshake *handshake
+	negotiation *negotiation
 }
 
-func newConnection() connection {
-	return connection{handshake: newHandshake()}
+// Negotiated reports what initialize settled, as a copy, and the zero value
+// before it has.
+func (c *connection) Negotiated() Negotiated {
+	if agreed := c.negotiation.agreed(); agreed != nil {
+		return deepCopy(*agreed)
+	}
+	return Negotiated{}
 }
 
-// Peer reports what initialize negotiated, and the zero value before it has.
-//
-// It is a copy all the way down: the same value backs the capability gate, so a
-// caller able to mutate it could widen its own authority.
-func (c *connection) Peer() PeerInfo {
-	return c.handshake.Peer()
-}
-
-// Close reports the connection's terminal error rather than a close error: they
-// are the same value [connection.Wait] reports, and releasing what the connection
-// owns is part of what can fail. It is idempotent.
+// Close ends the connection and releases what it owns. It reports a failure to
+// release, if this call performed the release, and is idempotent; why the
+// connection ended is Wait's to report.
 func (c *connection) Close() error { return c.close() }
 
-// Wait blocks until the connection has ended and everything it owns has stopped.
-// It reports nil for a local close that released everything and for a peer that
-// hung up cleanly, and otherwise the first read, write or release failure. Every
-// caller sees the same value.
+// Wait blocks until the connection has ended and everything it owns has stopped,
+// and reports nil for a local close or a peer that hung up cleanly, and otherwise
+// the first read, write or release failure. Every caller sees the same value.
 func (c *connection) Wait() error { return c.wait() }
 
-// The handle already minted is still honoured, so that whatever is mid-flight
-// fails on the connection ending rather than on a nil pointer.
-func (c *connection) tooManySessions() {
-	c.endReading(fmt.Errorf("%w (limit %d)", errTooManySessions, c.limits.SessionHandles))
-}
-
-// handshake owns the transition from an unopened connection to an accepted and
-// then published capability agreement. Acceptance and publication are separate
-// because an agent must validate and retain initialize before encoding its
-// response, but must not send anything else until that response is on the wire.
-type handshake struct {
-	mu         sync.Mutex
-	state      handshakeState
-	peer       PeerInfo
-	active     *handshakeAttempt
-	acceptedBy *handshakeAttempt
-	pending    []*handshakeAttempt
-
-	accepted  chan struct{}
-	published chan struct{}
-}
-
-// handshakeAttempt serializes initialize calls without blocking the ordered
-// delivery loop. Full-duplex transports cannot prove whether a call observed the
-// preceding response merely from local goroutine scheduling, so later attempts
-// wait for that response to settle before they are admitted or refused.
-type handshakeAttempt struct {
-	owner   *handshake
-	ready   chan struct{}
-	refused bool
-}
-
-type handshakeState uint8
-
-const (
-	handshakeIdle handshakeState = iota
-	handshakeNegotiating
-	handshakeAccepted
-	handshakePublished
-)
-
-func newHandshake() *handshake {
-	return &handshake{
-		accepted:  make(chan struct{}),
-		published: make(chan struct{}),
-	}
-}
-
-// begin makes renegotiation unrepresentable while capabilities are already gating
-// concurrent work.
-func (h *handshake) begin() bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.state != handshakeIdle {
-		return false
-	}
-	h.state = handshakeNegotiating
-	return true
-}
-
-func (h *handshake) registerAttempt() *handshakeAttempt {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	attempt := &handshakeAttempt{owner: h, ready: make(chan struct{})}
-	switch h.state {
-	case handshakeIdle:
-		h.state = handshakeNegotiating
-		h.active = attempt
-		close(attempt.ready)
-	case handshakeNegotiating:
-		h.pending = append(h.pending, attempt)
-	case handshakeAccepted, handshakePublished:
-		attempt.refused = true
-		close(attempt.ready)
-	}
-	return attempt
-}
-
-func (a *handshakeAttempt) await(ctx context.Context) error {
+// awaitOpen waits until this side may send, which on an agent is after its
+// first initialize answer is on the wire.
+func (c *connection) awaitOpen(ctx context.Context, method string) error {
 	select {
-	case <-a.ready:
-		if a.refused {
-			return newError(ErrorCodeInvalidRequest,
-				"initialize is already in progress or complete on this connection")
-		}
+	case <-c.negotiation.opened:
 		return nil
+	case <-c.over():
+		return c.life.failure()
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("acp: %s waited for initialize: %w", method, ctx.Err())
 	}
 }
 
-// settle advances exactly the active attempt. A failed attempt promotes its
-// ordered successor only after the failed answer is complete; acceptance instead
-// closes the capability agreement and refuses every queued renegotiation.
-func (a *handshakeAttempt) settle() {
-	h := a.owner
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if h.active != a {
-		for i, pending := range h.pending {
-			if pending == a {
-				h.pending = slices.Delete(h.pending, i, i+1)
-				return
-			}
-		}
-		return
+// checkOutbound holds one standard payload to the agreement: the method's
+// capability first, then what the payload carries.
+func (c *connection) checkOutbound(ctx context.Context, method string, payload any) error {
+	if err := c.awaitOpen(ctx, method); err != nil {
+		return err
 	}
-
-	h.active = nil
-	if h.state != handshakeNegotiating {
-		for _, pending := range h.pending {
-			pending.refused = true
-			close(pending.ready)
-		}
-		h.pending = nil
-		return
+	agreed := c.negotiation.agreed()
+	if err := agreed.refusesOutbound(method); err != nil {
+		return err
 	}
-
-	h.state = handshakeIdle
-	if len(h.pending) == 0 {
-		return
+	if checked, ok := payload.(outboundChecked); ok {
+		return checked.checkOutbound(agreed)
 	}
-	next := h.pending[0]
-	h.pending = h.pending[1:]
-	h.state = handshakeNegotiating
-	h.active = next
-	close(next.ready)
+	return nil
 }
 
-// publish opens the connection for outbound work, and only for whoever accepted
-// the agreement being published. A failed answer may promote a successor that
-// accepts before the failed request's goroutine finishes, and letting the old
-// answer publish the new agreement would open sending ahead of its own response.
-//
-// The client passes nil: its acceptance came from the initialize call it made
-// rather than from a queued attempt, so no attempt owns it.
-func (h *handshake) publish(acceptedBy *handshakeAttempt) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.state != handshakeAccepted || h.acceptedBy != acceptedBy {
-		return
+// sendStandard is the one path a standard request leaves by.
+func (c *connection) sendStandard(
+	ctx context.Context,
+	method string,
+	params any,
+	accept func(*jsonrpc.Response) error,
+	abandon func(),
+) (outboundCall, error) {
+	if err := c.checkOutbound(ctx, method, params); err != nil {
+		return outboundCall{}, err
 	}
-	h.state = handshakePublished
-	close(h.published)
+	return c.send(ctx, method, params, accept, abandon)
 }
 
-// The request lifecycle wants a func(), and an attempt knows which one it is.
-func (a *handshakeAttempt) publish() { a.owner.publish(a) }
-
-func (h *handshake) accept(peer PeerInfo) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.state != handshakeNegotiating {
-		panic("acp: handshake accepted outside negotiation")
+func (c *connection) callStandard(ctx context.Context, method string, params, result any) error {
+	call, err := c.sendStandard(ctx, method, params, nil, nil)
+	if err != nil {
+		return err
 	}
-	h.peer = peer.clone()
-	h.state = handshakeAccepted
-	h.acceptedBy = h.active
-	close(h.accepted)
+	return c.awaitInto(ctx, call, result)
 }
 
-func (h *handshake) Peer() PeerInfo {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.peer.clone()
-}
-
-func (h *handshake) isAccepted() bool {
-	select {
-	case <-h.accepted:
-		return true
-	default:
-		return false
+func (c *connection) notifyStandard(ctx context.Context, method string, params any) error {
+	if err := c.checkOutbound(ctx, method, params); err != nil {
+		return err
 	}
+	return c.notify(ctx, method, params)
 }
 
-func (h *handshake) whenPublished() <-chan struct{} { return h.published }
-
-// sessions is one handle per identifier per connection.
-//
-// One rather than one per lookup because a handle is a caller-visible identity:
-// two for one session would be two objects a caller could not tell apart. The
-// turn invariant does not depend on it — that lives on the connection, keyed by
-// identifier — so a handle can be forgotten once the protocol says the session is
-// gone, which is the only thing that keeps the population from being one-way. See
-// limits.go for the bound that covers everything else.
-type sessions[Handle any] struct {
-	mu   sync.Mutex
-	byID map[SessionID]*Handle
-}
-
-// The handle is real whether or not the bound was breached: the caller is mid-way
-// through serving something and needs one, so a false only says the connection
-// must now end.
-func (s *sessions[Handle]) lookup(id SessionID, limit int, open func(SessionID) *Handle) (*Handle, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.byID == nil {
-		s.byID = make(map[SessionID]*Handle)
+// callFor sends a standard request and decodes its result into a new Response.
+func callFor[Response any](ctx context.Context, c *connection, method string, params any) (*Response, error) {
+	response := new(Response)
+	if err := c.callStandard(ctx, method, params, response); err != nil {
+		return nil, err
 	}
-	if existing, ok := s.byID[id]; ok {
-		return existing, true
-	}
-	handle := open(id)
-	if len(s.byID) >= limit {
-		return handle, false
-	}
-	s.byID[id] = handle
-	return handle, true
+	return response, nil
 }
 
-// forget is the only way the cached handle population shrinks; see limits.go.
-func (s *sessions[Handle]) forget(id SessionID) {
-	s.mu.Lock()
-	delete(s.byID, id)
-	s.mu.Unlock()
+// refuseBeforeInitialize answers a peer's call that arrived before initialize
+// was accepted: serving it would mean serving it under capabilities nobody has
+// exchanged.
+func refuseBeforeInitialize(method string) registration {
+	return answered(nil, newError(ErrorCodeInvalidRequest, "method %q arrived before initialize", method))
 }
 
+// A registry is the live connections of one client or agent. Membership ends
+// when a connection is released, whether or not anybody enumerates it.
 type registry[Conn comparable] struct {
 	mu   sync.Mutex
 	open []Conn
@@ -281,6 +129,7 @@ func (r *registry[Conn]) add(connection Conn, life *lifetime) {
 	})
 }
 
+// all is a snapshot: connections that end while it is iterated still appear.
 func (r *registry[Conn]) all() iter.Seq[Conn] {
 	r.mu.Lock()
 	defer r.mu.Unlock()

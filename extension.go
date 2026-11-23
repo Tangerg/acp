@@ -8,61 +8,96 @@ import (
 )
 
 // An ExtRequest is a request for a method the specification does not define.
-//
-// The v1 schema defines extension requests, responses and notifications in both
-// directions, so without a way to send and receive them an ACP extension could
-// not be implemented through this package at all. That is the ceiling this
-// avoids.
-//
-// The params are raw because there is nothing to decode them against: what an
-// extension carries is between the two peers that agreed on it.
+// Its params are raw: what an extension carries is between the two peers that
+// agreed on it.
 type ExtRequest struct {
-	// Method is the method name, which is outside the set the specification
-	// defines. Names beginning with an underscore are reserved for
-	// implementation-specific use.
+	// Method begins with an underscore, the prefix the protocol reserves for
+	// implementation-specific methods.
 	Method string
 	Params json.RawMessage
 }
 
 // An ExtNotification is a notification for a method the specification does not
-// define. It expects no response, so a handler for one returns nothing.
+// define.
 type ExtNotification struct {
 	Method string
 	Params json.RawMessage
 }
 
-// An unrestricted method string would be a hole through every invariant here: a
-// caller could pass session/prompt and bypass the generated params type, the
-// outbound validation, the session binding and the capability gate. A standard
-// method has exactly one path through the typed codec, and this keeps it the only
-// one. Raw access to a standard method, if it is ever needed, is a separately
-// named unsafe API rather than a side effect of extension support.
-func errReservedMethod(method string) error {
-	return fmt.Errorf("acp: %q is a method the specification defines, and the extension API "+
-		"does not send it: call the operation for it instead", method)
-}
+// extensionPrefix is how the protocol reserves a method name for an
+// implementation.
+const extensionPrefix = "_"
 
+// validateExtensionMethod keeps the typed codec the only path for a standard
+// method: an unrestricted name would let a caller send session/prompt past the
+// params type, the capability gate and the session binding.
 func validateExtensionMethod(method string) error {
 	if isStandardMethod(method) {
-		return errReservedMethod(method)
+		return fmt.Errorf("acp: %q is a method the specification defines; call the operation for it instead", method)
 	}
-	if !strings.HasPrefix(method, "_") {
-		return fmt.Errorf("acp: extension method %q must begin with an underscore; "+
-			"the protocol reserves every other name", method)
+	if !strings.HasPrefix(method, extensionPrefix) {
+		return fmt.Errorf("acp: extension method %q must begin with %q; the protocol reserves every other name",
+			method, extensionPrefix)
 	}
 	return nil
 }
 
-func (l *link) extensionCall(ctx context.Context, method string, params, result any) error {
+func (c *connection) extensionCall(ctx context.Context, method string, params, result any) error {
 	if err := validateExtensionMethod(method); err != nil {
 		return err
 	}
-	return l.call(ctx, method, params, result)
+	if err := c.awaitOpen(ctx, method); err != nil {
+		return err
+	}
+	return c.call(ctx, method, params, result)
 }
 
-func (l *link) extensionNotify(ctx context.Context, method string, params any) error {
+func (c *connection) extensionNotify(ctx context.Context, method string, params any) error {
 	if err := validateExtensionMethod(method); err != nil {
 		return err
 	}
-	return l.notify(ctx, method, params)
+	if err := c.awaitOpen(ctx, method); err != nil {
+		return err
+	}
+	return c.notify(ctx, method, params)
+}
+
+// serveExtensionCall routes an extension request to its fallback. A standard or
+// unprefixed name never reaches it, so a fallback cannot become a second path
+// through the capability gate.
+func serveExtensionCall[Conn any](
+	ctx context.Context,
+	conn Conn,
+	call *inboundRequest,
+	fallback func(context.Context, Conn, *ExtRequest) (any, error),
+) (any, error) {
+	if err := validateExtensionMethod(call.method); err != nil || fallback == nil {
+		return nil, newError(ErrorCodeMethodNotFound, "method %q is not implemented", call.method)
+	}
+	result, err := fallback(ctx, conn, &ExtRequest{Method: call.method, Params: rawParamsOf(call)})
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		// An extension may have nothing to say, and its response is whatever the
+		// peers agreed on, including an empty object.
+		return struct{}{}, nil
+	}
+	return result, nil
+}
+
+// serveExtensionNotification routes an extension notification to its fallback.
+// An unrecognised notification is ignored, as the protocol asks, which also keeps
+// today's fallback from claiming tomorrow's standard notification.
+func serveExtensionNotification[Conn any](
+	ctx context.Context,
+	conn Conn,
+	method string,
+	params json.RawMessage,
+	fallback func(context.Context, Conn, *ExtNotification),
+) {
+	if validateExtensionMethod(method) != nil || fallback == nil {
+		return
+	}
+	fallback(ctx, conn, &ExtNotification{Method: method, Params: params})
 }

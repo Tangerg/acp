@@ -43,7 +43,6 @@ func TestAuthenticationIsControlFlow(t *testing.T) {
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 	})
 	if err != nil {
 		t.Fatalf("NewAgent: %v", err)
@@ -64,7 +63,7 @@ func TestAuthenticationIsControlFlow(t *testing.T) {
 	defer conn.Close() //nolint:errcheck // idempotent.
 
 	// The agent said what it accepts, which is how a client knows what to offer.
-	methods := conn.Peer().AuthMethods
+	methods := conn.Negotiated().AuthMethods
 	if len(methods) != 1 {
 		t.Fatalf("initialize advertised %d authentication methods, want one", len(methods))
 	}
@@ -123,7 +122,6 @@ func TestLoadSessionAndSetMode(t *testing.T) {
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 	})
 	if err != nil {
 		t.Fatalf("NewAgent: %v", err)
@@ -135,7 +133,7 @@ func TestLoadSessionAndSetMode(t *testing.T) {
 
 	// The handler is what advertises the capability, so this agent's peer info
 	// says so and the call is allowed through.
-	if !conn.Peer().AgentCapabilities.LoadSession {
+	if !conn.Negotiated().AgentCapabilities.LoadSession {
 		t.Fatal("the agent has a LoadSession handler and did not advertise loadSession")
 	}
 	loaded, _, err := conn.LoadSession(ctx, &acp.LoadSessionRequest{SessionID: "sess-1", Cwd: "/w"})
@@ -149,10 +147,10 @@ func TestLoadSessionAndSetMode(t *testing.T) {
 		t.Error("LoadSession with no params succeeded, and the session to load is in them")
 	}
 
-	if _, setErr := session.SetMode(ctx, &acp.SetModeParams{ModeID: "code"}); setErr != nil {
+	if _, setErr := session.SetMode(ctx, &acp.SetSessionModeParams{ModeID: "code"}); setErr != nil {
 		t.Fatalf("SetMode: %v", setErr)
 	}
-	if _, setErr := session.SetMode(ctx, &acp.SetModeParams{ModeID: "telepathy"}); setErr == nil {
+	if _, setErr := session.SetMode(ctx, &acp.SetSessionModeParams{ModeID: "telepathy"}); setErr == nil {
 		t.Error("SetMode accepted a mode the agent does not have")
 	}
 }
@@ -204,7 +202,6 @@ func TestExtensionNotifications(t *testing.T) {
 			}
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 	})
 	if err != nil {
 		t.Fatalf("NewAgent: %v", err)

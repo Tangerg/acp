@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Tangerg/acp"
 	"github.com/Tangerg/acp/jsonrpc"
@@ -41,7 +40,7 @@ func TestANotificationMethodSentAsACallIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAgent: %v", err)
 	}
-	_, stream, ctx := rawClientFor(t, agent)
+	stream, ctx := rawClientFor(t, agent)
 	initializeRaw(ctx, t, stream)
 
 	response := roundTrip(ctx, t, stream, 2, "session/cancel", `{"sessionId":"sess-1"}`)
@@ -49,7 +48,7 @@ func TestANotificationMethodSentAsACallIsRefused(t *testing.T) {
 		t.Fatal("session/cancel was accepted as a call, so a notification handler ran and the peer " +
 			"was then answered for a method that has no response")
 	}
-	if !strings.Contains(response.Error.Error(), "notification") {
+	if !strings.Contains(string(response.Error), "notification") {
 		t.Errorf("the refusal was %v, which does not say the shape was the problem", response.Error)
 	}
 
@@ -148,7 +147,7 @@ func TestAMalformedResponseEnvelopeIsRefused(t *testing.T) {
 				return &jsonrpc.Response{
 					ID:     id,
 					Result: json.RawMessage(`{}`),
-					Error:  &jsonrpc.Error{Code: -32000, Message: "no"},
+					Error:  json.RawMessage(`{"code":-32000,"message":"no"}`),
 				}
 			},
 			says: "both a result and an error",
@@ -189,11 +188,11 @@ func TestAMalformedResponseEnvelopeIsRefused(t *testing.T) {
 
 // rawClientFor puts a connected agent opposite a hand-driven stream, which is how
 // a test says something about the wire that the typed client would not let it say.
-func rawClientFor(t *testing.T, agent *acp.Agent) (*acp.AgentConn, acp.Connection, context.Context) {
+func rawClientFor(t *testing.T, agent *acp.Agent) (acp.Connection, context.Context) {
 	t.Helper()
 
 	clientSide, agentSide := acp.NewInMemoryTransports()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), deadlockGuard)
 	t.Cleanup(cancel)
 
 	conn, err := agent.Connect(ctx, agentSide)
@@ -207,7 +206,7 @@ func rawClientFor(t *testing.T, agent *acp.Agent) (*acp.AgentConn, acp.Connectio
 		t.Fatalf("transport.Connect: %v", err)
 	}
 	t.Cleanup(func() { _ = stream.Close() })
-	return conn, stream, ctx
+	return stream, ctx
 }
 
 // rawAgentFor is the mirror: a connected client opposite a hand-driven stream,
@@ -238,7 +237,7 @@ func rawAgentPending(
 	t.Helper()
 
 	clientSide, agentSide := acp.NewInMemoryTransports()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), deadlockGuard)
 	t.Cleanup(cancel)
 
 	stream, err := agentSide.Connect(ctx)
@@ -277,10 +276,8 @@ func answerHandshake(ctx context.Context, stream acp.Connection) error {
 	// identifier the handshake did not offer and several tests use authenticate as
 	// the simplest round trip there is.
 	answer, err := jsonrpc.EncodeMessage(&jsonrpc.Response{
-		ID: request.ID,
-		Result: []byte(fmt.Sprintf(
-			`{"protocolVersion":%d,"authMethods":[{"id":"oauth","name":"Sign in"}]}`,
-			acp.CurrentProtocolVersion)),
+		ID:     request.ID,
+		Result: []byte(`{"protocolVersion":1,"authMethods":[{"id":"oauth","name":"Sign in"}]}`),
 	})
 	if err != nil {
 		return err
@@ -344,7 +341,7 @@ func idOf(t *testing.T, message jsonrpc.Message) string {
 func initializeRaw(ctx context.Context, t *testing.T, stream acp.Connection) {
 	t.Helper()
 
-	params := fmt.Sprintf(`{"protocolVersion":%d,"clientCapabilities":{}}`, acp.CurrentProtocolVersion)
+	params := `{"protocolVersion":1,"clientCapabilities":{}}`
 	if response := roundTrip(ctx, t, stream, 1, "initialize", params); response.Error != nil {
 		t.Fatalf("initialize was refused: %v", response.Error)
 	}
@@ -471,12 +468,11 @@ func TestErrorDataKeepsItsThreeStatesOutbound(t *testing.T) {
 				Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 					return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 				},
-				Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 			})
 			if err != nil {
 				t.Fatalf("NewAgent: %v", err)
 			}
-			_, stream, ctx := rawClientFor(t, agent)
+			stream, ctx := rawClientFor(t, agent)
 			initializeRaw(ctx, t, stream)
 
 			response := roundTrip(ctx, t, stream, 2, "session/new", `{"cwd":"/w","mcpServers":[]}`)

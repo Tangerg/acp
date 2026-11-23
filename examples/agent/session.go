@@ -87,7 +87,7 @@ func (s *noteSession) prompt(
 	session *acp.AgentSession,
 	request *acp.PromptRequest,
 ) (*acp.PromptResponse, error) {
-	capabilities := session.Conn().Peer().ClientCapabilities.Fs
+	capabilities := session.Conn().Negotiated().ClientCapabilities.Fs
 	if !capabilities.ReadTextFile || !capabilities.WriteTextFile {
 		if err := say(ctx, session, "Appending a note requires both file read and write access."); err != nil {
 			return nil, err

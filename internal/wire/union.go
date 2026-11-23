@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 )
@@ -42,6 +43,7 @@ func TagObject(name, tag string, v any) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	raw = bytes.TrimSpace(raw)
 	if kind(raw) != '{' {
 		return nil, fmt.Errorf("a union arm must encode as an object, got %s", describe(raw))
 	}
@@ -54,9 +56,7 @@ func TagObject(name, tag string, v any) ([]byte, error) {
 		return nil, err
 	}
 
-	// json.Marshal emits no insignificant whitespace, so the byte after '{' is
-	// either '}' for an empty object or the first key's opening quote.
-	rest := raw[1:]
+	rest := bytes.TrimSpace(raw[1:])
 	out := make([]byte, 0, len(raw)+len(key)+len(value)+2)
 	out = append(out, '{')
 	out = append(out, key...)

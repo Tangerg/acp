@@ -8,12 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
+	"slices"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/Tangerg/acp"
+	"github.com/Tangerg/acp/internal/jsontest"
 	"github.com/Tangerg/acp/jsonrpc"
 )
 
@@ -39,18 +39,7 @@ type transcript struct {
 		Version string `json:"sdkVersion"`
 		Schema  string `json:"schemaRelease"`
 	} `json:"provenance"`
-	Observed struct {
-		Updates            []string `json:"updates"`
-		PermissionRequests int      `json:"permissionRequests"`
-		StopReason         string   `json:"stopReason"`
-		FilesRead          []string `json:"filesRead"`
-		FilesWritten       []string `json:"filesWritten"`
-		TerminalsCreated   int      `json:"terminalsCreated"`
-		Elicitations       []string `json:"elicitations"`
-		ElicitationsDone   []string `json:"elicitationsDone"`
-		AuthRequired       bool     `json:"authRequired"`
-		Authenticated      bool     `json:"authenticated"`
-	} `json:"observed"`
+	Observed observedFields `json:"observed"`
 	Messages []struct {
 		From    string          `json:"from"`
 		Message json.RawMessage `json:"message"`
@@ -101,7 +90,7 @@ func replay(t *testing.T, recorded *transcript) {
 	}
 
 	script := &scriptedTransport{t: t, recorded: recorded, ready: make(chan struct{})}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), deadlockGuard)
 	defer cancel()
 
 	conn, err := client.Connect(ctx, script)
@@ -357,6 +346,28 @@ func methodOf(message json.RawMessage) string {
 // identifier is remembered instead of compared, so that the recorded responses
 // can be sent back under the identifier this client actually used.
 func (s *scriptedTransport) compare(recorded, sent []byte) error {
+	if err := s.rememberID(recorded, sent); err != nil {
+		return err
+	}
+	was, err := decodeObject(recorded)
+	if err != nil {
+		return err
+	}
+	is, err := decodeObject(sent)
+	if err != nil {
+		return err
+	}
+	delete(was, "id")
+	delete(is, "id")
+	if !reflect.DeepEqual(was, is) {
+		return fmt.Errorf("the client sent\n  %s\nand the recording has\n  %s", sent, recorded)
+	}
+	return nil
+}
+
+// rememberID records the identifier this client used for a recorded request, in
+// the form readdress writes back.
+func (s *scriptedTransport) rememberID(recorded, sent []byte) error {
 	var was, is map[string]any
 	if err := json.Unmarshal(recorded, &was); err != nil {
 		return err
@@ -364,21 +375,28 @@ func (s *scriptedTransport) compare(recorded, sent []byte) error {
 	if err := json.Unmarshal(sent, &is); err != nil {
 		return err
 	}
-
-	if recordedID, ok := was["id"]; ok {
-		sentID, sending := is["id"]
-		if !sending {
-			return fmt.Errorf("the client sent %s with no identifier, and the recording has one", sent)
-		}
-		s.ourIDs[fmt.Sprint(recordedID)] = sentID
-		delete(was, "id")
-		delete(is, "id")
+	recordedID, ok := was["id"]
+	if !ok {
+		return nil
 	}
-
-	if !reflect.DeepEqual(was, is) {
-		return fmt.Errorf("the client sent\n  %s\nand the recording has\n  %s", sent, recorded)
+	sentID, sending := is["id"]
+	if !sending {
+		return fmt.Errorf("the client sent %s with no identifier, and the recording has one", sent)
 	}
+	s.ourIDs[fmt.Sprint(recordedID)] = sentID
 	return nil
+}
+
+func decodeObject(data []byte) (map[string]any, error) {
+	value, err := jsontest.Decode(data)
+	if err != nil {
+		return nil, err
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%s is not a JSON object", data)
+	}
+	return object, nil
 }
 
 // readdress rewrites a recorded agent message's identifier to the one this client
@@ -458,17 +476,18 @@ type interopObservations struct {
 	observedFields
 }
 
+// observedFields is what a client's handlers saw, as the recorder wrote it.
 type observedFields struct {
-	Updates            []string
-	PermissionRequests int
-	StopReason         string
-	FilesRead          []string
-	FilesWritten       []string
-	TerminalsCreated   int
-	Elicitations       []string
-	ElicitationsDone   []string
-	AuthRequired       bool
-	Authenticated      bool
+	Updates            []string `json:"updates"`
+	PermissionRequests int      `json:"permissionRequests"`
+	StopReason         string   `json:"stopReason"`
+	FilesRead          []string `json:"filesRead"`
+	FilesWritten       []string `json:"filesWritten"`
+	TerminalsCreated   int      `json:"terminalsCreated"`
+	Elicitations       []string `json:"elicitations"`
+	ElicitationsDone   []string `json:"elicitationsDone"`
+	AuthRequired       bool     `json:"authRequired"`
+	Authenticated      bool     `json:"authenticated"`
 }
 
 func (o *interopObservations) snapshot() observedFields {
@@ -483,26 +502,14 @@ func (o *interopObservations) snapshot() observedFields {
 // The stop reason is not compared here: the replay asserts it directly, and the
 // recorder wrote it after the turn while this side's copy is filled in by the
 // scenario rather than by a handler.
-func sameObservations(got observedFields, want struct {
-	Updates            []string `json:"updates"`
-	PermissionRequests int      `json:"permissionRequests"`
-	StopReason         string   `json:"stopReason"`
-	FilesRead          []string `json:"filesRead"`
-	FilesWritten       []string `json:"filesWritten"`
-	TerminalsCreated   int      `json:"terminalsCreated"`
-	Elicitations       []string `json:"elicitations"`
-	ElicitationsDone   []string `json:"elicitationsDone"`
-	AuthRequired       bool     `json:"authRequired"`
-	Authenticated      bool     `json:"authenticated"`
-},
-) bool {
-	return strings.Join(got.Updates, "|") == strings.Join(want.Updates, "|") &&
+func sameObservations(got, want observedFields) bool {
+	return slices.Equal(got.Updates, want.Updates) &&
 		got.PermissionRequests == want.PermissionRequests &&
-		strings.Join(got.FilesRead, "|") == strings.Join(want.FilesRead, "|") &&
-		strings.Join(got.FilesWritten, "|") == strings.Join(want.FilesWritten, "|") &&
+		slices.Equal(got.FilesRead, want.FilesRead) &&
+		slices.Equal(got.FilesWritten, want.FilesWritten) &&
 		got.TerminalsCreated == want.TerminalsCreated &&
-		strings.Join(got.Elicitations, "|") == strings.Join(want.Elicitations, "|") &&
-		strings.Join(got.ElicitationsDone, "|") == strings.Join(want.ElicitationsDone, "|") &&
+		slices.Equal(got.Elicitations, want.Elicitations) &&
+		slices.Equal(got.ElicitationsDone, want.ElicitationsDone) &&
 		got.AuthRequired == want.AuthRequired &&
 		got.Authenticated == want.Authenticated
 }
@@ -618,9 +625,9 @@ func describeInteropUpdate(update acp.SessionUpdate) string {
 	}
 }
 
-// describeInteropScope names which scope an elicitation arrived under without
-// naming the identifier that tells them apart: a request scope carries a JSON-RPC
-// id, and this API does not hand those out.
+// describeInteropScope names which scope an elicitation arrived under, without
+// the request identifier a request scope carries: this client mints its own
+// identifiers, so the recorded one would not match.
 func describeInteropScope(scope acp.ElicitationFormModeValue) string {
 	switch scope := scope.(type) {
 	case *acp.ElicitationFormModeSession:

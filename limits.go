@@ -5,80 +5,52 @@ import (
 	"fmt"
 )
 
-// A message's size and the time this side will wait were already bounded; its
-// count was not. These are the connection-owned populations that can grow
-// without an application deliberately retaining each member.
-//
-// They are not memory proofs — a count times maxMessageBytes is still a large
-// number. What they remove is the two realistic ways a well-formed peer exhausts
-// this process: a backlog that never drains and a population that never shrinks.
-//
-// The peer drives the delivery, inbound request, and session populations, so
-// breaching those ends the connection rather than dropping protocol state.
-// Outbound calls and URL elicitation reservations can be refused before a new
-// remote obligation exists, so their bounds leave the connection usable.
+// Default bounds on the connection-owned populations a peer can grow without an
+// application deliberately retaining each member. They bound counts, not memory:
+// one legal message can still be large.
 const (
-	defaultQueuedDeliveries = 1024
-
-	// Each inbound call holds a goroutine, a context and the right to answer, so
-	// this is the bound on work a peer can start and never finish.
-	defaultInflightRequests = 1024
-
-	// Observed responses keep their resource obligations after a caller leaves.
-	defaultPendingCalls = 1024
-
-	// Successful session/close and session/delete reclaim the named handle on both
-	// sides. A peer that names new sessions and closes neither can otherwise grow
-	// this population until the connection ends.
-	defaultSessionHandles = 1024
-
-	// A URL elicitation stays outstanding after its create response accepts it and
-	// until a completion clears it. Reservations and completion writes count too,
-	// so concurrent work cannot step around the bound between stable states.
+	defaultQueuedDeliveries        = 1024
+	defaultInflightRequests        = 1024
+	defaultPendingCalls            = 1024
 	defaultOutstandingElicitations = 1024
 )
 
-// Limits bounds the protocol state one connection will hold. The zero value takes
-// every default, as does any field left zero.
+// Limits bounds the protocol state one connection holds. A zero field takes its
+// default of 1024; a negative one is refused at construction.
 //
-// QueuedDeliveries is usually the one worth raising: a turn's session/update
-// stream is produced by an agent and consumed by a handler that may render it.
-// Since that breach ends the connection, a bound too low for the application is a
-// self-inflicted disconnection; the package cannot know how fast its handler runs.
+// Breaching QueuedDeliveries or InflightRequests ends the connection, because
+// refusing to read would deadlock a notification handler waiting on a response
+// behind it. QueuedDeliveries is usually the one worth raising: a turn's
+// session/update stream is consumed by a handler that may render it, and only the
+// application knows how slow that handler may be. Breaching PendingCalls refuses
+// the new call with [ErrLimitExceeded] and leaves the connection usable.
+// OutstandingElicitations bounds URL interactions awaiting completion; at the
+// bound the oldest accepted interaction is forgotten, because the protocol makes
+// completing one optional.
 type Limits struct {
-	QueuedDeliveries int
-	InflightRequests int
-	// PendingCalls includes outbound requests retained to observe late replies.
-	// Reaching it refuses the next call before writing, without ending the link.
-	PendingCalls   int
-	SessionHandles int
-	// OutstandingElicitations bounds URL interactions in provisional, accepted,
-	// and completing states. Reaching it refuses the new elicitation only.
+	QueuedDeliveries        int
+	InflightRequests        int
+	PendingCalls            int
 	OutstandingElicitations int
 }
 
 func (l Limits) resolve() Limits {
-	if l.QueuedDeliveries == 0 {
-		l.QueuedDeliveries = defaultQueuedDeliveries
-	}
-	if l.InflightRequests == 0 {
-		l.InflightRequests = defaultInflightRequests
-	}
-	if l.PendingCalls == 0 {
-		l.PendingCalls = defaultPendingCalls
-	}
-	if l.SessionHandles == 0 {
-		l.SessionHandles = defaultSessionHandles
-	}
-	if l.OutstandingElicitations == 0 {
-		l.OutstandingElicitations = defaultOutstandingElicitations
+	for _, bound := range []struct {
+		value    *int
+		fallback int
+	}{
+		{&l.QueuedDeliveries, defaultQueuedDeliveries},
+		{&l.InflightRequests, defaultInflightRequests},
+		{&l.PendingCalls, defaultPendingCalls},
+		{&l.OutstandingElicitations, defaultOutstandingElicitations},
+	} {
+		if *bound.value == 0 {
+			*bound.value = bound.fallback
+		}
 	}
 	return l
 }
 
-// A negative bound is unreachable arithmetic dressed as a limit: every push would
-// refuse and the first inbound message would end the connection, blaming a peer
-// for a configuration error. Refused where it is stated instead.
 func (l Limits) check() error {
 	for _, bound := range []struct {
 		name  string
@@ -87,7 +59,6 @@ func (l Limits) check() error {
 		{"QueuedDeliveries", l.QueuedDeliveries},
 		{"InflightRequests", l.InflightRequests},
 		{"PendingCalls", l.PendingCalls},
-		{"SessionHandles", l.SessionHandles},
 		{"OutstandingElicitations", l.OutstandingElicitations},
 	} {
 		if bound.value < 0 {
@@ -97,13 +68,16 @@ func (l Limits) check() error {
 	return nil
 }
 
-// ErrTooManyPendingCalls lets callers apply backpressure without abandoning a
-// request that may have committed or closing a connection with other live work.
-var ErrTooManyPendingCalls = errors.New("acp: outbound pending call limit exceeded")
+// ErrLimitExceeded reports that a [Limits] bound was reached. The wrapped detail
+// names which one.
+var ErrLimitExceeded = errors.New("acp: limit exceeded")
 
 var (
-	errTooManyQueued       = errors.New("acp: inbound delivery queue limit exceeded")
-	errTooManyInflight     = errors.New("acp: inbound request limit exceeded")
-	errTooManySessions     = errors.New("acp: session handle limit exceeded")
-	errTooManyElicitations = errors.New("acp: URL elicitation limit exceeded")
+	errTooManyQueued       = fmt.Errorf("%w: queued deliveries", ErrLimitExceeded)
+	errTooManyInflight     = fmt.Errorf("%w: inflight requests", ErrLimitExceeded)
+	errTooManyPendingCalls = fmt.Errorf("%w: pending calls", ErrLimitExceeded)
 )
+
+func limitError(sentinel error, limit int) error {
+	return fmt.Errorf("%w (limit %d)", sentinel, limit)
+}

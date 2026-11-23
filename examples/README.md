@@ -36,7 +36,8 @@ go run ./examples/client -prompt "hello" -- some-other-agent --flag
 ## Cancel a turn
 
 Interrupt the client while a turn is running. It sends `session/cancel` rather
-than exiting.
+than exiting. The terminal delivers the interrupt to the agent too, because both
+share its process group, so the agent ignores it and stops when its stdin closes.
 
 Cancelling the prompt context only stops the client waiting. Cancelling the turn
 requires the agent to stop and answer. The client resolves pending permission

@@ -12,7 +12,7 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$root"
 
 command -v deadcode >/dev/null || {
-	echo "deadcode is required; install the pinned version from CONTRIBUTING.md" >&2
+	echo "deadcode is required; install the version pinned in .github/workflows/ci.yml" >&2
 	exit 2
 }
 

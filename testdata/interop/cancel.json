@@ -2,9 +2,9 @@
   "$comment": "Recorded by internal/cmd/interop against an agent built on the reference implementation. Written by scripts/interop.sh; replayed by interop_test.go. Do not edit.",
   "scenario": "a cancelled turn whose final updates still arrive",
   "provenance": {
-    "sdkCommit": "0f8c75079ae07e6edd2feb626f5598a92632eead",
-    "sdkVersion": "2.4.0",
-    "schemaRelease": "schema-v1.29.1"
+    "sdkCommit": "ab16fb07b4e7e5dd8e55633b42930857223c4cd0",
+    "sdkVersion": "2.9.1",
+    "schemaRelease": "schema-v1.34.1"
   },
   "observed": {
     "updates": [

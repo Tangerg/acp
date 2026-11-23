@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"testing"
+
+	"github.com/Tangerg/acp/jsonrpc"
 )
 
 func TestCatchAllCommonFieldsHaveOneOwner(t *testing.T) {
@@ -112,9 +114,8 @@ func TestIntegerFieldsAcceptIntegralRepresentations(t *testing.T) {
 			if err := json.Unmarshal([]byte(`{"requestId":`+literal+`}`), &cancellation); err != nil {
 				t.Fatal(err)
 			}
-			id, ok := cancellation.RequestID.(*requestIDNumber)
-			if !ok || *id != 1 {
-				t.Fatalf("requestId = %#v", cancellation.RequestID)
+			if cancellation.RequestID != jsonrpc.Int64ID(1) {
+				t.Fatalf("requestId = %v", cancellation.RequestID)
 			}
 		})
 	}

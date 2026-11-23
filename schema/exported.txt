@@ -1,8 +1,8 @@
 # Written by internal/cmd/schemagen. Do not edit.
 #
-# Every exported Go name generation produces, one per line, sorted. The
-# transitive $ref closure of manifest.json is 161 of the schema's
-# definitions; exported_test.go holds the package's exports against this list.
+# Every exported Go name generation produces, one per line, sorted. Generation
+# covers 193 of the schema's definitions; exported_test.go holds the package's
+# exports against this list.
 AgentAuthCapabilities
 AgentCapabilities
 AgentMessageChunk
@@ -26,7 +26,7 @@ CancelNotification
 CancelParams
 ClientCapabilities
 ClientSessionCapabilities
-CloseParams
+CloseSessionParams
 CloseSessionRequest
 CloseSessionResponse
 CompactionCapabilities
@@ -75,6 +75,7 @@ ElicitationFormModeValue
 ElicitationID
 ElicitationPropertySchema
 ElicitationPropertySchemaOther
+ElicitationRequestScope
 ElicitationSchema
 ElicitationSchemaType
 ElicitationSchemaTypeObject
@@ -98,8 +99,18 @@ ErrorCodeMethodNotFound
 ErrorCodeParseError
 ErrorCodeRequestCancelled
 ErrorCodeResourceNotFound
+ErrorStopReason
 FileSystemCapabilities
 HTTPHeader
+IdleStateUpdate
+IdleStateUpdateCancelled
+IdleStateUpdateEndTurn
+IdleStateUpdateMaxTokens
+IdleStateUpdateMaxTurnRequests
+IdleStateUpdateNone
+IdleStateUpdateOther
+IdleStateUpdateRefusal
+IdleStateUpdateValue
 ImageContent
 Implementation
 InitializeRequest
@@ -141,6 +152,7 @@ PermissionOptionKindAllowOnce
 PermissionOptionKindRejectAlways
 PermissionOptionKindRejectOnce
 Plan
+PlanCapabilities
 PlanEntry
 PlanEntryPriority
 PlanEntryPriorityHigh
@@ -150,6 +162,12 @@ PlanEntryStatus
 PlanEntryStatusCompleted
 PlanEntryStatusInProgress
 PlanEntryStatusPending
+PlanID
+PlanItems
+PlanMarkdown
+PlanRemoved
+PlanUpdate
+PlanUpdateContent
 PromptCapabilities
 PromptParams
 PromptRequest
@@ -166,14 +184,17 @@ RequestPermissionOutcomeCancelled
 RequestPermissionParams
 RequestPermissionRequest
 RequestPermissionResponse
+RequiresActionStateUpdate
 ResourceLink
 ResumeSessionRequest
 ResumeSessionResponse
 Role
 RoleAssistant
 RoleUser
+RunningStateUpdate
 SelectedPermissionOutcome
 SessionAdditionalDirectoriesCapabilities
+SessionCancelCapabilities
 SessionCapabilities
 SessionCloseCapabilities
 SessionConfigBoolean
@@ -199,22 +220,30 @@ SessionID
 SessionInfo
 SessionInfoUpdate
 SessionListCapabilities
+SessionMessage
+SessionMessageChunk
 SessionMode
 SessionModeID
 SessionModeState
 SessionNotification
+SessionReference
 SessionResumeCapabilities
+SessionSystemPromptCapabilities
+SessionSystemPromptModeCapabilities
+SessionSystemPromptOverrideCapabilities
 SessionUpdate
 SessionUpdateParams
-SetConfigOptionParams
-SetModeParams
+SetSessionConfigOptionParams
 SetSessionConfigOptionRequest
 SetSessionConfigOptionRequestBoolean
 SetSessionConfigOptionRequestValue
 SetSessionConfigOptionRequestValueID
 SetSessionConfigOptionResponse
+SetSessionModeParams
 SetSessionModeRequest
 SetSessionModeResponse
+StateUpdate
+StateUpdateOther
 StopReason
 StopReasonCancelled
 StopReasonEndTurn
@@ -228,6 +257,13 @@ StringFormatEmail
 StringFormatURI
 StringMultiSelectItems
 StringPropertySchema
+SubagentCapabilities
+SubagentSessionCapabilities
+SubagentUpdate
+SystemPrompt
+SystemPromptMode
+SystemPromptModeAppend
+SystemPromptModeOverride
 Terminal
 TerminalExitStatus
 TerminalID
@@ -258,6 +294,7 @@ ToolKindRead
 ToolKindSearch
 ToolKindSwitchMode
 ToolKindThink
+UnknownStateUpdate
 UnstructuredCommandInput
 UsageUpdate
 UserMessageChunk

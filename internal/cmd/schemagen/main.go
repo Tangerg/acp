@@ -1,8 +1,7 @@
 // Command schemagen generates the protocol types from the vendored schema.
 //
-// The generated output is committed, so that go get needs no generator and
-// pkg.go.dev has something to document, and CI runs the generator and fails if
-// the tree changes — the same promise as go mod tidy -diff.
+// The generated output is committed, so that go get needs no generator, and CI
+// runs the generator and fails if the tree changes.
 //
 // Usage:
 //
@@ -16,7 +15,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"maps"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -33,111 +32,110 @@ func main() {
 	}
 }
 
+// The repository files the generator reads and writes, relative to the root.
+const (
+	provenancePath = "schema/provenance.json"
+	schemaPath     = "schema/schema.json"
+	manifestPath   = "schema/manifest.json"
+	metaPath       = "schema/meta.json"
+)
+
 func run(root string, check bool) error {
-	schemaTag, sourceErr := readSchemaTag(root)
-	if sourceErr != nil {
-		return sourceErr
-	}
-	schemaPath := filepath.Join(root, "schema", "schema.json")
-	rawSchema, readErr := readRepositoryFile(schemaPath)
-	if readErr != nil {
-		return readErr
-	}
-	doc, docErr := loadDocument(rawSchema)
-	if docErr != nil {
-		return fmt.Errorf("%s: %w", schemaPath, docErr)
-	}
-	if err := checkKnownKeywords(rawSchema); err != nil {
-		return fmt.Errorf("%s: %w", schemaPath, err)
-	}
-
-	manifestPath := filepath.Join(root, "schema", "manifest.json")
-	rawManifest, readErr := readRepositoryFile(manifestPath)
-	if readErr != nil {
-		return readErr
-	}
-	var manifest Manifest
-	if err := json.Unmarshal(rawManifest, &manifest); err != nil {
-		return fmt.Errorf("%s: %w", manifestPath, err)
-	}
-
-	metaPath := filepath.Join(root, "schema", "meta.json")
-	rawMeta, readErr := readRepositoryFile(metaPath)
-	if readErr != nil {
-		return readErr
-	}
-	table, tableErr := loadMethodTable(rawMeta)
-	if tableErr != nil {
-		return fmt.Errorf("%s: %w", metaPath, tableErr)
-	}
-	methods, methodsErr := planMethods(doc, table)
-	if methodsErr != nil {
-		return fmt.Errorf("%s: %w", metaPath, methodsErr)
-	}
-	methodSource, methodEmitErr := emitMethods(methods, table)
-	if methodEmitErr != nil {
-		return methodEmitErr
-	}
-
-	plan, planErr := newPlanner(doc).Plan(&manifest, schemaTag)
-	if planErr != nil {
-		return planErr
-	}
-	source, emitErr := emit(plan)
-	if emitErr != nil {
-		return emitErr
-	}
-
-	roundTripSource, roundTripErr := emitRoundTrip(plan)
-	if roundTripErr != nil {
-		return roundTripErr
-	}
-
-	outputs := map[string][]byte{
-		filepath.Join(root, "schema.gen.go"):          source,
-		filepath.Join(root, "methods.gen.go"):         methodSource,
-		filepath.Join(root, "roundtrip.gen_test.go"):  roundTripSource,
-		filepath.Join(root, "schema", "exported.txt"): exportedList(plan),
+	repository := os.DirFS(root)
+	outputs, err := generate(repository)
+	if err != nil {
+		return err
 	}
 	if check {
-		return verify(outputs)
+		return verify(repository, outputs)
 	}
-	for path, want := range outputs {
-		if err := os.WriteFile(path, want, 0o600); err != nil {
-			return err
-		}
-		//nolint:gosec // committed generated source must be readable in module archives.
-		if err := os.Chmod(path, 0o644); err != nil {
-			return err
-		}
-	}
-	return nil
+	return write(root, outputs)
 }
 
-func readSchemaTag(root string) (string, error) {
-	path := filepath.Join(root, "schema", "provenance.json")
-	data, readErr := readRepositoryFile(path)
-	if readErr != nil {
-		return "", readErr
+// generate produces every output, keyed by its path relative to the root.
+func generate(repository fs.FS) (map[string][]byte, error) {
+	schemaTag, err := readSchemaTag(repository)
+	if err != nil {
+		return nil, err
+	}
+	rawSchema, err := fs.ReadFile(repository, schemaPath)
+	if err != nil {
+		return nil, err
+	}
+	doc, err := loadDocument(rawSchema)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", schemaPath, err)
+	}
+
+	rawManifest, err := fs.ReadFile(repository, manifestPath)
+	if err != nil {
+		return nil, err
+	}
+	var manifest Manifest
+	if decodeErr := json.Unmarshal(rawManifest, &manifest); decodeErr != nil {
+		return nil, fmt.Errorf("%s: %w", manifestPath, decodeErr)
+	}
+
+	rawMeta, err := fs.ReadFile(repository, metaPath)
+	if err != nil {
+		return nil, err
+	}
+	table, err := loadMethodTable(rawMeta)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", metaPath, err)
+	}
+	methods, err := planMethods(doc, table)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", metaPath, err)
+	}
+	methodSource, err := emitMethods(methods, table)
+	if err != nil {
+		return nil, err
+	}
+
+	plan, err := newPlanner(doc).Plan(&manifest, schemaTag)
+	if err != nil {
+		return nil, err
+	}
+	source, err := emit(plan)
+	if err != nil {
+		return nil, err
+	}
+	roundTripSource, err := emitRoundTrip(plan)
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string][]byte{
+		"schema.gen.go":         source,
+		"methods.gen.go":        methodSource,
+		"roundtrip.gen_test.go": roundTripSource,
+		"schema/exported.txt":   exportedList(plan),
+	}, nil
+}
+
+func readSchemaTag(repository fs.FS) (string, error) {
+	data, err := fs.ReadFile(repository, provenancePath)
+	if err != nil {
+		return "", err
 	}
 	var source struct {
 		Schema struct {
 			Tag string `json:"tag"`
 		} `json:"schema"`
 	}
-	if err := json.Unmarshal(data, &source); err != nil {
-		return "", fmt.Errorf("%s: %w", path, err)
+	if decodeErr := json.Unmarshal(data, &source); decodeErr != nil {
+		return "", fmt.Errorf("%s: %w", provenancePath, decodeErr)
 	}
 	if source.Schema.Tag == "" {
-		return "", errors.New("schema/provenance.json: schema.tag is required")
+		return "", fmt.Errorf("%s: schema.tag is required", provenancePath)
 	}
 	return source.Schema.Tag, nil
 }
 
-func verify(outputs map[string][]byte) error {
-	paths := slices.Sorted(maps.Keys(outputs))
-	for _, path := range paths {
-		got, err := readRepositoryFile(path)
+func verify(repository fs.FS, outputs map[string][]byte) error {
+	for _, path := range sortedKeys(outputs) {
+		got, err := fs.ReadFile(repository, path)
 		if err != nil {
 			return err
 		}
@@ -148,53 +146,59 @@ func verify(outputs map[string][]byte) error {
 	return nil
 }
 
-// readRepositoryFile reads a path this command built from its own flags. The
-// paths are the repository's own files, not a caller's input, which is why the
-// file-inclusion warning does not apply.
-func readRepositoryFile(path string) ([]byte, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // the path is derived from -root, not from untrusted input.
-	if err != nil {
-		return nil, err
+// write stages every output before replacing any, so a failure while writing
+// leaves the committed files as they were rather than half regenerated.
+func write(root string, outputs map[string][]byte) error {
+	staged := make(map[string]string, len(outputs))
+	var stageErr error
+	for _, path := range sortedKeys(outputs) {
+		target := filepath.Join(root, filepath.FromSlash(path))
+		temporary := target + ".tmp"
+		// Committed generated source must be readable in module archives.
+		//nolint:gosec // G306: these are world-readable source files, not secrets.
+		if err := os.WriteFile(temporary, outputs[path], 0o644); err != nil {
+			stageErr = err
+			break
+		}
+		staged[target] = temporary
 	}
-	return data, nil
+	if stageErr != nil {
+		for _, temporary := range staged {
+			stageErr = errors.Join(stageErr, os.Remove(temporary))
+		}
+		return stageErr
+	}
+	for _, target := range sortedKeys(staged) {
+		if err := os.Rename(staged[target], target); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// exportedList records the exported surface generation is responsible for.
-//
-// It is the other half of the manifest's promise. The manifest decides scope and
-// this records what that scope became, so that widening the API is a reviewable
-// diff rather than a side effect — and so that a test can hold the package's
-// actual exports against it and catch a name that reached a generated surface by
-// hand.
-//
-// It is a plain list rather than a document because a test reads it, and because
-// the interesting thing about it is the diff.
+// exportedList records the exported surface generation is responsible for, so
+// that widening the API is a reviewable diff and a test can hold the package's
+// actual exports against it.
 func exportedList(plan *Plan) []byte {
 	var out bytes.Buffer
 	out.WriteString("# Written by internal/cmd/schemagen. Do not edit.\n")
 	out.WriteString("#\n")
-	out.WriteString("# Every exported Go name generation produces, one per line, sorted. The\n")
-	out.WriteString("# transitive $ref closure of manifest.json is ")
-	fmt.Fprintf(&out, "%d of the schema's\n", len(plan.Closure))
-	out.WriteString("# definitions; exported_test.go holds the package's exports against this list.\n")
-	names := plan.goNames()
-	slices.Sort(names)
-	for _, name := range names {
+	out.WriteString("# Every exported Go name generation produces, one per line, sorted. Generation\n")
+	fmt.Fprintf(&out, "# covers %d of the schema's definitions; exported_test.go holds the package's\n",
+		len(plan.Closure))
+	out.WriteString("# exports against this list.\n")
+	for _, name := range plan.exportedNames() {
 		out.WriteString(name)
 		out.WriteString("\n")
 	}
 	return out.Bytes()
 }
 
-// goNames returns every exported Go name the plan produces.
-//
-// The unexported ones are left out on purpose: this file is what the package's
-// published surface is checked against, and JSON-RPC plumbing is generated
-// precisely so that it is not part of that surface.
-func (p *Plan) goNames() []string {
+// exportedNames returns every exported Go name the plan produces, sorted.
+func (p *Plan) exportedNames() []string {
 	var names []string
 	for _, def := range p.Defs {
-		if def.GoName != def.Ident {
+		if !def.exported() {
 			continue
 		}
 		names = append(names, def.GoName)
@@ -202,5 +206,6 @@ func (p *Plan) goNames() []string {
 			names = append(names, value.GoName)
 		}
 	}
+	slices.Sort(names)
 	return names
 }

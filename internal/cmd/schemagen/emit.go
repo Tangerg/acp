@@ -3,54 +3,79 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"go/ast"
 	"go/format"
+	"go/parser"
+	"go/token"
+	"maps"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
 
-// emitter writes the generated package.
-//
-// It answers no schema questions: every decision is already in the [Plan], and
-// the whole of this file is the mapping from a resolved decision to Go source.
-// That is why the planner is allowed to be strict — a construct it refuses never
-// reaches here, so there is no shape this file has to guess at.
+// emitter writes the generated package. It answers no schema questions: every
+// decision is already in the [Plan], so this file is the mapping from a resolved
+// decision to Go source.
 type emitter struct {
-	buf  bytes.Buffer
-	plan *Plan
+	buf bytes.Buffer
+}
+
+// generatedImports maps every package name generated code may select from to its
+// import path. The import list is derived from the selectors the parsed body
+// actually uses, so prose copied into comments cannot add an import.
+var generatedImports = map[string]string{
+	"errors":  "errors",
+	"fmt":     "fmt",
+	"json":    "encoding/json",
+	"jsonrpc": "github.com/Tangerg/acp/jsonrpc",
+	"slices":  "slices",
+	"wire":    "github.com/Tangerg/acp/internal/wire",
 }
 
 func emit(plan *Plan) ([]byte, error) {
-	e := &emitter{plan: plan}
+	e := new(emitter)
 	for _, def := range plan.Defs {
 		e.definition(def)
 	}
-	body := e.buf.Bytes()
-
-	var out bytes.Buffer
-	out.WriteString(comment("", []string{
+	header := comment("", []string{
 		generatedHeader,
 		"",
 		"Source: schema/schema.json, pinned to upstream release " + plan.SchemaTag + ".",
-		fmt.Sprintf(
-			"Scope: the transitive $ref closure of schema/manifest.json, which is %d of the schema's definitions.",
-			len(plan.Closure)),
+		fmt.Sprintf("Scope: %d of the schema's definitions, reached from schema/manifest.json.", len(plan.Closure)),
 		"",
 		"The doc comments are the published specification's own prose. A change to",
 		"that prose therefore arrives through a reviewed schema update rather than",
 		"through hand edits to this file.",
-	}))
-	out.WriteString("\npackage acp\n\n")
-	out.WriteString("import (\n")
-	for _, path := range []string{"encoding/json", "errors", "fmt", "slices"} {
-		if importUsed(body, path) {
-			out.WriteString("\t")
-			out.WriteString(strconv.Quote(path))
-			out.WriteString("\n")
-		}
-	}
-	out.WriteString("\n\t\"github.com/Tangerg/acp/internal/wire\"\n)\n\n")
-	out.Write(body)
+	})
+	return goFile(header, e.buf.Bytes())
+}
 
+// goFile assembles a formatted package acp file from a body, importing exactly
+// the packages the body selects from.
+func goFile(header string, body []byte) ([]byte, error) {
+	imports, err := usedImports(body)
+	if err != nil {
+		return body, err
+	}
+	var out bytes.Buffer
+	out.WriteString(header)
+	out.WriteString("\npackage acp\n\n")
+	if len(imports) > 0 {
+		// The standard library first, then the module's own packages, which is
+		// the grouping goimports enforces.
+		out.WriteString("import (\n")
+		separated := false
+		for _, path := range imports {
+			if !separated && strings.Contains(path, ".") {
+				out.WriteString("\n")
+				separated = true
+			}
+			fmt.Fprintf(&out, "\t%s\n", strconv.Quote(path))
+		}
+		out.WriteString(")\n\n")
+	}
+	out.Write(body)
 	formatted, err := format.Source(out.Bytes())
 	if err != nil {
 		return out.Bytes(), fmt.Errorf("the generated source does not parse: %w", err)
@@ -58,13 +83,36 @@ func emit(plan *Plan) ([]byte, error) {
 	return formatted, nil
 }
 
-// importUsed decides the import list from the emitted body rather than by
-// tracking every emission site. The generated file is one package with a fixed,
-// tiny import set, and a bookkeeping flag per import is a thing that can be
-// wrong in a way this cannot.
-func importUsed(body []byte, path string) bool {
-	name := path[strings.LastIndexByte(path, '/')+1:]
-	return bytes.Contains(body, []byte(name+"."))
+func usedImports(body []byte) ([]string, error) {
+	file, err := parser.ParseFile(token.NewFileSet(), "", append([]byte("package acp\n"), body...),
+		parser.SkipObjectResolution)
+	if err != nil {
+		return nil, fmt.Errorf("the generated source does not parse: %w", err)
+	}
+	used := make(map[string]bool)
+	ast.Inspect(file, func(node ast.Node) bool {
+		if selector, isSelector := node.(*ast.SelectorExpr); isSelector {
+			if pkg, isIdent := selector.X.(*ast.Ident); isIdent {
+				if path, known := generatedImports[pkg.Name]; known {
+					used[path] = true
+				}
+			}
+		}
+		return true
+	})
+	paths := slices.Collect(maps.Keys(used))
+	slices.SortFunc(paths, func(left, right string) int {
+		// Standard-library paths have no dot in their first element.
+		leftStd, rightStd := !strings.Contains(left, "."), !strings.Contains(right, ".")
+		if leftStd != rightStd {
+			if leftStd {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(left, right)
+	})
+	return paths, nil
 }
 
 func (e *emitter) printf(format string, args ...any) {
@@ -89,70 +137,24 @@ func (e *emitter) definition(def *Def) {
 		e.objectUnion(def)
 	case kindValueUnion:
 		e.valueUnion(def)
+	default:
+		panic(fmt.Sprintf("schemagen: no emitter for definition kind %d", def.Kind))
 	}
 }
 
-// -- string unions -----------------------------------------------------------
-
-func (e *emitter) stringUnion(def *Def) {
-	doc := def.Doc
-	if def.Closed {
-		doc = append(doc, "",
-			"The schema lists these values and no others, so a value outside them is a",
-			"decode error rather than a value to keep: a caller's switch over this type",
-			"was promised to be exhaustive.")
-	} else {
-		doc = append(doc, "",
-			"The schema's last arm is a bare string, so this union is open: a value",
-			"outside the constants below is valid and is kept as received.")
+// fieldType renders a property's Go type.
+func fieldType(field *Field) string {
+	if field.Opt {
+		return "Opt[" + field.Value.Go + "]"
 	}
-	e.printf("%stype %s string\n\n", comment("", doc), def.GoName)
-
-	if len(def.Values) > 0 {
-		e.printf("const (\n")
-		for i, value := range def.Values {
-			if i > 0 {
-				e.printf("\n")
-			}
-			e.printf("%s\t%s %s = %q\n", comment("\t", value.Doc), value.GoName, def.GoName, value.Value)
-		}
-		e.printf(")\n\n")
-	}
-	if !def.Closed {
-		e.namedValueUnmarshal(def, &ValueType{Kind: vScalar, Go: goString})
-		return
-	}
-
-	e.printf("func (x %s) MarshalJSON() ([]byte, error) {\n", def.GoName)
-	e.printf("\tif err := x.validate(); err != nil {\n\t\treturn nil, err\n\t}\n")
-	e.printf("\treturn json.Marshal(string(x))\n}\n\n")
-
-	e.printf("func (x *%s) UnmarshalJSON(data []byte) error {\n", def.GoName)
-	e.printf("\tvalue, err := wire.UnmarshalValue[string](data)\n")
-	e.printf("\tif err != nil {\n\t\treturn err\n\t}\n")
-	e.printf("\tparsed := %s(value)\n", def.GoName)
-	e.printf("\tif invalid := parsed.validate(); invalid != nil {\n\t\treturn invalid\n\t}\n")
-	e.printf("\t*x = parsed\n\treturn nil\n}\n\n")
-
-	e.printf("func (x %s) validate() error {\n", def.GoName)
-	e.printf("\tswitch x {\n\tcase ")
-	names := make([]string, len(def.Values))
-	for i, value := range def.Values {
-		names[i] = value.GoName
-	}
-	e.printf("%s:\n\t\treturn nil\n", strings.Join(names, ", "))
-	e.printf("\tdefault:\n\t\treturn fmt.Errorf(\"acp: %%q is not a %s the schema defines\", string(x))\n", def.GoName)
-	e.printf("\t}\n}\n\n")
+	return field.Value.Go
 }
 
 // -- unconstrained values ----------------------------------------------------
 
-// A definition the schema constrains not at all is a JSON value of any shape, so
-// it is the raw bytes under a name of its own.
-//
-// The codec is explicit because a named type does not inherit json.RawMessage's:
-// without it the underlying byte slice would encode as base64, which is the wrong
-// answer arrived at silently.
+// A definition the schema constrains not at all is the raw bytes under a name of
+// its own. The codec is explicit because a named type does not inherit
+// json.RawMessage's, and the bytes would otherwise encode as base64.
 func (e *emitter) rawValue(def *Def) {
 	e.printf("%stype %s json.RawMessage\n\n", comment("", def.Doc), def.GoName)
 
@@ -164,129 +166,10 @@ func (e *emitter) rawValue(def *Def) {
 	e.printf("\t*x = append((*x)[:0], data...)\n\treturn nil\n}\n\n")
 }
 
-// -- value unions ------------------------------------------------------------
-
-// A value union's arms are different JSON shapes, so there is no discriminant to
-// read. They are tried in schema order and the first that decodes wins, which is
-// what anyOf asks for — except that the null arm goes first, because every other
-// arm's decoder refuses null.
-func (e *emitter) valueUnion(def *Def) {
-	arms := make([]string, len(def.Arms))
-	for i, arm := range def.Arms {
-		arms[i] = arm.GoType
-	}
-	doc := unionDoc(def.GoName, arms, def.Description)
-	doc = append(doc, "",
-		"The arms are different JSON shapes rather than different values of one, so",
-		"there is no discriminant: a value is offered to each arm in schema order and",
-		"belongs to the first that accepts it.")
-	e.printf("%stype %s interface {\n\tis%s()\n}\n\n", comment("", doc), def.GoName, def.Ident)
-	for _, arm := range def.Arms {
-		e.printf("func (*%s) is%s() {}\n", arm.GoType, def.Ident)
-	}
-	e.printf("\n")
-
-	e.printf("// marshal%s encodes whichever arm the value is.\n", def.Ident)
-	e.printf("func marshal%s(value %s) ([]byte, error) {\n", def.Ident, def.GoName)
-	e.printf("\tswitch value := value.(type) {\n")
-	for _, arm := range def.Arms {
-		e.printf("\tcase *%s:\n", arm.GoType)
-		e.rejectNilUnionArm(def, arm)
-		e.printf("\t\treturn json.Marshal(value)\n")
-	}
-	e.printf("\tcase nil:\n\t\treturn nil, errors.New(\"acp: %s is required and none was set\")\n", def.GoName)
-	e.printf("\tdefault:\n\t\treturn nil, fmt.Errorf(\"acp: %%T is not an arm of %s\", value)\n", def.GoName)
-	e.printf("\t}\n}\n\n")
-
-	e.printf("// unmarshal%s selects the arm the value belongs to.\n", def.Ident)
-	e.printf("func unmarshal%s(data json.RawMessage) (%s, error) {\n", def.Ident, def.GoName)
-	for _, arm := range def.Arms {
-		if !arm.IsNull {
-			continue
-		}
-		e.printf("\tif wire.IsNull(data) {\n\t\treturn &%s{}, nil\n\t}\n\n", arm.GoType)
-	}
-	for _, arm := range def.Arms {
-		if arm.IsNull {
-			continue
-		}
-		e.printf("\tif value, err := wire.UnmarshalValue[%s](data); err == nil {\n", arm.GoType)
-		e.printf("\t\treturn &value, nil\n\t}\n")
-	}
-	e.printf("\n\treturn nil, errors.New(\"acp: no %s arm matches this value\")\n}\n\n", def.GoName)
-}
-
-// The null arm carries nothing, so it is a type only so that it can implement the
-// union's interface. It needs its own codec: the generic one refuses null, which
-// is the whole of what this arm accepts.
-func (e *emitter) nullArm(def *Def) {
-	e.printf("%stype %s struct{}\n\n", comment("", def.Doc), def.GoName)
-	e.printf("func (%s) MarshalJSON() ([]byte, error) {\n\treturn []byte(\"null\"), nil\n}\n\n", def.GoName)
-	e.printf("func (x *%s) UnmarshalJSON(data []byte) error {\n", def.GoName)
-	e.printf("\tif !wire.IsNull(data) {\n")
-	e.printf("\t\treturn errors.New(\"acp: this %s arm accepts only null\")\n\t}\n", def.GoName)
-	e.printf("\t*x = %s{}\n\treturn nil\n}\n\n", def.GoName)
-}
-
-// -- numeric unions ----------------------------------------------------------
-
-func (e *emitter) numberUnion(def *Def) {
-	doc := def.Doc
-	if def.Closed {
-		doc = append(doc, "",
-			"The schema lists these values and no others, so a value outside them is a",
-			"decode error rather than a value to keep.")
-	} else {
-		doc = append(doc, "",
-			"The schema's last arm carries no constant, so this union is open: a value",
-			"outside the constants below is valid and is kept as received. The Go type is",
-			"the arms' own format, because a wider one would admit values that cannot be",
-			"encoded.")
-	}
-	e.printf("%stype %s %s\n\n", comment("", doc), def.GoName, def.Base.Go)
-
-	if len(def.Values) > 0 {
-		e.printf("const (\n")
-		for i, value := range def.Values {
-			if i > 0 {
-				e.printf("\n")
-			}
-			e.printf("%s\t%s %s = %s\n", comment("\t", value.Doc), value.GoName, def.GoName, value.Value)
-		}
-		e.printf(")\n\n")
-	}
-
-	if !def.Closed {
-		e.namedValueUnmarshal(def, def.Base)
-		return
-	}
-	e.printf("func (x %s) MarshalJSON() ([]byte, error) {\n", def.GoName)
-	e.printf("\tif err := x.validate(); err != nil {\n\t\treturn nil, err\n\t}\n")
-	e.printf("\treturn json.Marshal(%s(x))\n}\n\n", def.Base.Go)
-
-	e.printf("func (x *%s) UnmarshalJSON(data []byte) error {\n", def.GoName)
-	e.printf("\tvalue, err := wire.UnmarshalValue[%s](data)\n", def.Base.Go)
-	e.printf("\tif err != nil {\n\t\treturn err\n\t}\n")
-	e.printf("\tparsed := %s(value)\n", def.GoName)
-	e.printf("\tif invalid := parsed.validate(); invalid != nil {\n\t\treturn invalid\n\t}\n")
-	e.printf("\t*x = parsed\n\treturn nil\n}\n\n")
-
-	e.printf("func (x %s) validate() error {\n", def.GoName)
-	e.printf("\tswitch x {\n\tcase ")
-	names := make([]string, len(def.Values))
-	for i, value := range def.Values {
-		names[i] = value.GoName
-	}
-	e.printf("%s:\n\t\treturn nil\n", strings.Join(names, ", "))
-	e.printf("\tdefault:\n\t\treturn fmt.Errorf(\"acp: %%d is not a %s the schema defines\", %s(x))\n",
-		def.GoName, def.Base.Go)
-	e.printf("\t}\n}\n\n")
-}
-
 func (e *emitter) newtype(def *Def) {
 	e.printf("%stype %s %s\n\n", comment("", def.Doc), def.GoName, def.Base.Go)
 	e.namedValueUnmarshal(def, def.Base)
-	if encode := e.encodeExpr(&Field{Value: def.Base, Required: true}); encode != "" {
+	if encode := encodeExpr(&Field{Value: def.Base, Required: true}); encode != "" {
 		e.printf("func (x %s) MarshalJSON() ([]byte, error) {\n", def.GoName)
 		e.printf("\treturn %s\n}\n\n", strings.ReplaceAll(encode, "$", def.Base.Go+"(x)"))
 	}
@@ -294,187 +177,20 @@ func (e *emitter) newtype(def *Def) {
 
 func (e *emitter) namedValueUnmarshal(def *Def, base *ValueType) {
 	e.printf("func (x *%s) UnmarshalJSON(data []byte) error {\n", def.GoName)
-	e.printf("\tvalue, err := %s\n", e.decodeExpr(&Field{Value: base}, "data"))
+	e.printf("\tvalue, err := %s\n", decodeExpr(&Field{Value: base}, "data"))
 	e.printf("\tif err != nil {\n\t\treturn err\n\t}\n")
 	e.printf("\t*x = %s(value)\n\treturn nil\n}\n\n", def.GoName)
-}
-
-// -- object unions -----------------------------------------------------------
-
-func (e *emitter) objectUnion(def *Def) {
-	arms := make([]string, len(def.Arms))
-	for i, arm := range def.Arms {
-		arms[i] = arm.GoType
-	}
-	doc := unionDoc(def.GoName, arms, def.Description)
-	if def.Open {
-		doc = append(doc, "",
-			"The union is open: the schema gives it a catch-all arm whose `not` clause",
-			"reserves the known discriminant values, so a value carrying an unknown one",
-			"decodes into that arm with its properties intact.")
-	} else {
-		doc = append(doc, "",
-			"The union is closed: the schema defines these arms and no others, so a value",
-			"matching none of them is a decode error. Openness is the schema's to grant,",
-			"and it grants it elsewhere by defining a catch-all arm.")
-	}
-	e.printf("%stype %s interface {\n\tis%s()\n}\n\n", comment("", doc), def.GoName, def.Ident)
-	for _, arm := range def.Arms {
-		e.printf("func (*%s) is%s() {}\n", arm.GoType, def.Ident)
-	}
-	e.printf("\n")
-	e.unionMarshal(def)
-	e.unionUnmarshal(def)
-}
-
-func (e *emitter) unionMarshal(def *Def) {
-	e.printf("// marshal%s writes the arm together with the discriminant the union owns.\n", def.Ident)
-	e.printf("func marshal%s(value %s) ([]byte, error) {\n", def.Ident, def.GoName)
-	e.printf("\tswitch value := value.(type) {\n")
-	for _, arm := range def.Arms {
-		e.printf("\tcase *%s:\n", arm.GoType)
-		e.rejectNilUnionArm(def, arm)
-		switch {
-		case arm.Tag != "":
-			e.printf("\t\treturn wire.TagObject(%q, %q, value)\n", def.Discriminant, arm.Tag)
-		default:
-			e.printf("\t\treturn json.Marshal(value)\n")
-		}
-	}
-	e.printf("\tcase nil:\n\t\treturn nil, errors.New(\"acp: %s is required and none was set\")\n", def.GoName)
-	e.printf("\tdefault:\n\t\treturn nil, fmt.Errorf(\"acp: %%T is not an arm of %s\", value)\n", def.GoName)
-	e.printf("\t}\n}\n\n")
-}
-
-// An interface holding a nil arm is not nil in Go, but it is still no value on
-// the wire. Reject it before an arm encoder can turn it into null or dereference
-// it; doing this at generation makes the invariant true for every union rather
-// than for the handful a handwritten caller happens to inspect.
-func (e *emitter) rejectNilUnionArm(union *Def, arm *Arm) {
-	e.printf("\t\tif value == nil {\n")
-	e.printf("\t\t\treturn nil, errors.New(\"acp: %s holds a nil *%s arm\")\n", union.GoName, arm.GoType)
-	e.printf("\t\t}\n")
-}
-
-func (e *emitter) unionUnmarshal(def *Def) {
-	var tagged, untagged []*Arm
-	var catchAll *Arm
-	for _, arm := range def.Arms {
-		switch {
-		case arm.CatchAll:
-			catchAll = arm
-		case arm.Tag != "":
-			tagged = append(tagged, arm)
-		default:
-			untagged = append(untagged, arm)
-		}
-	}
-
-	e.printf("// unmarshal%s selects the arm the value belongs to.\n", def.Ident)
-	// The parameter is json.RawMessage rather than []byte so that this function
-	// can be handed to wire.UnmarshalSliceFunc, whose element decoder that is:
-	// Go's function types are identical only when their parameter types are.
-	e.printf("func unmarshal%s(data json.RawMessage) (%s, error) {\n", def.Ident, def.GoName)
-	// Every arm of every object union is an object, so a value that is not one
-	// belongs to no arm. Decoding it up front reports that once, rather than
-	// leaving the caller to read whichever arm happened to be tried last.
-	if len(tagged) > 0 || catchAll != nil {
-		e.printf("\tobject, objectErr := wire.DecodeObject(data)\n")
-	} else {
-		e.printf("\t_, objectErr := wire.DecodeObject(data)\n")
-	}
-	e.printf("\tif objectErr != nil {\n\t\treturn nil, objectErr\n\t}\n")
-
-	if len(untagged) > 0 {
-		e.overlappingUnionArms(def, len(tagged) > 0, catchAll != nil)
-		e.printf("}\n\n")
-		return
-	}
-
-	if len(tagged) > 0 || catchAll != nil {
-		e.printf("\n\tif tag, ok := wire.Tag(object, %q); ok {\n", def.Discriminant)
-		switch len(tagged) {
-		case 0:
-		case 1:
-			// A one-case switch is a conditional spelled the long way.
-			e.printf("\t\tif tag == %q {\n", tagged[0].Tag)
-			e.printf("\t\t\tvalue, err := wire.UnmarshalValue[%s](data)\n", tagged[0].GoType)
-			e.printf("\t\t\tif err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n")
-			e.printf("\t\t\treturn &value, nil\n")
-			e.printf("\t\t}\n")
-		default:
-			e.printf("\t\tswitch tag {\n")
-			for _, arm := range tagged {
-				e.printf("\t\tcase %q:\n", arm.Tag)
-				e.printf("\t\t\tvalue, err := wire.UnmarshalValue[%s](data)\n", arm.GoType)
-				e.printf("\t\t\tif err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n")
-				e.printf("\t\t\treturn &value, nil\n")
-			}
-			e.printf("\t\t}\n")
-		}
-		switch {
-		case catchAll != nil:
-			e.printf("\n%s", comment("\t\t", []string{
-				"A discriminant no known arm claims. The catch-all arm's `not` clause is",
-				"exactly this case, and a known arm's discriminant with a payload that does",
-				"not match it has already failed above rather than landing here.",
-			}))
-			e.printf("\t\tvalue, err := wire.UnmarshalValue[%s](data)\n", catchAll.GoType)
-			e.printf("\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
-			e.printf("\t\treturn &value, nil\n")
-		default:
-			e.printf("\n\t\treturn nil, fmt.Errorf(\"acp: %%q is not a %s the schema defines\", tag)\n", def.GoName)
-		}
-		e.printf("\t}\n")
-	}
-
-	if len(tagged) > 0 || catchAll != nil {
-		e.printf("\n\treturn nil, wire.At(%q, wire.ErrRequired)\n", def.Discriminant)
-	} else {
-		e.printf("\n\treturn nil, errors.New(\"acp: no %s arm matches this value\")\n", def.GoName)
-	}
-	e.printf("}\n\n")
-}
-
-// Untagged anyOf alternatives can match even when a known tag's payload is
-// malformed. Schema order resolves overlapping successes; catch-all arms still
-// enforce their own exclusions rather than absorbing malformed known arms.
-func (e *emitter) overlappingUnionArms(def *Def, tagged, catchAll bool) {
-	if tagged {
-		e.printf("\ttag, hasTag := wire.Tag(object, %q)\n", def.Discriminant)
-	} else if catchAll {
-		e.printf("\t_, hasTag := wire.Tag(object, %q)\n", def.Discriminant)
-	}
-	for _, arm := range def.Arms {
-		indent := "\t"
-		switch {
-		case arm.Tag != "":
-			e.printf("\n\tif hasTag && tag == %q {\n", arm.Tag)
-			indent += "\t"
-		case arm.CatchAll:
-			e.printf("\n\tif hasTag {\n")
-			indent += "\t"
-		default:
-			e.printf("\n")
-		}
-		e.printf("%sif value, err := wire.UnmarshalValue[%s](data); err == nil {\n", indent, arm.GoType)
-		e.printf("%s\treturn &value, nil\n%s}\n", indent, indent)
-		if arm.Tag != "" || arm.CatchAll {
-			e.printf("\t}\n")
-		}
-	}
-	e.printf("\n\treturn nil, errors.New(\"acp: no %s arm matches this value\")\n", def.GoName)
 }
 
 // -- structs -----------------------------------------------------------------
 
 func (e *emitter) structDef(def *Def) {
-	if len(def.Fields) == 0 && def.Embeds == "" && def.Flattened == "" && !def.Retained {
-		// A type the schema gives no properties. It is still an object on the wire,
-		// and gofumpt spells an empty struct without a body.
+	if len(def.Fields) == 0 && def.Embeds == "" && def.Flattened == nil && def.CatchAll == nil {
+		// A type the schema gives no properties is still an object on the wire.
 		e.printf("%stype %s struct{}\n\n", comment("", def.Doc), def.GoName)
 		e.structUnmarshal(def)
 		e.structMarshal(def)
+		e.projection(def)
 		return
 	}
 	e.printf("%stype %s struct {\n", comment("", def.Doc), def.GoName)
@@ -485,62 +201,45 @@ func (e *emitter) structDef(def *Def) {
 		if i > 0 || def.Embeds != "" {
 			e.printf("\n")
 		}
-		e.printf("%s\t%s %s `json:%q`\n", comment("\t", field.Doc), field.GoName, field.GoType, jsonTag(field))
+		e.printf("%s\t%s %s\n", comment("\t", field.Doc), field.GoName, fieldType(field))
 	}
-	if def.Flattened != "" {
+	if def.Flattened != nil {
 		if len(def.Fields) > 0 {
 			e.printf("\n")
 		}
 		e.printf("%s", comment("\t", []string{
 			flattenedSuffix + " is the kind-specific part of this type, which the schema puts in the",
-			"same JSON object as the properties above rather than under a property of its",
-			"own. A Go struct cannot be several shapes at once, so it holds the choice",
-			"here and the encoder flattens it back.",
+			"same JSON object as the properties above. A Go struct cannot be several shapes",
+			"at once, so it holds the choice here and the encoder flattens it back.",
 		}))
-		e.printf("\t%s %s `json:\"-\"`\n", flattenedSuffix, def.Flattened)
+		e.printf("\t%s %s\n", flattenedSuffix, def.Flattened.GoName)
 	}
-	if def.Retained {
+	if def.CatchAll != nil {
 		e.printf("\n%s", comment("\t", []string{
-			"Extra preserves the sender's extension payload. Declared properties belong",
+			retainedField + " preserves the sender's extension payload. Declared properties belong",
 			"to their typed fields, including common fields of the containing object;",
-			"an Extra entry cannot override one of those owners.",
+			"an " + retainedField + " entry cannot override one of those owners.",
 		}))
-		e.printf("\tExtra map[string]json.RawMessage `json:\"-\"`\n")
+		e.printf("\t%s map[string]json.RawMessage\n", retainedField)
 	}
 	e.printf("}\n\n")
 
 	if def.Embeds != "" {
-		// Explicit delegation rather than the promotion an embedded field would
-		// give: a promoted MarshalJSON is easy to read as the wrapper's own and
-		// stops being right the moment the wrapper gains a property.
-		e.printf("func (x *%s) UnmarshalJSON(data []byte) error {\n", def.GoName)
-		e.printf("\treturn x.%s.UnmarshalJSON(data)\n}\n\n", def.Embeds)
-		e.printf("func (x %s) MarshalJSON() ([]byte, error) {\n", def.GoName)
-		e.printf("\treturn x.%s.MarshalJSON()\n}\n\n", def.Embeds)
+		// The embedded payload's codec is promoted: the planner refuses a wrapper
+		// with properties of its own, so the payload is the whole of its JSON.
 		return
 	}
-
 	e.structUnmarshal(def)
 	e.structMarshal(def)
-	if def.Retained {
-		e.retainedValidate(def)
+	if def.CatchAll != nil {
+		e.catchAllValidate(def)
 	}
-}
-
-func jsonTag(field *Field) string {
-	tag := field.JSONName
-	// omitzero rather than omitempty: an absent Opt and an empty slice both have
-	// to be distinguishable from a present zero value, and omitempty cannot do
-	// either — it never omits a struct, and it always omits an empty array.
-	if field.Opt || (field.Value.Kind == vSlice && !field.Required) {
-		tag += ",omitzero"
-	}
-	return tag
+	e.projection(def)
 }
 
 func (e *emitter) structUnmarshal(def *Def) {
 	e.printf("func (x *%s) UnmarshalJSON(data []byte) error {\n", def.GoName)
-	if len(def.Fields) > 0 || def.Retained {
+	if len(def.Fields) > 0 || def.CatchAll != nil {
 		e.printf("\tobject, objectErr := wire.DecodeObject(data)\n")
 	} else {
 		// A type with no properties is still an object, and a value that is not
@@ -552,14 +251,14 @@ func (e *emitter) structUnmarshal(def *Def) {
 	for _, field := range def.Fields {
 		e.fieldUnmarshal(field)
 	}
-	if def.Flattened != "" {
+	if def.Flattened != nil {
 		e.printf("\n\t{\n")
-		e.printf("\t\tvalue, err := unmarshal%s(data)\n", def.FlattenedIdent)
+		e.printf("\t\tvalue, err := unmarshal%s(data)\n", def.Flattened.Ident)
 		e.printf("\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n")
 		e.printf("\t\tx.%s = value\n\t}\n", flattenedSuffix)
 	}
-	if def.Retained {
-		e.printf("\n\tx.Extra = wire.Extra(object, %s)\n", quotedStrings(def.ExcludedExtraKeys))
+	if def.CatchAll != nil {
+		e.printf("\n\tx.%s = wire.Extra(object, %s)\n", retainedField, quotedStrings(def.CatchAll.ExcludedExtraKeys))
 		e.printf("\n\treturn x.validate()\n}\n\n")
 		return
 	}
@@ -573,11 +272,7 @@ func (e *emitter) fieldUnmarshal(field *Field) {
 	if hasNullCase {
 		e.printf("\t\tif wire.IsNull(raw) {\n")
 		if field.DefaultOnNull {
-			literal := field.Value.Go + "{}"
-			if field.Opt {
-				literal = "OptValue(" + literal + ")"
-			}
-			e.printf("\t\t\tx.%s = %s\n", field.GoName, literal)
+			e.printf("\t\t\t%s\n", assign(field, field.Value.Go+"{}"))
 		} else {
 			e.printf("\t\t\tx.%s = OptNull[%s]()\n", field.GoName, field.Value.Go)
 		}
@@ -585,33 +280,68 @@ func (e *emitter) fieldUnmarshal(field *Field) {
 		body = "\t\t\t"
 	}
 
-	e.printf("%svalue, err := %s\n", body, e.decodeExpr(field, "raw"))
-	e.printf("%sif err == nil {\n", body)
-	if field.Opt {
-		e.printf("%s\tx.%s = OptValue(value)\n", body, field.GoName)
-	} else {
-		e.printf("%s\tx.%s = value\n", body, field.GoName)
-	}
-	if recovery := e.recovery(field); recovery != "" {
-		e.printf("%s} else {\n%s\t%s\n%s}\n", body, body, recovery, body)
-	} else {
-		e.printf("%s}\n", body)
+	e.printf("%svalue, err := %s\n", body, decodeExpr(field, "raw"))
+	switch field.Fallback {
+	case fbNone:
+		e.printf("%sif err != nil {\n%s\treturn wire.At(%q, err)\n%s}\n", body, body, field.JSONName, body)
+		e.printf("%s%s\n", body, assign(field, "value"))
+	case fbAbsent:
+		e.printf("%sif err == nil {\n%s\t%s\n%s}\n", body, body, assign(field, "value"), body)
+	case fbDefault, fbEmptySlice:
+		e.printf("%sif err != nil {\n%s\tvalue = %s\n%s}\n", body, body, fallbackLiteral(field), body)
+		e.printf("%s%s\n", body, assign(field, "value"))
+	default:
+		panic(fmt.Sprintf("schemagen: no decoder for fallback %d", field.Fallback))
 	}
 
 	if hasNullCase {
 		e.printf("\t\t}\n")
 	}
-	if absent := e.absent(field); absent != "" {
+	if absent := absentAssignment(field); absent != "" {
 		e.printf("\t} else {\n\t\t%s\n\t}\n", absent)
 		return
 	}
 	e.printf("\t}\n")
 }
 
+// assign stores a value of the property's value type in its field.
+func assign(field *Field, value string) string {
+	if field.Opt {
+		return fmt.Sprintf("x.%s = OptValue(%s)", field.GoName, value)
+	}
+	return fmt.Sprintf("x.%s = %s", field.GoName, value)
+}
+
+// fallbackLiteral is what a malformed property recovers to, in its value type.
+func fallbackLiteral(field *Field) string {
+	if field.Fallback == fbDefault {
+		return field.DefaultLit
+	}
+	return field.Value.Go + "{}"
+}
+
+// zeroLiteral matches a literal that is its type's zero value, which an absent
+// property already holds after the struct is reset.
+var zeroLiteral = regexp.MustCompile(`^(false|""|0|[A-Za-z_][A-Za-z0-9_]*\((""|0)\))$`)
+
+// absentAssignment is what an omitted property becomes, or the empty string when
+// the reset struct already holds it.
+func absentAssignment(field *Field) string {
+	switch {
+	case field.Required:
+		return fmt.Sprintf("return wire.At(%q, wire.ErrRequired)", field.JSONName)
+	case field.DefaultLit == "", !field.Opt && zeroLiteral.MatchString(field.DefaultLit):
+		return ""
+	default:
+		return assign(field, field.DefaultLit)
+	}
+}
+
 // decodeExpr is the call that turns one property's raw bytes into its value.
-func (e *emitter) decodeExpr(field *Field, input string) string {
+func decodeExpr(field *Field, input string) string {
 	value := field.Value
-	if value.Kind == vSlice {
+	switch {
+	case value.Kind == vSlice:
 		elem := value.Elem
 		switch {
 		case elem.IsUnion && field.Skip:
@@ -623,89 +353,45 @@ func (e *emitter) decodeExpr(field *Field, input string) string {
 		default:
 			return fmt.Sprintf("wire.UnmarshalSlice[%s](%s)", elem.Go, input)
 		}
-	}
-	// A map of unions needs the same treatment an array of them does, and for the
-	// same reason: json.Unmarshal cannot decode into an interface, so the arm is
-	// selected by the union's generated function. x-deserialize-skip-invalid-items
-	// has no map form — the planner refuses it on anything but an array — so there
-	// is no skipping variant to choose between.
-	if value.Kind == vMap {
-		if value.Elem.IsUnion {
-			return fmt.Sprintf("wire.UnmarshalMapFunc(%s, unmarshal%s)", input, value.Elem.Ident)
-		}
+	// A map of unions needs the union's generated function for the same reason
+	// an array of them does.
+	case value.Kind == vMap && value.Elem.IsUnion:
+		return fmt.Sprintf("wire.UnmarshalMapFunc(%s, unmarshal%s)", input, value.Elem.Ident)
+	case value.Kind == vMap:
 		return fmt.Sprintf("wire.UnmarshalMap[%s](%s)", value.Elem.Go, input)
-	}
-	if value.IsUnion {
+	case value.IsUnion:
 		return fmt.Sprintf("unmarshal%s(%s)", value.Ident, input)
+	// A bound type owns its whole grammar, including whether null is a value.
+	case value.Kind == vBound:
+		return fmt.Sprintf("wire.UnmarshalOwned[%s](%s)", value.Go, input)
 	}
-	// A format is enforced where the value is read, so it takes whatever the
-	// property's own fallback is: a malformed URI recovers exactly as a malformed
-	// anything else does.
+	// A format is enforced where the value is read, so a malformed URI recovers
+	// exactly as a malformed anything else does.
 	if constraints := stringConstraints(value); constraints != "" {
 		return fmt.Sprintf("%s.Decode(%s)", constraints, input)
 	}
 	return fmt.Sprintf("wire.UnmarshalValue[%s](%s)", value.Go, input)
 }
 
-// recovery is what a malformed property becomes, or the empty string when the
-// value is simply left alone because the fallback is the absent state.
-func (e *emitter) recovery(field *Field) string {
-	assign := func(literal string) string {
-		if field.Opt {
-			return fmt.Sprintf("x.%s = OptValue(%s)", field.GoName, literal)
-		}
-		return fmt.Sprintf("x.%s = %s", field.GoName, literal)
-	}
-	switch field.Fallback {
-	case fbNone:
-		return fmt.Sprintf("return wire.At(%q, err)", field.JSONName)
-	case fbDefault:
-		return assign(field.DefaultLit)
-	case fbEmptySlice:
-		return assign(field.Value.Go + "{}")
-	case fbAbsent:
-		return ""
-	default:
-		return ""
-	}
-}
-
-// absent is what an omitted property becomes.
-func (e *emitter) absent(field *Field) string {
-	switch {
-	case field.Required:
-		return fmt.Sprintf("return wire.At(%q, wire.ErrRequired)", field.JSONName)
-	case field.DefaultLit != "":
-		if field.Opt {
-			return fmt.Sprintf("x.%s = OptValue(%s)", field.GoName, field.DefaultLit)
-		}
-		return fmt.Sprintf("x.%s = %s", field.GoName, field.DefaultLit)
-	default:
-		return ""
-	}
-}
-
 func (e *emitter) structMarshal(def *Def) {
 	e.printf("func (x %s) MarshalJSON() ([]byte, error) {\n", def.GoName)
-	if def.Retained {
-		// A pointer receiver on validate, called from a value receiver: x is a
-		// local and so addressable. It keeps every method that is not part of the
-		// json interfaces on the pointer, which is the receiver an arm of a union
-		// is used through.
+	if def.CatchAll != nil {
+		// x is a local and so addressable, which keeps validate on the pointer
+		// receiver an arm of a union is used through.
 		e.printf("\tif err := x.validate(); err != nil {\n\t\treturn nil, err\n\t}\n\n")
 	}
 	e.printf("\tvar writer wire.ObjectWriter\n")
 	for _, field := range def.Fields {
 		e.fieldMarshal(field)
 	}
-	if def.Flattened != "" {
+	if def.Flattened != nil {
 		e.printf("\t{\n")
-		e.printf("\t\traw, err := marshal%s(x.%s)\n", def.FlattenedIdent, flattenedSuffix)
+		e.printf("\t\traw, err := marshal%s(x.%s)\n", def.Flattened.Ident, flattenedSuffix)
 		e.printf("\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
 		e.printf("\t\twriter.Embed(raw)\n\t}\n")
 	}
-	if def.Retained {
-		e.printf("\twriter.SetExtra(x.Extra, %s)\n", quotedStrings(def.ExcludedExtraKeys))
+	if def.CatchAll != nil {
+		e.printf("\twriter.SetExtra(x.%s, %s)\n", retainedField, quotedStrings(def.CatchAll.ExcludedExtraKeys))
 	}
 	e.printf("\n\treturn writer.Bytes()\n}\n\n")
 }
@@ -719,10 +405,8 @@ func quotedStrings(values []string) string {
 }
 
 func (e *emitter) fieldMarshal(field *Field) {
-	encode := e.encodeExpr(field)
+	encode := encodeExpr(field)
 	if encode == "" {
-		// Nothing about the value needs the union or slice treatment, so the
-		// writer's own encoding is the whole of it.
 		if field.Opt {
 			e.printf("\twriter.SetOptional(%q, x.%s)\n", field.JSONName, field.GoName)
 		} else {
@@ -758,29 +442,21 @@ func (e *emitter) fieldMarshal(field *Field) {
 }
 
 // encodeExpr returns the call that encodes one property, with $ standing for the
-// value, or the empty string when the writer can encode the value itself.
-//
-// It cannot always: a union's discriminant belongs to the union rather than to
-// the arm, and a required array has to encode as [] where a nil Go slice would
-// encode as null.
-func (e *emitter) encodeExpr(field *Field) string {
+// value, or the empty string when the writer can encode the value itself. It
+// cannot when a union owns a discriminant, or when a required array has to encode
+// as [] where a nil slice would encode as null.
+func encodeExpr(field *Field) string {
 	value := field.Value
-	if value.Kind == vSlice {
-		if value.Elem.IsUnion {
-			return fmt.Sprintf("wire.MarshalSliceFunc($, marshal%s)", value.Elem.Ident)
-		}
+	switch {
+	case value.Kind == vSlice && value.Elem.IsUnion:
+		return fmt.Sprintf("wire.MarshalSliceFunc($, marshal%s)", value.Elem.Ident)
+	case value.Kind == vSlice:
 		return "wire.MarshalSlice($)"
-	}
-	// And on the way out the discriminant is the union's to write, so a map of
-	// unions handed to the writer would encode every value without the property
-	// that says which arm it is — a message this side could not read back.
-	if value.Kind == vMap {
-		if value.Elem.IsUnion {
-			return fmt.Sprintf("wire.MarshalMapFunc($, marshal%s)", value.Elem.Ident)
-		}
+	case value.Kind == vMap && value.Elem.IsUnion:
+		return fmt.Sprintf("wire.MarshalMapFunc($, marshal%s)", value.Elem.Ident)
+	case value.Kind == vMap:
 		return "wire.MarshalMap($)"
-	}
-	if value.IsUnion {
+	case value.IsUnion:
 		return fmt.Sprintf("marshal%s($)", value.Ident)
 	}
 	if constraints := stringConstraints(value); constraints != "" {
@@ -803,53 +479,35 @@ func stringConstraints(value *ValueType) string {
 	return "wire.StringConstraints{" + strings.Join(constraints, ", ") + "}"
 }
 
-func (e *emitter) retainedValidate(def *Def) {
-	doc := []string{
-		"validate enforces the `not` clause of the catch-all arm: the discriminant",
-		"values the known arms claim are reserved, and a value carrying one is a",
-		"malformed known arm rather than a custom one. Both the decoder and the",
-		"encoder check it, so the rule holds in each direction.",
+// projection emits the conversion from a handle-facing params type back to the
+// wire request, given the identifiers the handle owns. A nil receiver is the
+// zero params value.
+func (e *emitter) projection(def *Def) {
+	if def.Projection == nil {
+		return
 	}
-	if len(def.Alternatives) > 0 {
-		doc = append(doc, "",
-			"It also enforces the alternatives this arm is itself a union of. A custom",
-			"value is not anything that is not a known arm: the arm has a schema of its",
-			"own, and a value has to decode as one of its alternatives to be one. Their",
-			"properties are retained rather than declared, so the check runs each",
-			"candidate's codec over Extra.")
+	source := def.Projection.From
+	params := make([]string, len(def.Projection.Bound))
+	for i, field := range def.Projection.Bound {
+		params[i] = unexport(field.GoName) + " " + fieldType(field)
 	}
-	e.printf("%s", comment("", doc))
-
-	e.printf("func (x *%s) validate() error {\n", def.GoName)
-	reserved := make([]string, len(def.ReservedTags))
-	for i, tag := range def.ReservedTags {
-		reserved[i] = strconv.Quote(tag)
-	}
-	e.printf("\tif slices.Contains([]string{%s}, x.%s) {\n", strings.Join(reserved, ", "), goName(def.TagProperty))
-	e.printf("\t\treturn wire.At(%q, fmt.Errorf(\n", def.TagProperty)
-	e.printf("\t\t\t\"acp: %%q is reserved by a known arm, but the value does not match that arm\", x.%s))\n",
-		goName(def.TagProperty))
-	e.printf("\t}\n")
-
-	if len(def.Alternatives) > 0 {
-		decoders := make([]string, len(def.Alternatives))
-		wanted := make([]string, len(def.Alternatives))
-		for i, alternative := range def.Alternatives {
-			decoders[i] = fmt.Sprintf(
-				"\n\t\tfunc(raw []byte) error { var v %s; return v.UnmarshalJSON(raw) },",
-				alternative.GoName)
-			quoted := make([]string, len(alternative.Required))
-			for j, name := range alternative.Required {
-				quoted[j] = strconv.Quote(name)
-			}
-			wanted[i] = "{" + strings.Join(quoted, ", ") + "}"
+	e.printf("// bind is the %s these parameters describe once the handle supplies its identifiers.\n",
+		source.GoName)
+	e.printf("func (x *%s) bind(%s) *%s {\n", def.GoName, strings.Join(params, ", "), source.GoName)
+	e.printf("\tif x == nil {\n\t\tx = new(%s)\n\t}\n", def.GoName)
+	e.printf("\treturn &%s{\n", source.GoName)
+	for _, field := range source.Fields {
+		if slices.Contains(def.Projection.Bound, field) {
+			e.printf("\t\t%s: %s,\n", field.GoName, unexport(field.GoName))
+			continue
 		}
-		e.printf("\tif !wire.SatisfiesOneAlternative(x.Extra,%s\n\t) {\n", strings.Join(decoders, ""))
-		e.printf("\t\treturn fmt.Errorf(\n")
-		e.printf("\t\t\t\"acp: a %s decodes as none of the alternatives its arm is a union of: %%v\",\n", def.GoName)
-		e.printf("\t\t\t[][]string{%s})\n", strings.Join(wanted, ", "))
-		e.printf("\t}\n")
+		e.printf("\t\t%s: x.%s,\n", field.GoName, field.GoName)
 	}
-
-	e.printf("\treturn nil\n}\n\n")
+	if source.Flattened != nil {
+		e.printf("\t\t%s: x.%s,\n", flattenedSuffix, flattenedSuffix)
+	}
+	if source.CatchAll != nil {
+		e.printf("\t\t%s: x.%s,\n", retainedField, retainedField)
+	}
+	e.printf("\t}\n}\n\n")
 }

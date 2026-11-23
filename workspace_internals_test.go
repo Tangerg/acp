@@ -55,9 +55,8 @@ func TestTerminalReleaseCanRunWhileWaitingForExit(t *testing.T) {
 
 func terminalOrderHarness() (*TerminalHandle, *terminalOrderStream) {
 	conn := newTestAgentConn()
-	conn.handshake.begin()
-	conn.handshake.accept(PeerInfo{ClientCapabilities: ClientCapabilities{Terminal: true}})
-	conn.handshake.publish(nil)
+	conn.negotiation.accept(Negotiated{ClientCapabilities: ClientCapabilities{Terminal: true}})
+	conn.negotiation.open()
 	stream := &terminalOrderStream{
 		calls: conn.calls, entered: make(chan struct{}), resume: make(chan struct{}),
 		written: make(chan string, 2), waiting: make(chan jsonrpc.ID, 1),

@@ -81,7 +81,7 @@ answer, err := session.Prompt(ctx, &acp.PromptParams{
 ```
 
 If `NewSession` returns `acp.ErrAuthRequired`, choose one of the authentication
-methods from `conn.Peer().AuthMethods`, authenticate, and retry.
+methods from `conn.Negotiated().AuthMethods`, authenticate, and retry.
 
 ## Start an agent
 
@@ -92,7 +92,6 @@ agent, err := acp.NewAgent(&acp.AgentConfig{
 	Info:       &acp.Implementation{Name: "an agent", Version: "1.0.0"},
 	NewSession: newSession,
 	Prompt:     prompt,
-	Cancel:     cancelTurn,
 })
 if err != nil {
 	return err
@@ -108,6 +107,9 @@ session-scoped handlers receive an `*acp.AgentSession`, which streams
 `sessionId`. `NewSession`, `Authenticate`, `Logout`, and `ListSessions` have no
 session in their wire params and receive an `*acp.AgentConn`, which is how a
 handler answering `authenticate`, say, can still elicit input from the user.
+
+`session/cancel` cancels the running `Prompt` handler's context, so `Cancel` is
+optional; set it only to observe the notification.
 
 Keep diagnostics on stderr because stdout carries the protocol stream.
 
@@ -125,7 +127,8 @@ go run ./examples/client \
 
 The agent requests permission before writing `/tmp/workspace/NOTES.md`. Enter `1`
 to approve it. Interrupt the client during the turn to send `session/cancel`
-without terminating the process.
+without terminating either process: the example agent ignores the terminal's
+interrupt and stops when its stdin closes.
 
 Focused examples for cancellation, authentication, terminals, session
 configuration, the session lifecycle, elicitation, extension methods, a custom
@@ -135,34 +138,48 @@ package example runs under `go test`, so none of them can go stale.
 
 ## Behavioural contracts
 
-Four protocol rules affect every integration:
+Five protocol rules affect every integration:
 
 - **One prompt per session**: `session/cancel` identifies a session, not a turn. A
   second overlapping prompt returns `acp.ErrPromptInProgress`
 - **Prompt context cancellation is not turn cancellation**: cancelling the
   context stops the local caller waiting. Call `ClientSession.Cancel` to end the
   turn and require a cancelled stop reason
+- **A cancelled turn still reports**: the agent may send final tool-call updates
+  before it answers, so a client keeps accepting `session/update` after
+  cancelling, and an agent sends those updates with a context that outlives the
+  turn, such as `context.WithoutCancel`
 - **Notification handlers cannot synchronously call the same connection**:
   notifications retain arrival order, and later responses wait behind them.
   Start independent work instead of waiting inside the handler
 - **Capabilities grant authority**: the connection rejects outbound and inbound
-  calls that were not advertised, and refuses to send prompt content, MCP
-  transports, or `additionalDirectories` the agent never advertised.
+  calls that were not advertised, and refuses to send a value the peer never
+  advertised it could take: prompt content, MCP transports, system prompts,
+  `additionalDirectories`, boolean configuration options, and notice,
+  compaction, plan and subagent updates. A local refusal wraps
+  `acp.ErrNotAdvertised`, so it cannot be mistaken for the peer's answer.
   Construction also rejects capabilities that lack matching handlers
 
 Every path the protocol carries must be absolute. This package refuses to send a
 relative one, and accepts either POSIX or Windows form because the path describes
 the peer's filesystem rather than this process's.
 
-Session and terminal handles are bound to their connection. Persist protocol
-identifiers when you need to reopen a resource on another connection; do not
-retain a handle past connection shutdown.
+Session and terminal handles are bound to their connection. A session handle
+holds nothing but its identifier and connection, so two handles for one session
+are interchangeable. Persist protocol identifiers when you need to reopen a
+resource on another connection; do not retain a handle past connection shutdown.
+
+`Limits` bounds the protocol state a peer can make a connection hold. A breach
+reports `acp.ErrLimitExceeded`: a full delivery backlog or too many inbound
+requests ends the connection, while too many pending outbound calls only refuses
+the new call.
 
 ## Choose a transport
 
-Byte-stream transports frame newline-delimited JSON-RPC 2.0. The in-memory
-transport carries messages directly so connection tests do not test the codec
-twice.
+Byte-stream transports frame newline-delimited JSON-RPC 2.0. A line that is not a
+valid message is answered with parse-error or invalid-request, or fails the one
+call it answers, and reading continues; only a broken stream ends the connection. The in-memory transport
+carries messages directly so connection tests do not test the codec twice.
 
 | Transport | Use |
 | --- | --- |
@@ -175,6 +192,14 @@ twice.
 `IOConfig.Reader` and `Writer` provide I/O; `Close` alone releases their resources
 and must unblock pending reads and writes. For a shared `net.Conn`, set both
 streams to that connection and `Close` to its `Close` method.
+
+A write honours its context only while it waits for the stream. Once a message
+starts it is finished, because a byte stream cannot take back half a message, so
+cancelling one caller never ends a connection other sessions share.
+
+`StdioTransport` never closes the process's standard streams. A blocked read is
+abandoned instead, so `Agent.Run` returns when its context ends even while the
+client holds stdin open.
 
 `CommandTransport` sets an unset `exec.Cmd.WaitDelay` to the effective
 `TerminationGrace` before starting the process. An explicit `WaitDelay` is
@@ -214,7 +239,9 @@ ordinary non-matching answer.
 For URL mode, `accept` is consent to start the out-of-band interaction; it does
 not say the page has finished. Decline, cancellation, and failure release the ID
 immediately. An accepted ID remains unique on that connection until the agent
-sends `elicitation/complete`.
+sends `elicitation/complete`. Completing is optional, so at
+`Limits.OutstandingElicitations` the oldest accepted interaction is forgotten
+rather than refusing new ones.
 
 ## Project status
 
@@ -261,7 +288,7 @@ plus `_`-prefixed extension methods are fully supported.
 ### The v2 draft
 
 Upstream is drafting protocol version 2 and publishing it as
-`schema-v2.0.0-alpha.N` alongside the stable v1 line. **This module does not speak
+`schema-v2.0.0-beta.N` pre-releases alongside the stable v1 line. **This module does not speak
 it, and that is enforced rather than incidental**: `acp.CurrentProtocolVersion` is
 1, an agent built here answers 1 to any request, and a client built here closes a
 connection whose agent answers anything else.
@@ -289,9 +316,9 @@ becomes `acp/v2` and speaks version 2 only. Both can be imported side by side by
 an editor that has to drive agents of either kind, which is what Go's major-version
 rule is for. `design/design.md` records the argument and the cost.
 
-Until then the pin stays on v1 and the alphas are watched rather than implemented,
-because implementing a draft would encode a dialect that is still changing. To
-follow it, watch the `schema-v2.0.0-alpha` releases in the
+Until then the pin stays on v1 and the pre-releases are watched rather than
+implemented, because implementing a draft would encode a dialect that is still
+changing. To follow it, watch the `schema-v2.0.0` pre-releases in the
 [upstream repository](https://github.com/agentclientprotocol/agent-client-protocol/releases).
 
 ## Verification

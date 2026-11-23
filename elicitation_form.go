@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"time"
 
@@ -76,10 +77,17 @@ func newCompiledForm(schema ElicitationSchema) (*compiledForm, error) {
 	return &compiledForm{schema: resolved, patterns: patterns}, nil
 }
 
+// validateResponse holds an accepting answer to the form. An accept without
+// content is an empty answer, which a schema with required properties refuses.
+// A nil form has nothing to hold an answer to.
 func (f *compiledForm) validateResponse(ctx context.Context, response *CreateElicitationResponse) error {
-	content, answered := response.acceptedContent()
-	if !answered {
+	action, accepted := response.acceptedAction()
+	if f == nil || !accepted {
 		return nil
+	}
+	content, _ := action.Content.Get()
+	if content == nil {
+		content = map[string]ElicitationContentValue{}
 	}
 	return f.validate(ctx, content)
 }
@@ -115,8 +123,22 @@ func (f *compiledForm) validate(ctx context.Context, content map[string]Elicitat
 	return nil
 }
 
+// The JSON Schema keywords the private projection rewrites.
+const (
+	keywordProperties = "properties"
+	keywordPattern    = "pattern"
+	keywordItems      = "items"
+	keywordNot        = "not"
+	keywordMinLength  = "minLength"
+	keywordMaxLength  = "maxLength"
+	keywordMinItems   = "minItems"
+	keywordMaxItems   = "maxItems"
+	keywordOneOf      = "oneOf"
+	keywordAnyOf      = "anyOf"
+)
+
 func compileFormPatterns(schema ElicitationSchema, projection map[string]any) ([]formPattern, error) {
-	properties, _ := projection["properties"].(map[string]any)
+	properties, _ := projection[keywordProperties].(map[string]any)
 	options := ecmascript.DefaultCompileOptions()
 	options.Parse.Limits = ecmascript.ParseLimits{
 		PatternBytes:     formPatternMaxBytes,
@@ -142,7 +164,7 @@ func compileFormPatterns(schema ElicitationSchema, projection map[string]any) ([
 		}
 		patterns = append(patterns, formPattern{property: name, expression: expression})
 		object, _ := properties[name].(map[string]any)
-		delete(object, "pattern")
+		delete(object, keywordPattern)
 	}
 	return patterns, nil
 }
@@ -158,9 +180,9 @@ func (e ElicitationSchema) validationSchema() (map[string]any, error) {
 	if decodeErr := decoder.Decode(&compiled); decodeErr != nil {
 		return nil, decodeErr
 	}
-	properties, ok := compiled["properties"].(map[string]any)
+	properties, ok := compiled[keywordProperties].(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("elicitation properties encoded as %T", compiled["properties"])
+		return nil, fmt.Errorf("elicitation properties encoded as %T", compiled[keywordProperties])
 	}
 
 	for name, property := range e.Properties {
@@ -178,7 +200,7 @@ func (e ElicitationSchema) validationSchema() (map[string]any, error) {
 				if !isObject {
 					return nil, fmt.Errorf("elicitation property %q encoded as %T", name, properties[name])
 				}
-				compiledProperty["items"] = true
+				compiledProperty[keywordItems] = true
 			}
 		}
 	}
@@ -202,25 +224,25 @@ func normalizeFormSchema(value any) {
 	// Go strings and slices cannot exceed MaxInt. A larger maximum adds no
 	// constraint; a larger minimum is unsatisfiable. Compile those meanings
 	// before the validator narrows cardinalities to int.
-	for _, key := range []string{"minLength", "maxLength", "minItems", "maxItems"} {
+	for _, key := range []string{keywordMinLength, keywordMaxLength, keywordMinItems, keywordMaxItems} {
 		bound, isNumber := schema[key].(json.Number)
 		if !isNumber {
 			continue
 		}
-		if count, err := bound.Int64(); err == nil && count <= int64(^uint(0)>>1) {
+		if count, err := bound.Int64(); err == nil && count <= math.MaxInt {
 			continue
 		}
 		delete(schema, key)
-		if key == "minLength" || key == "minItems" {
-			schema["not"] = map[string]any{}
+		if key == keywordMinLength || key == keywordMinItems {
+			schema[keywordNot] = map[string]any{}
 		}
 	}
-	properties, _ := schema["properties"].(map[string]any)
+	properties, _ := schema[keywordProperties].(map[string]any)
 	for _, property := range properties {
 		normalizeFormSchema(property)
 	}
-	normalizeFormSchema(schema["items"])
-	for _, key := range []string{"oneOf", "anyOf"} {
+	normalizeFormSchema(schema[keywordItems])
+	for _, key := range []string{keywordOneOf, keywordAnyOf} {
 		options, _ := schema[key].([]any)
 		for _, option := range options {
 			normalizeFormSchema(option)
@@ -243,19 +265,6 @@ func elicitationContentInstance(content map[string]ElicitationContentValue) (any
 func (c *CreateElicitationResponse) accepted() bool {
 	_, accepted := c.acceptedAction()
 	return accepted
-}
-
-// acceptedContent distinguishes an accepted form with no content from responses
-// whose action does not claim that the user answered the form.
-func (c *CreateElicitationResponse) acceptedContent() (
-	map[string]ElicitationContentValue,
-	bool,
-) {
-	action, accepted := c.acceptedAction()
-	if !accepted {
-		return nil, false
-	}
-	return action.Content.Get()
 }
 
 func (c *CreateElicitationResponse) acceptedAction() (*ElicitationAcceptAction, bool) {

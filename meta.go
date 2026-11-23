@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
+	"maps"
+	"slices"
 )
 
 // Meta owns the protocol's reserved _meta object for extension data.
@@ -67,6 +70,18 @@ func (m *Meta) Delete(key string) {
 }
 
 func (m Meta) Len() int { return len(m.values) }
+
+// All yields every key with a copy of its encoded value, in key order, so a
+// relay can forward keys it does not understand.
+func (m Meta) All() iter.Seq2[string, json.RawMessage] {
+	return func(yield func(string, json.RawMessage) bool) {
+		for _, key := range slices.Sorted(maps.Keys(m.values)) {
+			if !yield(key, bytes.Clone(m.values[key])) {
+				return
+			}
+		}
+	}
+}
 
 func (m Meta) MarshalJSON() ([]byte, error) {
 	if m.values == nil {

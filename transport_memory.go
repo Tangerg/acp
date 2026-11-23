@@ -8,25 +8,25 @@ import (
 	"github.com/Tangerg/acp/jsonrpc"
 )
 
-// NewInMemoryTransports returns two transports connected to each other: a message
-// written to one is read from the other.
-//
-// Messages pass directly without JSON encoding or framing. Use these transports
-// for embedded peers and deterministic connection tests.
-func NewInMemoryTransports() (client, agent Transport) {
+// NewInMemoryTransports returns two transports connected to each other: a
+// message written to one is read from the other. Messages pass directly, without
+// encoding or framing, which byte-stream transports are tested for separately.
+func NewInMemoryTransports() (client, agent *InMemoryTransport) {
 	toAgent := newMessagePipe()
 	toClient := newMessagePipe()
-	return &inMemoryTransport{read: toClient, write: toAgent},
-		&inMemoryTransport{read: toAgent, write: toClient}
+	return &InMemoryTransport{read: toClient, write: toAgent},
+		&InMemoryTransport{read: toAgent, write: toClient}
 }
 
-type inMemoryTransport struct {
+// An InMemoryTransport is one end of a pair from [NewInMemoryTransports].
+type InMemoryTransport struct {
 	singleUse
 	read  *messagePipe
 	write *messagePipe
 }
 
-func (t *inMemoryTransport) Connect(ctx context.Context) (Connection, error) {
+// Connect opens this end of the pair. Each end connects once.
+func (t *InMemoryTransport) Connect(ctx context.Context) (Connection, error) {
 	if err := t.claim(); err != nil {
 		return nil, err
 	}

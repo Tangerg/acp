@@ -62,7 +62,7 @@ func docComment(symbol, description string) []string {
 // first line is generated rather than quoted: the arms are the one thing a
 // caller needs and the schema's description does not name them.
 func unionDoc(symbol string, arms []string, description string) []string {
-	lines := []string{"A " + symbol + " is one of " + joinArms(arms) + "."}
+	lines := []string{article(symbol, true) + " " + symbol + " is one of " + joinArms(arms) + "."}
 	if body := docComment("", description); len(body) > 0 {
 		lines = append(lines, "")
 		lines = append(lines, body...)
@@ -127,4 +127,19 @@ func comment(indent string, lines []string) string {
 		out.WriteString("\n")
 	}
 	return out.String()
+}
+
+// article is the indefinite article English puts before word.
+func article(word string, capital bool) string {
+	an := strings.ContainsRune("AEIOUaeiou", []rune(word)[0])
+	switch {
+	case an && capital:
+		return "An"
+	case an:
+		return "an"
+	case capital:
+		return "A"
+	default:
+		return "a"
+	}
 }

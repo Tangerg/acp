@@ -28,7 +28,6 @@ func TestSessionSetupRejectsRelativeMCPExecutables(t *testing.T) {
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +82,6 @@ func TestSessionListChecksRequestAndResponsePaths(t *testing.T) {
 				Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 					return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 				},
-				Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 				ListSessions: func(context.Context, *acp.AgentConn, *acp.ListSessionsRequest) (*acp.ListSessionsResponse, error) {
 					served.Store(true)
 					info := acp.SessionInfo{SessionID: "session", Cwd: "/workspace", AdditionalDirectories: []string{"/shared"}}
@@ -111,16 +109,19 @@ func TestSessionListChecksRequestAndResponsePaths(t *testing.T) {
 				}
 				return
 			}
-			wantCode := acp.ErrorCodeInternalError
 			if invalid == "filter" {
-				wantCode = acp.ErrorCodeInvalidParams
+				// The caller's own relative path is refused locally, before the wire.
 				if served.Load() {
 					t.Error("invalid filter crossed the transport")
 				}
+				if err == nil || !strings.Contains(err.Error(), "must be an absolute path") {
+					t.Errorf("invalid filter: %v, want a local absolute-path refusal", err)
+				}
+				return
 			}
 			var failure *acp.Error
-			if !errors.As(err, &failure) || failure.Code != wantCode {
-				t.Errorf("invalid %s: %v, want %s", invalid, err, wantCode)
+			if !errors.As(err, &failure) || failure.Code != acp.ErrorCodeInternalError {
+				t.Errorf("invalid %s: %v, want internal error", invalid, err)
 			}
 		})
 	}

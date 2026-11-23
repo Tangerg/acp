@@ -47,7 +47,7 @@ func TestAResponseThatCannotBeWrittenEndsTheConnection(t *testing.T) {
 		if !errors.Is(err, failure) {
 			t.Fatalf("Wait reported %v, want the write failure", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(deadlockGuard):
 		t.Fatal("Wait never returned; the failed response write left no terminal state")
 	}
 }
@@ -69,10 +69,10 @@ func TestATransportThatCannotBeClosedIsReported(t *testing.T) {
 	if err := conn.Close(); !errors.Is(err, failure) {
 		t.Fatalf("Close reported %v, want the release failure", err)
 	}
-	// The same answer every time, from both, because a terminal condition that
-	// depended on who asked first would be unusable.
-	if err := conn.Close(); !errors.Is(err, failure) {
-		t.Fatalf("the second Close reported %v", err)
+	// Only the Close that released the transport reports releasing it; why the
+	// connection ended is Wait's to report, the same to every caller.
+	if err := conn.Close(); err != nil {
+		t.Fatalf("the second Close reported %v, want nil", err)
 	}
 	if err := conn.Wait(); !errors.Is(err, failure) {
 		t.Fatalf("Wait reported %v, want the release failure", err)
@@ -210,7 +210,7 @@ func TestAClosedOutputWithABlockedInputEndsTheConnection(t *testing.T) {
 		if !errors.Is(err, acp.ErrConnectionClosed) {
 			t.Fatalf("Notify reported %v, want ErrConnectionClosed", err)
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(deadlockGuard):
 		t.Fatal("Notify never returned; the closed output never became a terminal state")
 	}
 	if err := conn.Wait(); err != nil {

@@ -40,14 +40,13 @@ func TestBooleanConfigurationIsGatedAtEveryAgentOutput(t *testing.T) {
 				Prompt: func(context.Context, *AgentSession, *PromptRequest) (*PromptResponse, error) {
 					return &PromptResponse{StopReason: StopReasonEndTurn}, nil
 				},
-				Cancel: func(context.Context, *AgentSession, *CancelNotification) {},
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
 			stream, conn := connectRawAgent(t, agent)
 			t.Cleanup(func() { _ = conn.Close() })
-			initialize, err := json.Marshal(InitializeRequest{ProtocolVersion: CurrentProtocolVersion, ClientCapabilities: ClientCapabilities{Session: capability.session}})
+			initialize, err := json.Marshal(InitializeRequest{ProtocolVersion: 1, ClientCapabilities: ClientCapabilities{Session: capability.session}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -80,7 +79,7 @@ func TestBooleanConfigurationIsGatedAtEveryAgentOutput(t *testing.T) {
 						if response.Error != nil {
 							t.Errorf("advertised boolean response: %v", response.Error)
 						}
-					} else if response.Error == nil || response.Error.Code != int64(ErrorCodeInternalError) {
+					} else if response.Error == nil || errorCodeOf(t, response) != ErrorCodeInternalError {
 						t.Errorf("unadvertised boolean response: %s / %v", response.Result, response.Error)
 					}
 				})
@@ -91,8 +90,7 @@ func TestBooleanConfigurationIsGatedAtEveryAgentOutput(t *testing.T) {
 					result <- conn.session("session").Update(t.Context(), &SessionUpdateParams{Update: &ConfigOptionUpdate{ConfigOptions: options}})
 				}()
 				if !capability.permitted {
-					var failure *Error
-					if err := <-result; !errors.As(err, &failure) || failure.Code != ErrorCodeInvalidParams {
+					if err := <-result; !errors.Is(err, ErrNotAdvertised) {
 						t.Errorf("unadvertised update: %v", err)
 					}
 					return
@@ -128,7 +126,7 @@ func TestSessionUpdatesRequireTheirSpecificClientCapabilities(t *testing.T) {
 		t.Run(capability.name, func(t *testing.T) {
 			stream, conn := rawAgentConnection(t)
 			t.Cleanup(func() { _ = conn.Close() })
-			initialize, err := json.Marshal(InitializeRequest{ProtocolVersion: CurrentProtocolVersion, ClientCapabilities: ClientCapabilities{Session: capability.session}})
+			initialize, err := json.Marshal(InitializeRequest{ProtocolVersion: 1, ClientCapabilities: ClientCapabilities{Session: capability.session}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -161,8 +159,7 @@ func TestSessionUpdatesRequireTheirSpecificClientCapabilities(t *testing.T) {
 					cancel()
 					incoming := <-read
 					if !update.permitted {
-						var failure *Error
-						if !errors.As(err, &failure) || failure.Code != ErrorCodeInvalidParams {
+						if !errors.Is(err, ErrNotAdvertised) {
 							t.Errorf("unadvertised update returned %v", err)
 						}
 						if incoming.message != nil {

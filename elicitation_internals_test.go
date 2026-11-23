@@ -10,21 +10,19 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/Tangerg/acp/internal/jsonrpc2"
 	"github.com/Tangerg/acp/internal/wire"
 	"github.com/Tangerg/acp/jsonrpc"
 )
 
 func TestAScopedElicitationWriteSharesItsParentsResponseDeadline(t *testing.T) {
-	for _, readElicitation := range []bool{false, true} {
-		t.Run(map[bool]string{false: "blocked elicitation", true: "blocked response"}[readElicitation], func(t *testing.T) {
+	for name, readElicitation := range map[string]bool{"blocked elicitation": false, "blocked response": true} {
+		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				conn := newTestAgentConn()
-				conn.handshake.begin()
-				conn.handshake.accept(PeerInfo{ClientCapabilities: ClientCapabilities{
+				conn.negotiation.accept(Negotiated{ClientCapabilities: ClientCapabilities{
 					Elicitation: OptValue(ElicitationCapabilities{Form: OptValue(ElicitationFormCapabilities{})}),
 				}})
-				conn.handshake.publish(nil)
+				conn.negotiation.open()
 				transport, peerTransport := NewInMemoryTransports()
 				stream, err := transport.Connect(t.Context())
 				if err != nil {
@@ -38,11 +36,11 @@ func TestAScopedElicitationWriteSharesItsParentsResponseDeadline(t *testing.T) {
 				conn.transport = blocked
 				conn.run()
 				defer conn.endReading(nil)
-				parent, err := conn.requests.accept(conn.life.ctx, jsonrpc2.Int64ID(9))
+				parent, err := conn.requests.accept(conn.life.ctx, inboundFor(jsonrpc.Int64ID(9)))
 				if err != nil {
 					t.Fatal(err)
 				}
-				ctx := withServingRequest(context.WithoutCancel(parent.ctx), parent, methodAuthenticate)
+				ctx := withServingRequest(context.WithoutCancel(parent.ctx), parent)
 				elicited := make(chan error, 1)
 				go func() {
 					_, err := conn.CreateElicitation(ctx, &CreateElicitationParams{
@@ -56,7 +54,7 @@ func TestAScopedElicitationWriteSharesItsParentsResponseDeadline(t *testing.T) {
 				answered := make(chan bool, 1)
 				go func() {
 					defer parent.finish()
-					answered <- conn.respond(parent, &AuthenticateResponse{}, nil)
+					answered <- conn.respond(parent, &AuthenticateResponse{}, nil) != nil
 				}()
 				synctest.Wait()
 				remaining := responseWriteTimeout
@@ -117,23 +115,22 @@ func TestARequestAnswerCannotOvertakeItsScopedElicitationWrite(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				conn := newTestAgentConn()
-				conn.handshake.begin()
-				conn.handshake.accept(PeerInfo{ClientCapabilities: ClientCapabilities{
+				conn.negotiation.accept(Negotiated{ClientCapabilities: ClientCapabilities{
 					Elicitation: OptValue(ElicitationCapabilities{
 						Form: OptValue(ElicitationFormCapabilities{}), URL: OptValue(ElicitationURLCapabilities{}),
 					}),
 				}})
-				conn.handshake.publish(nil)
+				conn.negotiation.open()
 				stream := &scopedElicitationStream{
 					entered: make(chan struct{}), resume: make(chan struct{}), messages: make(chan jsonrpc.Message, 2),
 				}
 				conn.transport = stream
-				parent, err := conn.requests.accept(t.Context(), jsonrpc2.Int64ID(9))
+				parent, err := conn.requests.accept(t.Context(), inboundFor(jsonrpc.Int64ID(9)))
 				if err != nil {
 					t.Fatal(err)
 				}
 				defer parent.finish()
-				ctx := withServingRequest(context.WithoutCancel(parent.ctx), parent, methodAuthenticate)
+				ctx := withServingRequest(context.WithoutCancel(parent.ctx), parent)
 				elicited := make(chan error, 1)
 				go func() {
 					_, err := conn.CreateElicitation(ctx, &CreateElicitationParams{Message: "?", Mode: mode})
@@ -145,7 +142,7 @@ func TestARequestAnswerCannotOvertakeItsScopedElicitationWrite(t *testing.T) {
 					t.Fatalf("elicitation returned before writing: %v", err)
 				}
 				answered := make(chan bool, 1)
-				go func() { answered <- conn.respond(parent, &AuthenticateResponse{}, nil) }()
+				go func() { answered <- conn.respond(parent, &AuthenticateResponse{}, nil) != nil }()
 				synctest.Wait()
 				if len(stream.messages) != 0 {
 					t.Error("the parent response overtook its request-scoped elicitation")
@@ -229,7 +226,7 @@ func TestAnUnadvertisedModeIsRefusedInbound(t *testing.T) {
 	stream, conn := connectRawClient(t, client)
 	defer conn.Close() //nolint:errcheck // idempotent.
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), deadlockGuard)
 	defer cancel()
 
 	// A url elicitation, which this client advertised no url mode for.
@@ -298,7 +295,7 @@ func TestElicitationIsMethodNotFoundWithoutHandlers(t *testing.T) {
 	stream, conn := connectRawClient(t, client)
 	defer conn.Close() //nolint:errcheck // idempotent.
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), deadlockGuard)
 	defer cancel()
 
 	form := `{"message":"?","mode":"form","requestedSchema":{"type":"object","properties":{}},` +
@@ -366,7 +363,7 @@ func connectRawClient(t *testing.T, client *Client) (Connection, *ClientConn) {
 		}
 		// An agent advertising nothing. What this client can be asked for is
 		// decided by what the client advertised, which is the point of the test.
-		result, encodeErr := json.Marshal(&InitializeResponse{ProtocolVersion: CurrentProtocolVersion})
+		result, encodeErr := json.Marshal(&InitializeResponse{ProtocolVersion: 1})
 		if encodeErr != nil {
 			answered <- encodeErr
 			return
@@ -413,7 +410,7 @@ func TestTheRecordedEditorCanBeElicitedFrom(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var peer PeerInfo
+	var peer Negotiated
 	for _, message := range transcript.ClientToAgent {
 		var envelope struct {
 			Method string          `json:"method"`
@@ -426,14 +423,14 @@ func TestTheRecordedEditorCanBeElicitedFrom(t *testing.T) {
 		if err := json.Unmarshal(envelope.Params, &request); err != nil {
 			t.Fatalf("decoding the editor's initialize: %v", err)
 		}
-		peer = PeerInfo{ClientCapabilities: request.ClientCapabilities}
+		peer = Negotiated{ClientCapabilities: request.ClientCapabilities}
 	}
 	if !hasCapability(peer.ClientCapabilities.Elicitation) {
 		t.Fatal("the transcript no longer carries an initialize advertising elicitation")
 	}
 
 	for _, method := range []string{methodElicitationCreate, methodElicitationComplete} {
-		if err := peer.permits(method); err != nil {
+		if err := peer.refusesOutbound(method); err != nil {
 			t.Errorf("the editor advertised %s and the gate refused it: %v", method, err)
 		}
 	}
@@ -441,7 +438,7 @@ func TestTheRecordedEditorCanBeElicitedFrom(t *testing.T) {
 		"form": &ElicitationFormMode{},
 		"url":  &ElicitationURLMode{},
 	} {
-		if err := peer.permitsElicitationMode(mode); err != nil {
+		if err := (&CreateElicitationRequest{Value: mode}).checkOutbound(&peer); err != nil {
 			t.Errorf("the editor advertised the %s mode and the gate refused it: %v", name, err)
 		}
 	}
@@ -479,7 +476,7 @@ func TestACompletionForAnUnknownElicitationIsIgnored(t *testing.T) {
 	stream, conn := connectRawClient(t, client)
 	defer conn.Close() //nolint:errcheck // idempotent.
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), deadlockGuard)
 	defer cancel()
 
 	// Never opened.
@@ -545,7 +542,7 @@ func TestAReusedOutstandingURLIDIsRefusedBeforeTheHandler(t *testing.T) {
 
 	stream, conn := connectRawClient(t, client)
 	defer conn.Close() //nolint:errcheck // idempotent.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), deadlockGuard)
 	defer cancel()
 
 	url := `{"message":"sign in","mode":"url","elicitationId":"same",` +
@@ -595,7 +592,7 @@ func TestAnUnencodableURLAcceptDoesNotKeepItsID(t *testing.T) {
 
 	stream, conn := connectRawClient(t, client)
 	defer conn.Close() //nolint:errcheck // idempotent.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), deadlockGuard)
 	defer cancel()
 
 	url := `{"message":"sign in","mode":"url","elicitationId":"same",` +
@@ -645,7 +642,7 @@ func TestACompletionIsClosedEvenWithNoHandler(t *testing.T) {
 	stream, conn := connectRawClient(t, client)
 	defer conn.Close() //nolint:errcheck // idempotent.
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), deadlockGuard)
 	defer cancel()
 
 	url := `{"message":"sign in","mode":"url","elicitationId":"e-1",` +

@@ -1,15 +1,14 @@
 package acp
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
+
+	"github.com/Tangerg/acp/internal/jsontest"
 )
 
 // errUnexpectedArm reports a fixture whose registered codec does not match the
@@ -248,15 +247,11 @@ func checkDivergence(testCase *fixtureCase) error {
 		return fmt.Errorf("case %q records a divergence that agrees with the reference implementation",
 			testCase.Name)
 	default:
-		actual, err := fixtureJSONValue(testCase.Normalized)
+		agrees, err := jsontest.Equivalent(testCase.Normalized, divergence.Normalized)
 		if err != nil {
-			return fmt.Errorf("case %q has invalid oracle JSON: %w", testCase.Name, err)
+			return fmt.Errorf("case %q has invalid oracle or divergence JSON: %w", testCase.Name, err)
 		}
-		claimed, err := fixtureJSONValue(divergence.Normalized)
-		if err != nil {
-			return fmt.Errorf("case %q has invalid divergence JSON: %w", testCase.Name, err)
-		}
-		if reflect.DeepEqual(actual, claimed) {
+		if agrees {
 			return fmt.Errorf("case %q records a divergence that agrees with the reference implementation", testCase.Name)
 		}
 		return nil
@@ -269,55 +264,11 @@ func checkDivergence(testCase *fixtureCase) error {
 // gone too.
 func equivalentJSON(t *testing.T, got, want []byte) bool {
 	t.Helper()
-	decodedGot, err := fixtureJSONValue(got)
+	equivalent, err := jsontest.Equivalent(got, want)
 	if err != nil {
-		t.Fatalf("the Go encoding is not valid JSON: %v", err)
+		t.Fatalf("comparing the Go encoding with the recorded expectation: %v", err)
 	}
-	decodedWant, err := fixtureJSONValue(want)
-	if err != nil {
-		t.Fatalf("the recorded expectation is not valid JSON: %v", err)
-	}
-	return reflect.DeepEqual(decodedGot, decodedWant)
-}
-
-// The fixture oracle must compare exact numbers independently of the production
-// codec. float64 would make adjacent integers beyond 2^53 look equivalent.
-func fixtureJSONValue(data []byte) (any, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	var value any
-	if err := decoder.Decode(&value); err != nil {
-		return nil, err
-	}
-	return normalizeFixtureNumbers(value)
-}
-
-func normalizeFixtureNumbers(value any) (any, error) {
-	switch current := value.(type) {
-	case json.Number:
-		number, valid := new(big.Rat).SetString(string(current))
-		if !valid {
-			return nil, fmt.Errorf("cannot compare fixture number %q", current)
-		}
-		return number, nil
-	case []any:
-		for index, item := range current {
-			normalized, err := normalizeFixtureNumbers(item)
-			if err != nil {
-				return nil, err
-			}
-			current[index] = normalized
-		}
-	case map[string]any:
-		for name, item := range current {
-			normalized, err := normalizeFixtureNumbers(item)
-			if err != nil {
-				return nil, err
-			}
-			current[name] = normalized
-		}
-	}
-	return value, nil
+	return equivalent
 }
 
 func TestFixtureDivergencesMustRemainDifferent(t *testing.T) {

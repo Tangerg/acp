@@ -14,10 +14,10 @@ import (
 // about it.
 //
 // These are the part of the standard a generator cannot implement: not shapes but
-// obligations, kept only by somebody having read them. Written down once, the way
-// the capability table quotes the schema beside each row, and held against the
-// schema in both directions so that a release adding an obligation fails here
-// rather than waiting to be noticed, and a row cannot outlive its clause.
+// obligations, kept only by somebody having read them. Written down once and held
+// against the schema in both directions, so that a release adding an obligation
+// fails here rather than waiting to be noticed, and a row cannot outlive its
+// clause.
 //
 // Being classified is all this asserts. That a clause is satisfied is asserted by
 // the tests each row names.
@@ -45,6 +45,146 @@ type obligation struct {
 // Keyed by the sentence as normativeClauses extracts it. Quoting in full is the
 // point: a reviewer compares a row against the standard without leaving the file.
 var obligations = map[string]obligation{
+	"A supplied path MUST be absolute.": {
+		ownedHere,
+		"SessionNotification.checkOutbound refuses a plan_update whose markdown plan names a relative path",
+	},
+	"Each path MUST be absolute.": {
+		ownedHere,
+		"checkSessionSetup, SessionNotification.checkOutbound and ListSessionsResponse.checkOutbound refuse a relative additional directory before it is sent",
+	},
+	"Agents MUST NOT send this update unless the Client advertised `plan`.": {
+		ownedHere,
+		"SessionNotification.checkOutbound refuses plan_update and plan_removed unless clientCapabilities.plan was advertised",
+	},
+	"Agents MUST only send this update when the Client advertised the `subagents` Client capability.": {
+		ownedHere,
+		"SessionNotification.checkOutbound refuses subagent_update, session_message and session_message_chunk unless clientCapabilities.subagents was advertised",
+	},
+	"The first update for an unknown `sessionId` announces the child and MUST be sent before any live child traffic or live message naming the child as sender or recipient.": {
+		ownedByApplication,
+		"which child sessions exist is the agent application's state; this package carries each update in the order it is sent",
+	},
+	"Agents MUST return an error for a mode they do not support rather than treating it as `append` or `override`.": {
+		ownedByApplication,
+		"the agent application applies the system prompt; SystemPromptMode is an open union, so an unknown mode reaches it intact to refuse",
+	},
+	"An Agent MUST return an error for a mode it does not support rather than treating it as `append` or `override`.": {
+		ownedByApplication,
+		"the same rule stated on SystemPromptMode; the unknown value reaches the handler as received",
+	},
+	"Agents that cannot apply it, for example because of an unadvertised mode or an unsupported content block type, MUST return an error instead of creating, loading, or resuming the session.": {
+		ownedByApplication,
+		"the session handlers decide whether they can apply a system prompt and return an ACP Error when they cannot",
+	},
+	"Agents advertising the capability MUST accept `text` content blocks.": {
+		ownedByApplication,
+		"the agent application interprets system prompt content; this package delivers it without filtering",
+	},
+	"Agents SHOULD give the content system-level precedence, for example in the model's system prompt or developer instructions rather than in user-turn content.": {
+		ownedByApplication,
+		"how a model is prompted is the agent application's",
+	},
+	"Clients MUST NOT send an empty array.": {
+		ownedHere,
+		"checkSystemPrompt refuses an empty systemPrompt.content before the request is sent",
+	},
+	"Clients MUST NOT send other content block types until a future capability allows them, and Agents MUST return an error for content blocks they do not support.": {
+		ownedHere,
+		"checkSystemPrompt refuses any non-text block on the way out; refusing on the way in is the agent handler's, which receives the blocks as sent",
+	},
+	"Clients MUST only send this when the Agent advertises `sessionCapabilities.systemPrompt`, and SHOULD send the same value they used when the session was created.": {
+		ownedHere,
+		"checkSessionSetup refuses a systemPrompt the agent did not advertise; sending the same value again is the application's choice of value",
+	},
+	"Clients MUST only send this when the Agent advertises `sessionCapabilities.systemPrompt`.": {
+		ownedHere,
+		"checkSessionSetup refuses a systemPrompt on session/new when agentCapabilities.sessionCapabilities.systemPrompt is absent",
+	},
+	"Clients that use this mode take responsibility for any tool guidance or safety instructions the Agent's default instructions provided, and MUST only use it when the Agent advertises `sessionCapabilities.systemPrompt.mode.override`.": {
+		ownedHere,
+		"checkSystemPrompt refuses the override mode unless agentCapabilities.sessionCapabilities.systemPrompt.mode.override was advertised; the content of the instructions is the application's",
+	},
+	"Clients MUST ignore a removal for an unknown ID.": {
+		ownedByApplication,
+		"plans are the client application's display state; the removal reaches its SessionUpdate handler, which holds the set",
+	},
+	"The Agent MUST send all entries with their current status.": {
+		ownedByApplication,
+		"the agent application builds each plan update; this package carries it whole",
+	},
+	"The Client MUST replace the checklist with this `planId` on each update.": {
+		ownedByApplication,
+		"rendering a plan is the client application's",
+	},
+	"The Client MUST replace the entire checklist with each update.": {
+		ownedByApplication,
+		"rendering a plan is the client application's",
+	},
+	"The Client MUST stop presenting the previous state as confirmed current activity, but may retain it as last known.": {
+		ownedByApplication,
+		"presentation is the client application's; the unknown state reaches it as its own arm",
+	},
+	"Agents SHOULD catch these exceptions and return this semantically meaningful response to confirm successful cancellation.": {
+		ownedHere,
+		"AgentConn.servePrompt answers a cancelled turn with the cancelled stop reason whatever its handler returned, so an abort error is never relayed",
+	},
+	"Agents SHOULD include it.": {
+		ownedByApplication,
+		"whether an idle child reports its failure is the agent application's choice of what to send",
+	},
+	"Agents that do not understand this action SHOULD preserve the raw payload when storing, replaying, proxying, or forwarding elicitation responses.": {
+		ownedHere,
+		"the catch-all action arm keeps every undeclared property in Extra and re-encodes it unchanged",
+	},
+	"Clients that do not understand this mode SHOULD preserve the raw payload when storing, replaying, proxying, or forwarding elicitation requests.": {
+		ownedHere,
+		"CreateElicitationRequestOther keeps every undeclared property in Extra and re-encodes it unchanged",
+	},
+	"Clients that do not understand this property schema type SHOULD preserve the raw schema when storing, replaying, proxying, or forwarding elicitation requests.": {
+		ownedHere,
+		"ElicitationPropertySchemaOther keeps every undeclared property in Extra and re-encodes it unchanged",
+	},
+	"If not provided, the name SHOULD be used for display.": {
+		ownedByApplication,
+		"display is the application's; both fields reach it",
+	},
+	"Implementations MUST NOT make assumptions about values in `_meta`.": {
+		ownedByApplication,
+		"Meta carries values as encoded JSON and interprets none of them",
+	},
+	"Property definitions (MUST be primitive types).": {
+		ownedHere,
+		"the generated ElicitationPropertySchema union admits only the primitive property arms, and a form is compiled before it is shown or sent",
+	},
+	"The agent MUST cancel any ongoing work (as if `session/cancel` was called) and then free up any resources associated with the session.": {
+		ownedHere,
+		"the session/close binding cancels the session's turn before the CloseSession handler runs",
+	},
+	"The client SHOULD disconnect, if it doesn't support this version.": {
+		ownedHere,
+		"ClientConn.initialize refuses any version but 1, and Client.Connect closes the connection",
+	},
+	"The client SHOULD set this to `true` only when it can reproduce the configured agent invocation in an interactive terminal.": {
+		ownedByApplication,
+		"whether a client can reproduce the invocation is the application's knowledge; it sets auth.terminal through ClientConfig.Capabilities",
+	},
+	"The message SHOULD be limited to a concise single sentence.": {
+		ownedByApplication,
+		"an application writes the messages of the errors it returns; the ones this package writes are single sentences",
+	},
+	"The mode MUST be one of the modes advertised in `availableModes` during session creation or loading.": {
+		ownedByApplication,
+		"the modes are data the agent application returned; ClientSession.SetMode sends the identifier the application chose",
+	},
+	"The terminal MUST be added before calling `terminal/release`.": {
+		ownedByApplication,
+		"the agent application embeds terminals in its tool calls and decides when to release one",
+	},
+	"This MUST be an integer as defined in the JSON-RPC specification.": {
+		ownedHere,
+		"the generated ErrorCode is an int32 and refuses anything else in both directions",
+	},
 	"Agents MUST advertise this method only when the client enabled its terminal authentication capability.": {
 		ownedHere,
 		"authenticationMethods.offered drops terminal methods when the client did not " +
@@ -60,7 +200,7 @@ var obligations = map[string]obligation{
 
 	"All agents MUST support text content blocks in prompts.": {
 		ownedHere,
-		"PeerInfo.permitsPromptContent gates image, audio and embedded resources and nothing " +
+		"checkPromptContent gates image, audio and embedded resources and nothing " +
 			"else, so text is never refused for want of a capability",
 	},
 	"All agents MUST support resource links in prompts.": {
@@ -73,7 +213,8 @@ var obligations = map[string]obligation{
 	},
 	"As a baseline, all Agents **MUST** support `session/new`, `session/prompt`, `session/cancel`, and `session/update`.": {
 		ownedHere,
-		"NewAgent refuses a configuration missing NewSession, Prompt or Cancel, and " +
+		"NewAgent refuses a configuration missing NewSession or Prompt, the connection itself " +
+			"serves session/cancel by cancelling the turn, and " +
 			"session/update is an outbound operation every AgentSession has",
 	},
 
@@ -91,7 +232,7 @@ var obligations = map[string]obligation{
 		"the connection turns a committed cancellation into StopReasonCancelled rather than " +
 			"letting a handler's context error escape as -32603",
 	},
-	"MUST send one of these responses for the original request: - Valid response with appropriate data (partial results or cancellation marker) - Error response with code `-32800` (Cancelled) See protocol docs: [Cancellation](https://agentclientprotocol.com/protocol/v1/cancellation)": {
+	"MUST send one of these responses for the original request: - Valid response with appropriate data (partial results or cancellation marker) - Error response with code `-32800` (Cancelled) See protocol docs: [Request Cancellation](https://agentclientprotocol.com/protocol/v1/cancellation)": {
 		ownedHere,
 		"a request cancelled by $/cancel_request is answered by the connection, with -32800 " +
 			"when the handler could not produce a valid response",
@@ -110,7 +251,7 @@ var obligations = map[string]obligation{
 	},
 	"Agents MUST only send notices when the Client advertised the `session.notices` Client capability.": {
 		ownedHere,
-		"PeerInfo.validateSessionUpdate gates Notice on the advertised notices object; " +
+		"SessionNotification.checkOutbound gates Notice on the advertised notices object; " +
 			"TestSessionUpdatesRequireTheirSpecificClientCapabilities checks absent, null, " +
 			"and independently advertised update capabilities before anything is sent",
 	},
@@ -120,19 +261,19 @@ var obligations = map[string]obligation{
 	},
 	"Agents MUST only send this update when the Client advertised the `session.compaction` Client capability.": {
 		ownedHere,
-		"PeerInfo.validateSessionUpdate gates both CompactionUpdate and CompactionSummaryChunk " +
+		"SessionNotification.checkOutbound gates both CompactionUpdate and CompactionSummaryChunk " +
 			"on the compaction object; TestSessionUpdatesRequireTheirSpecificClientCapabilities " +
 			"proves notice support does not also enable compaction",
 	},
 
 	"JSON RPC Request Id An identifier established by the Client that MUST contain a String, Number, or NULL value if included.": {
 		ownedHere,
-		"requestID is a union of exactly those three arms, and jsonrpcID refuses anything else",
+		"RequestId is jsonrpc.ID, whose three kinds are exactly those arms and which refuses anything else",
 	},
 	"The value SHOULD normally not be Null \\[1\\] and Numbers SHOULD NOT contain fractional parts \\[2\\] The Server MUST reply with the same value in the Response object if included.": {
 		ownedHere,
 		"a response is written under the identifier its request arrived with; identifiers are " +
-			"minted by internal/jsonrpc2 and never by a caller",
+			"minted by the pending-call table and never by a caller",
 	},
 	"Implementations MUST NOT make assumptions about values at these keys.": {
 		ownedHere,

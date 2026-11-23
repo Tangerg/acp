@@ -29,7 +29,7 @@ func loadSchema(t *testing.T) *Document {
 // implementation.
 //
 // The envelope is JSON-RPC's grammar, not ACP's: an id, a method name, and
-// params. internal/jsonrpc2 owns it, so generating a second set of types for it
+// params. Package jsonrpc owns it, so generating a second set of types for it
 // would be two sources of truth for one thing — and the routing unions inside it,
 // "every request an agent can send", are of no use to a connection that
 // dispatches on the method name.
@@ -133,10 +133,16 @@ func TestThePlannerRefusesPropertyShapesItDoesNotImplement(t *testing.T) {
 			why:    "the Go type permits one more value than this schema",
 		},
 		{
+			name:   "a format that belongs to another JSON type",
+			schema: `{"type":"integer","format":"double"}`,
+			wants:  "belongs to number",
+			why:    "an integer decoded as float64 would accept 1.5",
+		},
+		{
 			name:   "a bounded floating point value",
 			schema: `{"type":"number","format":"double","minimum":0}`,
-			wants:  "is not the low bound of",
-			why:    "zero is not a bound supplied by float64",
+			wants:  "a bound on float64 is not implemented",
+			why:    "float64 supplies no bound the schema's minimum could be equal to",
 		},
 	}
 
@@ -421,5 +427,168 @@ func TestACatchAllArmsAlternativesAreReadOrRefused(t *testing.T) {
 				t.Fatalf("refused with %q, which does not mention %q", err, test.wants)
 			}
 		})
+	}
+}
+
+// A known keyword is still meaningless where no planning step consumes it, and
+// accepting it would produce a type that silently does not enforce it.
+func TestKeywordsAreRefusedWhereTheyAreNotConsumed(t *testing.T) {
+	planner := newPlanner(loadSchema(t))
+	if err := planner.allocate(); err != nil {
+		t.Fatalf("allocate: %v", err)
+	}
+	for name, test := range map[string]struct{ schema, wants string }{
+		"a constant property":              {`{"type":"string","const":"x"}`, "const on a property"},
+		"a negated property":               {`{"type":"string","not":{"type":"integer"}}`, "not on a property"},
+		"unevaluatedProperties on a field": {`{"type":"string","unevaluatedProperties":false}`, "unevaluatedProperties"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var schema Schema
+			if err := schema.UnmarshalJSON([]byte(test.schema)); err != nil {
+				t.Fatal(err)
+			}
+			_, err := planner.planField("a", &schema, true)
+			if err == nil || !strings.Contains(err.Error(), test.wants) {
+				t.Fatalf("planField(%s) = %v, want a refusal mentioning %q", test.schema, err, test.wants)
+			}
+		})
+	}
+
+	var closed Schema
+	if err := closed.UnmarshalJSON([]byte(
+		`{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":false}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := planner.planStruct(&Def{}, &closed, ""); err == nil ||
+		!strings.Contains(err.Error(), "additionalProperties") {
+		t.Fatalf("a closed struct was accepted: %v", err)
+	}
+}
+
+func planSchema(t *testing.T, schema string, manifest Manifest) (*Plan, error) {
+	t.Helper()
+	doc, err := loadDocument([]byte(schema))
+	if err != nil {
+		t.Fatalf("the case's own schema does not load: %v", err)
+	}
+	return newPlanner(doc).Plan(&manifest, "test")
+}
+
+// The scope a generated header reports is what was planned, including a
+// definition reached only through a map's values.
+func TestTheClosureIsWhatWasPlanned(t *testing.T) {
+	plan, err := planSchema(t, `{"$defs":{
+		"A":{"type":"object","properties":{"m":{"type":"object","additionalProperties":{"$ref":"#/$defs/B"}}}},
+		"B":{"type":"string"},
+		"C":{"type":"string"}
+	}}`, Manifest{Payloads: []string{"A"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"A", "B"}; !reflect.DeepEqual(plan.Closure, want) {
+		t.Fatalf("closure = %v, want %v", plan.Closure, want)
+	}
+}
+
+func TestAReachableProbeStopsGeneration(t *testing.T) {
+	_, err := planSchema(t, `{"$defs":{
+		"A":{"type":"object","properties":{"b":{"$ref":"#/$defs/B"}}},
+		"B":{"type":"string"}
+	}}`, Manifest{Payloads: []string{"A"}, Probes: map[string]string{"B": "a string newtype"}})
+	if err == nil || !strings.Contains(err.Error(), "probe B is reachable") {
+		t.Fatalf("Plan = %v, want the reachable probe refused", err)
+	}
+}
+
+// An arm's tag is the constant of the union's discriminant property, whatever
+// other constants the arm carries, so generation is deterministic.
+func TestAnArmsTagIsItsDiscriminantsConstant(t *testing.T) {
+	var union Schema
+	if err := union.UnmarshalJSON([]byte(`{"anyOf":[
+		{"type":"object","properties":{"kind":{"type":"string","const":"a"}}},
+		{"type":"object","properties":{"kind":{"type":"string","const":"b"},"version":{"type":"string","const":"v1"}}}
+	]}`)); err != nil {
+		t.Fatal(err)
+	}
+	for range 50 {
+		disc := discriminant(&union, union.Arms())
+		tag, err := union.Arms()[1].armTag(disc)
+		if err != nil || disc != "kind" || tag != "b" {
+			t.Fatalf("discriminant %q, tag %q, err %v; want kind and b", disc, tag, err)
+		}
+	}
+}
+
+// The reserved values are the `not` clause's own, and a clause that disagrees
+// with the known arms is refused rather than silently replaced by them.
+func TestACatchAllReservesWhatItsNotClauseSays(t *testing.T) {
+	_, err := planSchema(t, `{"$defs":{
+		"U":{"anyOf":[
+			{"type":"object","properties":{"mode":{"type":"string","const":"form"}},"required":["mode"]},
+			{"title":"Other","type":"object","properties":{"mode":{"type":"string"}},"required":["mode"],
+			 "not":{"anyOf":[{"type":"object","properties":{"mode":{"type":"string","const":"zzz"}},"required":["mode"]}]}}
+		]}
+	}}`, Manifest{Payloads: []string{"U"}})
+	if err == nil || !strings.Contains(err.Error(), "reserves [zzz]") {
+		t.Fatalf("Plan = %v, want the disagreeing not clause refused", err)
+	}
+}
+
+func TestAnExportedTypeCannotReachAnUnexportedOneThroughAContainer(t *testing.T) {
+	_, err := planSchema(t, `{"$defs":{
+		"Pub":{"type":"object","properties":{"ids":{"type":"array","items":{"$ref":"#/$defs/Hidden"}}}},
+		"Hidden":{"type":"string"}
+	}}`, Manifest{Payloads: []string{"Pub"}, Internal: map[string]string{"Hidden": "internal"}})
+	if err == nil || !strings.Contains(err.Error(), "reaches the unexported hidden") {
+		t.Fatalf("Plan = %v, want the hidden element type refused", err)
+	}
+}
+
+// Imports come from the selectors the code uses, not from words in a comment.
+func TestImportsIgnorePackageNamesInComments(t *testing.T) {
+	source, err := goFile("// header\n", []byte("// Use slices. Then fmt.\ntype T struct{}\n\nvar _ = errors.New\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(source), `"slices"`) || strings.Contains(string(source), `"fmt"`) ||
+		!strings.Contains(string(source), `"errors"`) {
+		t.Fatalf("imports were not derived from selectors:\n%s", source)
+	}
+}
+
+func TestMethodShapesComeFromTheRoutingUnions(t *testing.T) {
+	doc := loadSchema(t)
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "schema", "meta.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	table, err := loadMethodTable(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	methods, err := planMethods(doc, table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shapes := make(map[string]methodShape, len(methods))
+	scoped := make(map[string]bool, len(methods))
+	for _, method := range methods {
+		shapes[method.Name] = method.Shape
+		scoped[method.Name] = method.RequiresSessionID
+	}
+	for name, want := range map[string]methodShape{
+		"session/prompt":   shapeRequest,
+		"session/cancel":   shapeNotification,
+		"session/update":   shapeNotification,
+		"$/cancel_request": shapeNotification,
+		"terminal/kill":    shapeRequest,
+	} {
+		if shapes[name] != want {
+			t.Errorf("%s has shape %d, want %d", name, shapes[name], want)
+		}
+	}
+	if !scoped["session/prompt"] || scoped["session/new"] || scoped["initialize"] {
+		t.Errorf("session scoping misread: prompt %t, new %t, initialize %t",
+			scoped["session/prompt"], scoped["session/new"], scoped["initialize"])
 	}
 }

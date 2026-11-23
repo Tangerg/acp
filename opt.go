@@ -6,40 +6,18 @@ import (
 )
 
 // An Opt holds an optional JSON property that the schema also permits to be
-// null, and keeps the three states those two facts produce apart: absent, null,
-// and present with a value.
+// null, and keeps its three states apart: absent, null, and present with a value.
 //
-// The stable schema repeatedly distinguishes an omitted property from one present
-// as null, so a pointer with omitempty cannot carry this part of the grammar. A
-// nil pointer would have to mean both. The zero Opt is the absent state, which is
-// what the encoder's omitzero tag option consults through [Opt.IsZero]: an absent
-// field emits nothing while an explicit null emits null.
+// The schema distinguishes an omitted property from one present as null, which a
+// nil pointer cannot. The zero Opt is absent, and the omitzero tag option keeps
+// it out of the message through [Opt.IsZero]. Where the schema calls the two
+// equivalent, such as a capability that is not advertised, both states are still
+// kept: what they mean is the domain's decision, not the codec's.
 //
-// Where the schema says the two are semantically equivalent, such as capability
-// fields where both mean not advertised, the wire representation still retains
-// both states. Domain code decides whether they mean the same thing; the codec
-// does not erase a distinction the schema permits.
-//
-// An absent Opt asked for JSON anyway encodes as null, because there is nothing
-// else honest to answer: omitting it is the encoder's job, not this type's.
-//
-// # Two decoders, and the one difference between them
-//
-// A generated field is decoded by this package's schema-directed codec, which
-// never reaches [Opt.UnmarshalJSON]. A value that cannot be read there leaves the
-// property absent and the surrounding message intact, because a peer's optional
-// property this package cannot parse is not a reason to drop everything the peer
-// also sent.
-//
-// An Opt in a type of the caller's own — extension method parameters, or
-// something decoded out of a [Meta] key — has no schema behind it, so
-// [Opt.UnmarshalJSON] decodes it and reports the failure, which is what
-// encoding/json does everywhere else and what a caller who owns that grammar
-// should get.
-//
-// The three states behave identically on both paths. Only a value that fails to
-// decode is answered differently, and only because on one path the grammar is the
-// protocol's and on the other it is the caller's.
+// A generated field is decoded by the schema-directed codec, which leaves an
+// unreadable optional property absent rather than refusing the message around it.
+// An Opt in a caller's own type has no schema behind it, so [Opt.UnmarshalJSON]
+// reports the failure as encoding/json does.
 type Opt[T any] struct {
 	state optState
 	value T

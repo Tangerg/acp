@@ -1,12 +1,10 @@
 package acp
 
 import (
-	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 
-	"github.com/Tangerg/acp/internal/jsonrpc2"
+	"github.com/Tangerg/acp/jsonrpc"
 )
 
 func TestErrorCodeComparisonHandlesTypedNilErrors(t *testing.T) {
@@ -20,32 +18,39 @@ func TestErrorCodeComparisonHandlesTypedNilErrors(t *testing.T) {
 	}
 }
 
-func TestWireErrorCodeMustFitThePublishedInt32Union(t *testing.T) {
-	for _, code := range []int64{-1 << 31, -32042, 1<<31 - 1} {
+func errorResponse(raw string) *jsonrpc.Response {
+	return &jsonrpc.Response{ID: jsonrpc.Int64ID(1), Error: []byte(raw)}
+}
+
+// The generated ErrorCode owns the int32 range, so a peer's error decodes through
+// it and nothing else.
+func TestAPeersErrorCodeMustFitThePublishedInt32Union(t *testing.T) {
+	for _, code := range []string{"-2147483648", "-32042", "2147483647"} {
 		var failure *Error
-		if err := errorFromWire(&jsonrpc2.WireError{Code: code, Message: "failed"}); !errors.As(err, &failure) {
-			t.Errorf("code %d returned %v, want a preserved ACP error", code, err)
-		} else if int64(failure.Code) != code {
-			t.Errorf("code %d became %d", code, failure.Code)
+		if err := decodeResponse(errorResponse(`{"code":`+code+`,"message":"failed"}`), nil); !errors.As(err, &failure) {
+			t.Errorf("code %s returned %v, want a preserved ACP error", code, err)
 		}
 	}
-	for _, code := range []int64{-1<<31 - 1, 1 << 31} {
-		if err := errorFromWire(&jsonrpc2.WireError{Code: code}); err == nil || !strings.Contains(
-			err.Error(), "outside ACP's int32 range",
-		) {
-			t.Errorf("code %d returned %v, want an int32 range error", code, err)
+	for _, code := range []string{"-2147483649", "2147483648"} {
+		err := decodeResponse(errorResponse(`{"code":`+code+`,"message":"failed"}`), nil)
+		if failure := (*Error)(nil); errors.As(err, &failure) {
+			t.Errorf("code %s decoded as %v, want a malformed-error failure", code, failure)
 		}
 	}
 }
 
-func TestWireErrorDataKeepsNullIndependentOfWhitespace(t *testing.T) {
-	for _, data := range []json.RawMessage{json.RawMessage("null"), json.RawMessage(" \nnull\t")} {
-		var failure *Error
-		if err := errorFromWire(&jsonrpc2.WireError{Code: -32000, Data: data}); !errors.As(err, &failure) {
-			t.Fatalf("wire error = %v", err)
-		}
-		if !failure.Data.IsNull() {
-			t.Errorf("data %q lost its null state", data)
-		}
+func TestAPeersErrorDataKeepsNullApartFromAbsent(t *testing.T) {
+	var failure *Error
+	if err := decodeResponse(errorResponse(`{"code":-32000,"message":"m","data": null }`), nil); !errors.As(err, &failure) {
+		t.Fatalf("decode = %v", err)
+	}
+	if !failure.Data.IsNull() {
+		t.Error("explicit null data was not preserved")
+	}
+	if err := decodeResponse(errorResponse(`{"code":-32000,"message":"m"}`), nil); !errors.As(err, &failure) {
+		t.Fatalf("decode = %v", err)
+	}
+	if !failure.Data.IsZero() {
+		t.Error("absent data became present")
 	}
 }

@@ -4,7 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -34,7 +35,7 @@ func TestAClientServesNothingBeforeItsHandshakeIsAnswered(t *testing.T) {
 			updated <- struct{}{}
 		},
 		RequestPermission: denyingPermission,
-		CallFallback: func(context.Context, *acp.ClientConn, *acp.ExtRequest) (json.RawMessage, error) {
+		CallFallback: func(context.Context, *acp.ClientConn, *acp.ExtRequest) (any, error) {
 			extended <- struct{}{}
 			return json.RawMessage(`{}`), nil
 		},
@@ -57,11 +58,11 @@ func TestAClientServesNothingBeforeItsHandshakeIsAnswered(t *testing.T) {
 	if refused.Error == nil {
 		t.Fatal("an extension call was served before the client had accepted the handshake")
 	}
-	if !strings.Contains(refused.Error.Error(), "before initialize") {
+	if !strings.Contains(string(refused.Error), "before initialize") {
 		t.Errorf("refused with %v, which does not say why", refused.Error)
 	}
 
-	answerCall(ctx, t, stream, handshake, fmt.Sprintf(`{"protocolVersion":%d}`, acp.CurrentProtocolVersion))
+	answerCall(ctx, t, stream, handshake, `{"protocolVersion":1}`)
 	result := <-connected
 	if result.err != nil {
 		t.Fatalf("Client.Connect: %v", result.err)
@@ -113,16 +114,15 @@ func TestTheInitializeAnswerIsBuiltForTheClientInFrontOfIt(t *testing.T) {
 				Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 					return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 				},
-				Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 			})
 			if err != nil {
 				t.Fatalf("NewAgent: %v", err)
 			}
-			_, stream, ctx := rawClientFor(t, agent)
+			stream, ctx := rawClientFor(t, agent)
 
 			answered := answerInitializeRaw(ctx, t, stream,
 				`{"protocolVersion":1,"clientCapabilities":{"auth":{"terminal":`+
-					boolText(test.optedIn)+`}}}`)
+					strconv.FormatBool(test.optedIn)+`}}}`)
 
 			offered := make([]string, 0, len(answered.AuthMethods))
 			for _, method := range answered.AuthMethods {
@@ -136,7 +136,7 @@ func TestTheInitializeAnswerIsBuiltForTheClientInFrontOfIt(t *testing.T) {
 			if len(offered) == 0 {
 				offered = nil
 			}
-			if !equalStrings(offered, test.expected) {
+			if !slices.Equal(offered, test.expected) {
 				t.Fatalf("advertised %v, want %v", offered, test.expected)
 			}
 		})
@@ -159,7 +159,6 @@ func TestTerminalAuthenticationNeedsNoHandlerAndCannotBeCalled(t *testing.T) {
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 	})
 	if err != nil {
 		t.Fatalf("NewAgent refused a terminal-only agent, which serves no authenticate call: %v", err)
@@ -180,8 +179,8 @@ func TestTerminalAuthenticationNeedsNoHandlerAndCannotBeCalled(t *testing.T) {
 
 	// The client learns the method from the handshake, which is the only place it
 	// could.
-	if len(conn.Peer().AuthMethods) != 1 {
-		t.Fatalf("the client was told about %d authentication methods", len(conn.Peer().AuthMethods))
+	if len(conn.Negotiated().AuthMethods) != 1 {
+		t.Fatalf("the client was told about %d authentication methods", len(conn.Negotiated().AuthMethods))
 	}
 
 	_, err = conn.Authenticate(context.Background(), &acp.AuthenticateRequest{MethodID: "tui"})
@@ -193,10 +192,11 @@ func TestTerminalAuthenticationNeedsNoHandlerAndCannotBeCalled(t *testing.T) {
 	}
 }
 
-// The client retains the authentication catalogue as an authority boundary, so
-// it must reject ambiguity and methods the agent was not entitled to advertise
-// before publishing the handshake.
-func TestAClientRejectsAnInvalidAuthenticationCatalogue(t *testing.T) {
+// The schema skips invalid items of authMethods, and the rules an entry breaks
+// here are the agent's, so the client drops the entry rather than refusing the
+// connection: a duplicate identifier keeps its first method, and a terminal
+// method offered to a client that did not enable one is never usable.
+func TestAClientDropsInvalidAuthenticationMethods(t *testing.T) {
 	tests := map[string]string{
 		"duplicate identifiers": `{"protocolVersion":1,"authMethods":[` +
 			`{"id":"oauth","name":"One"},{"id":"oauth","name":"Two"}]}`,
@@ -210,11 +210,17 @@ func TestAClientRejectsAnInvalidAuthenticationCatalogue(t *testing.T) {
 			handshake := expectCall(ctx, t, stream, "initialize")
 			answerCall(ctx, t, stream, handshake, answer)
 
-			if result := <-connected; result.err == nil {
-				if result.conn != nil {
-					_ = result.conn.Close()
-				}
-				t.Fatal("Client.Connect accepted an invalid authentication catalogue")
+			result := <-connected
+			if result.err != nil {
+				t.Fatalf("Client.Connect refused the connection over an invalid entry: %v", result.err)
+			}
+			defer result.conn.Close() //nolint:errcheck // idempotent.
+			methods := result.conn.Negotiated().AuthMethods
+			if name == "duplicate identifiers" && len(methods) != 1 {
+				t.Fatalf("kept %d methods for one identifier, want the first", len(methods))
+			}
+			if name == "terminal without opt-in" && len(methods) != 0 {
+				t.Fatalf("kept a terminal method the client cannot use: %#v", methods)
 			}
 		})
 	}
@@ -239,25 +245,6 @@ func answerInitializeRaw(
 		t.Fatalf("decoding the answer: %v", err)
 	}
 	return answered
-}
-
-func boolText(value bool) string {
-	if value {
-		return "true"
-	}
-	return "false"
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // An agent waits for its client rather than refusing to send.
@@ -333,7 +320,7 @@ func TestAClientServesWhatTheAgentSendsAfterAnswering(t *testing.T) {
 				heard <- "session/update"
 			},
 			RequestPermission: denyingPermission,
-			CallFallback: func(_ context.Context, _ *acp.ClientConn, request *acp.ExtRequest) (json.RawMessage, error) {
+			CallFallback: func(_ context.Context, _ *acp.ClientConn, request *acp.ExtRequest) (any, error) {
 				heard <- request.Method
 				return json.RawMessage(`{}`), nil
 			},
@@ -350,7 +337,7 @@ func TestAClientServesWhatTheAgentSendsAfterAnswering(t *testing.T) {
 
 		// The answer, then a request and a notification with no gap: an agent may
 		// send both the moment its answer is on the wire.
-		answerCall(ctx, t, stream, handshake, fmt.Sprintf(`{"protocolVersion":%d}`, acp.CurrentProtocolVersion))
+		answerCall(ctx, t, stream, handshake, `{"protocolVersion":1}`)
 		writeRaw(ctx, t, stream, `{"jsonrpc":"2.0","method":"_vendor.example/after","params":{}}`)
 		answered := roundTrip(ctx, t, stream, 900, "_vendor.example/asked", `{}`)
 
@@ -421,7 +408,6 @@ func TestAuthenticateIsHeldToTheAdvertisedMethods(t *testing.T) {
 				Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 					return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 				},
-				Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 			})
 			if err != nil {
 				t.Fatalf("NewAgent: %v", err)
@@ -477,12 +463,11 @@ func TestAnAgentRefusesAnUnadvertisedAuthenticationMethod(t *testing.T) {
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 	})
 	if err != nil {
 		t.Fatalf("NewAgent: %v", err)
 	}
-	_, stream, ctx := rawClientFor(t, agent)
+	stream, ctx := rawClientFor(t, agent)
 	initializeRaw(ctx, t, stream)
 
 	refused := roundTrip(ctx, t, stream, 2, "authenticate", `{"methodId":"guess"}`)
@@ -520,13 +505,12 @@ func TestDuplicateAuthenticationIdentifiersAreRefused(t *testing.T) {
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 	})
 	if err == nil {
 		t.Fatal("an agent advertised two methods under one identifier, so the agent-handled one " +
 			"could never be selected")
 	}
-	if !strings.Contains(err.Error(), "share the identifier") {
+	if !strings.Contains(err.Error(), "shares the identifier") {
 		t.Errorf("NewAgent failed with %v, which does not say why", err)
 	}
 }
@@ -544,7 +528,6 @@ func TestANilAuthenticationMethodIsRefusedAtConstruction(t *testing.T) {
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 	})
 	if err == nil {
 		t.Fatal("NewAgent accepted a typed nil authentication method")

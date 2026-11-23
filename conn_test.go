@@ -88,7 +88,6 @@ func TestATurnEndToEnd(t *testing.T) {
 			}
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 	})
 	if err != nil {
 		t.Fatalf("NewAgent: %v", err)
@@ -108,17 +107,14 @@ func TestATurnEndToEnd(t *testing.T) {
 		t.Fatalf("Client.Connect: %v", err)
 	}
 
-	// The handshake settled a version and exchanged capabilities, and both sides
-	// see the same thing from their own direction.
-	peer := conn.Peer()
-	if peer.ProtocolVersion != acp.CurrentProtocolVersion {
-		t.Errorf("negotiated version %d, want %d", peer.ProtocolVersion, acp.CurrentProtocolVersion)
-	}
+	// The handshake exchanged capabilities, and both sides see the same thing
+	// from their own direction.
+	peer := conn.Negotiated()
 	if info, ok := peer.AgentInfo.Get(); !ok || info.Name != "an agent" {
 		t.Errorf("the client does not know who the agent is: %+v", peer.AgentInfo)
 	}
-	if info, ok := agentConn.Peer().ClientInfo.Get(); !ok || info.Name != "an editor" {
-		t.Errorf("the agent does not know who the client is: %+v", agentConn.Peer().ClientInfo)
+	if info, ok := agentConn.Negotiated().ClientInfo.Get(); !ok || info.Name != "an editor" {
+		t.Errorf("the agent does not know who the client is: %+v", agentConn.Negotiated().ClientInfo)
 	}
 
 	session, created, err := conn.NewSession(ctx, &acp.NewSessionRequest{Cwd: "/w"})
@@ -253,7 +249,6 @@ func TestPromptContentTheAgentAdvertisedIsSent(t *testing.T) {
 			blocks = len(request.Prompt)
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 		Capabilities: &acp.AgentCapabilities{
 			PromptCapabilities: acp.PromptCapabilities{Image: true},
 		},
@@ -283,7 +278,7 @@ func TestExtensionMethodsAndTheReservedSet(t *testing.T) {
 	client, err := acp.NewClient(&acp.ClientConfig{
 		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
-		CallFallback: func(_ context.Context, _ *acp.ClientConn, request *acp.ExtRequest) (json.RawMessage, error) {
+		CallFallback: func(_ context.Context, _ *acp.ClientConn, request *acp.ExtRequest) (any, error) {
 			seen = request.Method
 			return json.RawMessage(`{"answered":true}`), nil
 		},
@@ -318,10 +313,10 @@ func TestExtensionMethodsAndTheReservedSet(t *testing.T) {
 	if standardErr == nil {
 		t.Fatal("the extension API sent session/prompt, bypassing the typed codec and the gate")
 	}
-	if !strings.Contains(standardErr.Error(), "the extension API does not send it") {
+	if !strings.Contains(standardErr.Error(), "call the operation for it") {
 		t.Errorf("the refusal does not say why: %v", standardErr)
 	}
-	if futureErr == nil || !strings.Contains(futureErr.Error(), "must begin with an underscore") {
+	if futureErr == nil || !strings.Contains(futureErr.Error(), `must begin with "_"`) {
 		t.Errorf("the extension API did not preserve future ACP method names: %v", futureErr)
 	}
 }

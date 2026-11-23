@@ -84,8 +84,8 @@ func TestAPromptDeadlineIsReportedAsADeadline(t *testing.T) {
 // aborted. ACP requires session/cancel to end the prompt with a semantic
 // cancelled stop reason, so that implementation detail cannot become -32603.
 func TestSessionCancelTurnsAHandlerAbortIntoACancelledPrompt(t *testing.T) {
-	for _, editRequest := range []bool{false, true} {
-		t.Run(map[bool]string{false: "original", true: "edited request"}[editRequest], func(t *testing.T) {
+	for name, editRequest := range map[string]bool{"original": false, "edited request": true} {
+		t.Run(name, func(t *testing.T) {
 			started := make(chan struct{})
 			agent := testAgent(t, func(ctx context.Context, _ *acp.AgentSession, request *acp.PromptRequest) (*acp.PromptResponse, error) {
 				if editRequest {
@@ -300,7 +300,6 @@ func TestCancellingOneTurnLeavesAnotherAlone(t *testing.T) {
 					return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 				}
 			},
-			Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 		})
 		if err != nil {
 			t.Fatalf("NewAgent: %v", err)

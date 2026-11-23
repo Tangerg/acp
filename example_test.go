@@ -87,8 +87,6 @@ func Example() {
 			}
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 	})
 	if err != nil {
 		panic(err)
@@ -196,11 +194,6 @@ func ExampleClientSession_Cancel() {
 			// and an abort error from a model or tool library is not a failed call.
 			return nil, ctx.Err()
 		},
-
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {
-			// Where an agent stops its own work. The turn's context is already
-			// cancelled by the time this runs.
-		},
 	})
 	if err != nil {
 		panic(err)
@@ -291,7 +284,6 @@ func ExampleClientConn_Authenticate() {
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 	})
 	if err != nil {
 		panic(err)
@@ -322,7 +314,7 @@ func ExampleClientConn_Authenticate() {
 		panic("this agent was supposed to require authentication first")
 	}
 
-	for _, method := range conn.Peer().AuthMethods {
+	for _, method := range conn.Negotiated().AuthMethods {
 		if offered, ok := method.(*acp.AuthMethodAgent); ok {
 			fmt.Printf("offered: %s (%s)\n", offered.ID, offered.Name)
 		}
@@ -383,7 +375,6 @@ func ExampleAgentSession_CreateTerminal() {
 
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 	})
 	if err != nil {
 		panic(err)
@@ -469,11 +460,10 @@ func ExampleClientConn_Call() {
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 
 		// Every extension request arrives here, undecoded: the grammar of one is
 		// between the two implementations that agreed on it.
-		CallFallback: func(_ context.Context, _ *acp.AgentConn, request *acp.ExtRequest) (json.RawMessage, error) {
+		CallFallback: func(_ context.Context, _ *acp.AgentConn, request *acp.ExtRequest) (any, error) {
 			fmt.Println("agent served:", request.Method, string(request.Params))
 			return json.RawMessage(`{"models":["haiku","opus"]}`), nil
 		},
@@ -624,7 +614,6 @@ func ExampleAgentSession_CreateElicitation() {
 		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "session-1"}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 		Prompt: func(
 			ctx context.Context,
 			session *acp.AgentSession,
@@ -728,7 +717,6 @@ func ExampleClientSession_SetConfigOption() {
 		) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 
 		// Setting this advertises nothing: config options are gated by data rather
 		// than by a capability, so an agent that offers none simply returns none.
@@ -781,7 +769,7 @@ func ExampleClientSession_SetConfigOption() {
 		}
 	}
 
-	answer, err := session.SetConfigOption(ctx, &acp.SetConfigOptionParams{
+	answer, err := session.SetConfigOption(ctx, &acp.SetSessionConfigOptionParams{
 		ConfigID: "model",
 		Value:    &acp.SetSessionConfigOptionRequestValueID{Value: "careful"},
 	})
@@ -796,7 +784,7 @@ func ExampleClientSession_SetConfigOption() {
 
 	// A boolean value needs clientCapabilities.session.configOptions.boolean, which
 	// this client never advertised, so it is refused before anything is sent.
-	_, err = session.SetConfigOption(ctx, &acp.SetConfigOptionParams{
+	_, err = session.SetConfigOption(ctx, &acp.SetSessionConfigOptionParams{
 		ConfigID: "verbose",
 		Value:    &acp.SetSessionConfigOptionRequestBoolean{Value: true},
 	})
@@ -806,7 +794,7 @@ func ExampleClientSession_SetConfigOption() {
 	// offered: Model = fast
 	// agent switched model to careful
 	// now: Model = careful
-	// boolean without the capability: acp: invalid params: a boolean session configuration option was not advertised because clientCapabilities.session.configOptions.boolean is not set
+	// boolean without the capability: acp: not advertised by the peer: a boolean session configuration option requires clientCapabilities.session.configOptions.boolean
 }
 
 // The session lifecycle beyond one turn: an agent that can list, resume and delete
@@ -836,7 +824,6 @@ func ExampleClientConn_ResumeSession() {
 		) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 
 		// Each of the three advertises itself by being set.
 		ListSessions: func(
@@ -935,7 +922,7 @@ func ExampleClientConn_ResumeSession() {
 	// sessions: 1 session-1
 	// resumed: session-1
 	// after deleting: acp: resource not found: session-1
-	// loading: acp: method not found: method "session/load" was not advertised because agentCapabilities.loadSession is not set
+	// loading: acp: not advertised by the peer: method session/load requires agentCapabilities.loadSession
 }
 
 // A custom transport, which is how ACP reaches a stream this package does not
@@ -974,7 +961,6 @@ func ExampleTransport() {
 			}
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 	})
 	if err != nil {
 		panic(err)

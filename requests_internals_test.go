@@ -3,10 +3,10 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"testing/synctest"
 
-	"github.com/Tangerg/acp/internal/jsonrpc2"
 	"github.com/Tangerg/acp/jsonrpc"
 )
 
@@ -28,7 +28,7 @@ func TestCancellationAppliesToResponseEncodingFailures(t *testing.T) {
 			}
 			close(stream.resume)
 			conn.transport = stream
-			call, err := conn.requests.accept(t.Context(), jsonrpc2.Int64ID(1))
+			call, err := conn.requests.accept(t.Context(), inboundFor(jsonrpc.Int64ID(1)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -36,12 +36,13 @@ func TestCancellationAppliesToResponseEncodingFailures(t *testing.T) {
 			if test.cancelled {
 				conn.requests.cancel(call.id)
 			}
-			if !conn.respond(call, test.result, nil) {
-				t.Fatal("the response was not written")
-			}
+			written := conn.respond(call, test.result, nil)
 			response := (<-stream.observed).(*jsonrpc.Response)
+			if (written != nil) != (test.wantCode == 0) {
+				t.Fatalf("respond reported %v written, want a result only for a valid answer", written)
+			}
 			if test.wantCode != 0 {
-				if response.Error == nil || response.Error.Code != int64(test.wantCode) {
+				if response.Error == nil || errorCodeOf(t, response) != test.wantCode {
 					t.Fatalf("response error = %v, want %d", response.Error, test.wantCode)
 				}
 				return
@@ -65,15 +66,15 @@ func TestAnAutomaticResponseRetainsItsRequestUntilTheWriteSettles(t *testing.T) 
 		conn := newTestAgentConn()
 		barrier := &responseBarrier{entered: make(chan struct{}), release: make(chan struct{})}
 		conn.transport = barrier
-		conn.turns.claim("sess-1", &inboundRequest{id: jsonrpc2.Int64ID(1)})
+		conn.turns.claim("sess-1", &inboundRequest{id: jsonrpc.Int64ID(1)})
 		request := rawCall(2, methodSessionPrompt, promptParams)
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
-		call, err := conn.requests.accept(ctx, request.ID)
+		call, err := conn.requests.accept(ctx, request)
 		if err != nil {
 			t.Fatal(err)
 		}
-		conn.deliverRequest(ctx, request, call)
+		conn.deliverCall(call, request)
 		<-barrier.entered
 		synctest.Wait()
 		select {
@@ -88,8 +89,8 @@ func TestAnAutomaticResponseRetainsItsRequestUntilTheWriteSettles(t *testing.T) 
 
 func TestAnAnsweredRequestRetainsOnlyItsOwnHandlerWork(t *testing.T) {
 	requests := newRequests(2)
-	id := jsonrpc2.Int64ID(1)
-	first, err := requests.accept(t.Context(), id)
+	id := jsonrpc.Int64ID(1)
+	first, err := requests.accept(t.Context(), inboundFor(id))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,11 +98,11 @@ func TestAnAnsweredRequestRetainsOnlyItsOwnHandlerWork(t *testing.T) {
 		t.Fatal("first answer was not claimed")
 	}
 	first.settle()
-	second, err := requests.accept(t.Context(), id)
+	second, err := requests.accept(t.Context(), inboundFor(id))
 	if err != nil {
 		t.Fatalf("an answered ID could not be reused while its handler stopped: %v", err)
 	}
-	if _, err := requests.accept(t.Context(), jsonrpc2.Int64ID(2)); err == nil {
+	if _, err := requests.accept(t.Context(), inboundFor(jsonrpc.Int64ID(2))); err == nil {
 		t.Error("an unfinished handler no longer counted against the in-flight bound")
 	}
 	if _, claimed := first.claim(); claimed {
@@ -128,21 +129,21 @@ func TestAReceivedResponseMakesItsWireIDReusableBeforeWriteReturns(t *testing.T)
 			observed: make(chan jsonrpc.Message), resume: make(chan struct{}),
 		}
 		conn.transport = stream
-		id := jsonrpc2.Int64ID(1)
-		first, err := conn.requests.accept(t.Context(), id)
+		id := jsonrpc.Int64ID(1)
+		first, err := conn.requests.accept(t.Context(), inboundFor(id))
 		if err != nil {
 			t.Fatal(err)
 		}
 		written := make(chan bool, 1)
 		go func() {
 			defer first.finish()
-			written <- conn.respond(first, struct{}{}, nil)
+			written <- conn.respond(first, struct{}{}, nil) != nil
 		}()
 		response := (<-stream.observed).(*jsonrpc.Response)
 		if response.ID != id {
 			t.Errorf("response used %v, want %v", response.ID, id)
 		}
-		second, reuseErr := conn.requests.accept(t.Context(), id)
+		second, reuseErr := conn.requests.accept(t.Context(), inboundFor(id))
 		if err := first.beginSending(t.Context()); err == nil {
 			first.finishSending()
 			t.Error("the answered request could send an elicitation under its successor's ID")
@@ -192,8 +193,8 @@ func (*observedResponseStream) Close() error { return nil }
 
 func TestConcurrentTurnCancellationsRetainTheSamePermissionObligations(t *testing.T) {
 	var turns clientTurns
-	turn, _ := turns.begin("session")
-	permission := &inboundRequest{id: jsonrpc2.Int64ID(1)}
+	turn, _ := turns.begin(t.Context(), "session")
+	permission := &inboundRequest{id: jsonrpc.Int64ID(1)}
 	turns.registerPermission("session", permission)
 	first := turns.beginCancellation("session")
 	second := turns.beginCancellation("session")
@@ -208,20 +209,22 @@ func TestConcurrentTurnCancellationsRetainTheSamePermissionObligations(t *testin
 
 func TestCompletedClientTurnsReleaseTheirRecordsWithoutAffectingSuccessors(t *testing.T) {
 	var turns clientTurns
-	first, _ := turns.begin("session")
+	first, _ := turns.begin(t.Context(), "session")
 	first.complete()
 	if len(turns.sessions) != 0 {
 		t.Fatal("a completed turn was retained by the connection")
 	}
-	second, _ := turns.begin("session")
+	second, _ := turns.begin(t.Context(), "session")
 	first.complete()
-	if _, started := turns.begin("session"); started {
-		t.Error("a delayed completion released the next turn")
+	if _, err := turns.begin(t.Context(), "session"); !errors.Is(err, ErrPromptInProgress) {
+		t.Errorf("a delayed completion released the next turn: %v", err)
 	}
 	cancellation := turns.beginCancellation("session")
 	second.complete()
-	if _, started := turns.begin("session"); started {
-		t.Error("a pending cancellation did not retain the session")
+	waiting, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := turns.begin(waiting, "session"); !errors.Is(err, context.Canceled) {
+		t.Errorf("a prompt did not wait out the pending cancellation: %v", err)
 	}
 	cancellation.finish()
 	if len(turns.sessions) != 0 {

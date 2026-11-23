@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/Tangerg/acp/jsonrpc"
 )
@@ -65,7 +64,7 @@ func TestClientCallbacksIdentifyTheirSourceWithOverlappingPeerIDs(t *testing.T) 
 				record("complete", conn)
 			},
 		},
-		CallFallback: func(_ context.Context, conn *ClientConn, _ *ExtRequest) (json.RawMessage, error) {
+		CallFallback: func(_ context.Context, conn *ClientConn, _ *ExtRequest) (any, error) {
 			record("extension call", conn)
 			return json.RawMessage(`{}`), nil
 		},
@@ -99,7 +98,7 @@ func TestClientCallbacksIdentifyTheirSourceWithOverlappingPeerIDs(t *testing.T) 
 		{"extension call", "_test/source", `{}`, false},
 		{"extension notification", "_test/source", `{}`, true},
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), deadlockGuard)
 	defer cancel()
 	for _, request := range requests {
 		for _, peer := range peers {
@@ -141,8 +140,7 @@ func TestAgentExtensionsIdentifyTheirSourceWithOverlappingRequestIDs(t *testing.
 		Prompt: func(context.Context, *AgentSession, *PromptRequest) (*PromptResponse, error) {
 			return &PromptResponse{StopReason: StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *AgentSession, *CancelNotification) {},
-		CallFallback: func(_ context.Context, conn *AgentConn, _ *ExtRequest) (json.RawMessage, error) {
+		CallFallback: func(_ context.Context, conn *AgentConn, _ *ExtRequest) (any, error) {
 			seen <- conn
 			return json.RawMessage(`{}`), nil
 		},
@@ -157,7 +155,7 @@ func TestAgentExtensionsIdentifyTheirSourceWithOverlappingRequestIDs(t *testing.
 		stream Connection
 		conn   *AgentConn
 	}{{firstStream, first}, {secondStream, second}}
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), deadlockGuard)
 	defer cancel()
 	for _, peer := range peers {
 		handshakeRaw(ctx, t, peer.stream)

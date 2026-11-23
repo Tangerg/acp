@@ -2,9 +2,9 @@
 #
 # release.sh — cut one release of this module.
 #
-# This is the executable form of "Releases" in CONTRIBUTING.md. The reasoning lives
-# there; what lives here is the part a person should not be asked to remember at
-# eleven at night.
+# This is the executable form of "Create a release" in CONTRIBUTING.md. The
+# reasoning lives there; what lives here is the part a person should not be asked
+# to remember at eleven at night.
 #
 # The organizing fact is that a published tag is immutable. The Go module proxy and
 # the checksum database keep the first thing they saw under a version forever, so a
@@ -33,7 +33,7 @@ for argument in "$@"; do
 	case "$argument" in
 	--execute) execute=true ;;
 	-h | --help)
-		sed -n '3,22p' "${BASH_SOURCE[0]}" | sed 's|^# \?||'
+		sed -n '3,21p' "${BASH_SOURCE[0]}" | sed -E 's/^# ?//'
 		exit 0
 		;;
 	-*)
@@ -81,6 +81,10 @@ if ! git remote get-url "$REMOTE" >/dev/null 2>&1; then
 	exit 2
 fi
 git fetch --tags --quiet "$REMOTE"
+if [[ -z "$(git branch --remotes --contains HEAD --list "$REMOTE/*")" ]]; then
+	echo "release: HEAD is on no '$REMOTE' branch; push the commit before tagging it" >&2
+	exit 2
+fi
 if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
 	echo "release: $tag already exists; a published tag is never moved" >&2
 	exit 2

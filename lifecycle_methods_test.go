@@ -28,7 +28,6 @@ func TestSessionRetirementBelongsToTheResponseRatherThanItsWaiter(t *testing.T) 
 					Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 						return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 					},
-					Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 					CloseSession: func(_ context.Context, session *acp.AgentSession, request *acp.CloseSessionRequest) (*acp.CloseSessionResponse, error) {
 						retired <- session
 						request.SessionID = "handler-edited-session"
@@ -98,7 +97,7 @@ func TestSessionRetirementBelongsToTheResponseRatherThanItsWaiter(t *testing.T) 
 // An agent advertises exactly what its handlers can serve, without being told to.
 func TestTheLifecycleHandlersAdvertiseThemselves(t *testing.T) {
 	session := connectAndOpen(t, testClient(t), lifecycleAgent(t, nil))
-	agent := session.Conn().Peer().AgentCapabilities
+	agent := session.Conn().Negotiated().AgentCapabilities
 
 	if !hasValue(agent.Auth.Logout) {
 		t.Error("a Logout handler did not advertise agentCapabilities.auth.logout")
@@ -159,7 +158,7 @@ func TestTheLifecycleOperationsRoundTrip(t *testing.T) {
 		t.Fatal("resume returned no answer")
 	}
 
-	if _, err := resumed.SetConfigOption(ctx, &acp.SetConfigOptionParams{
+	if _, err := resumed.SetConfigOption(ctx, &acp.SetSessionConfigOptionParams{
 		ConfigID: "verbosity",
 		Value:    &acp.SetSessionConfigOptionRequestValueID{Value: "high"},
 	}); err != nil {
@@ -231,7 +230,6 @@ func TestClosingASessionCancelsItsTurn(t *testing.T) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 		CloseSession: func(
 			_ context.Context,
 			session *acp.AgentSession,
@@ -319,7 +317,6 @@ func lifecycleAgent(t *testing.T, served chan<- string) *acp.Agent {
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
-		Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 		Logout: func(context.Context, *acp.AgentConn, *acp.LogoutRequest) (*acp.LogoutResponse, error) {
 			record("logout")
 			return &acp.LogoutResponse{}, nil

@@ -10,53 +10,48 @@ import (
 	"time"
 )
 
-// terminationGrace is how long a subprocess is given to stop at each step of
-// being asked, when the caller did not say.
-//
-// Five seconds gives an agent time to flush while keeping shutdown bounded.
-const terminationGrace = 5 * time.Second
+// defaultTerminationGrace is how long a subprocess is given to stop at each step
+// of being asked, when the caller did not say: time to flush a session while
+// keeping shutdown bounded.
+const defaultTerminationGrace = 5 * time.Second
 
 // A CommandConfig is how an agent is run as a subprocess.
 type CommandConfig struct {
 	// Command is the agent, unstarted. Its stdin and stdout become the protocol
-	// stream, so setting either is a mistake this reports rather than works
-	// around.
-	//
-	// Stderr is left as configured. Writes to a custom writer must finish because
-	// os/exec cannot interrupt user code blocked in Write. A zero WaitDelay uses
-	// TerminationGrace to bound draining a pipe inherited by a descendant.
+	// stream, so it must not set either. Stderr is left as configured; a custom
+	// writer must finish its own Write calls, which os/exec cannot interrupt. A
+	// zero WaitDelay is set to TerminationGrace, which bounds draining a pipe a
+	// descendant inherited.
 	Command *exec.Cmd
 
 	// TerminationGrace is how long the agent is given to exit at each step of
-	// being asked to: once after its stdin is closed, and again after it is
-	// signalled. Zero means five seconds.
-	//
-	// It is here because the right answer is the agent's, not this package's. An
-	// agent that persists a session on the way out needs longer than one that does
-	// not, and a client with its own shutdown deadline needs shorter.
+	// being asked: after its stdin is closed, and again after it is signalled.
+	// Zero means five seconds. The right value is the agent's: one that persists
+	// a session on the way out needs longer.
 	TerminationGrace time.Duration
 }
 
-// NewCommandTransport returns the client's side of a local connection: it starts
-// the agent as a subprocess and frames newline-delimited JSON over its stdin and
-// stdout.
-//
-// Closing the connection closes the pipes and reaps the process within the
-// configured shutdown budget.
-func NewCommandTransport(config *CommandConfig) Transport {
-	var owned CommandConfig
-	if config != nil {
-		owned = *config
-	}
-	return &commandTransport{config: owned}
-}
-
-type commandTransport struct {
+// A CommandTransport is the client's side of a local connection: it starts the
+// agent as a subprocess and frames newline-delimited JSON over its stdin and
+// stdout. Closing the connection closes the pipes and reaps the process within
+// the configured budget.
+type CommandTransport struct {
 	singleUse
 	config CommandConfig
 }
 
-func (t *commandTransport) Connect(ctx context.Context) (Connection, error) {
+// NewCommandTransport returns a transport that runs the configured command. The
+// configuration is copied.
+func NewCommandTransport(config *CommandConfig) *CommandTransport {
+	transport := new(CommandTransport)
+	if config != nil {
+		transport.config = *config
+	}
+	return transport
+}
+
+// Connect starts the agent. A command runs once, so a second Connect fails.
+func (t *CommandTransport) Connect(ctx context.Context) (Connection, error) {
 	if err := t.claim(); err != nil {
 		return nil, err
 	}
@@ -73,7 +68,7 @@ func (t *commandTransport) Connect(ctx context.Context) (Connection, error) {
 	}
 	grace := t.config.TerminationGrace
 	if grace == 0 {
-		grace = terminationGrace
+		grace = defaultTerminationGrace
 	}
 	if cmd.WaitDelay == 0 {
 		cmd.WaitDelay = grace
@@ -92,12 +87,9 @@ func (t *commandTransport) Connect(ctx context.Context) (Connection, error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, errors.Join(ctxErr, stdin.Close(), stdout.Close())
 	}
+	// A failed Start has already closed the pipes it created.
 	if startErr := cmd.Start(); startErr != nil {
-		return nil, errors.Join(
-			fmt.Errorf("acp: starting the agent: %w", startErr),
-			stdin.Close(),
-			stdout.Close(),
-		)
+		return nil, fmt.Errorf("acp: starting the agent: %w", startErr)
 	}
 
 	return &commandConnection{
@@ -105,7 +97,7 @@ func (t *commandTransport) Connect(ctx context.Context) (Connection, error) {
 			Reader: stdout,
 			Writer: stdin,
 			Close:  func() error { return errors.Join(stdout.Close(), stdin.Close()) },
-		}),
+		}, false),
 		cmd:   cmd,
 		grace: grace,
 	}, nil

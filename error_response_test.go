@@ -16,7 +16,7 @@ func TestMalformedHandlerErrorDoesNotCloseTheConnection(t *testing.T) {
 		name string
 		pair func() (acp.Transport, acp.Transport)
 	}{
-		{name: "messages", pair: acp.NewInMemoryTransports},
+		{name: "messages", pair: func() (acp.Transport, acp.Transport) { return acp.NewInMemoryTransports() }},
 		{name: "bytes", pair: crossedIOTransports},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -39,8 +39,7 @@ func TestMalformedHandlerErrorDoesNotCloseTheConnection(t *testing.T) {
 						Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 							return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 						},
-						Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
-						CallFallback: func(context.Context, *acp.AgentConn, *acp.ExtRequest) (json.RawMessage, error) {
+						CallFallback: func(context.Context, *acp.AgentConn, *acp.ExtRequest) (any, error) {
 							return json.RawMessage(`{}`), nil
 						},
 					})
@@ -103,7 +102,6 @@ func TestProtocolSentinelsRetainTheirCodesAsHandlerErrors(t *testing.T) {
 					Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 						return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 					},
-					Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
 				})
 				if err != nil {
 					t.Fatal(err)

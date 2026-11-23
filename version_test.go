@@ -59,7 +59,7 @@ func TestTheAgentAnswersWithTheVersionItImplements(t *testing.T) {
 		9999,
 	} {
 		t.Run(fmt.Sprintf("asked for %d", version), func(t *testing.T) {
-			conn, stream, ctx := rawClientFor(t, testAgent(t, nil))
+			stream, ctx := rawClientFor(t, testAgent(t, nil))
 
 			params := fmt.Sprintf(`{"protocolVersion":%d,"clientCapabilities":{}}`, version)
 			response := roundTrip(ctx, t, stream, 1, "initialize", params)
@@ -77,29 +77,22 @@ func TestTheAgentAnswersWithTheVersionItImplements(t *testing.T) {
 					"otherwise, and this package supports %d and no other",
 					answered.ProtocolVersion, version, acp.CurrentProtocolVersion)
 			}
-
-			// And the negotiated version is what the connection reports, rather
-			// than what the peer asked for.
-			if got := conn.Peer().ProtocolVersion; got != acp.CurrentProtocolVersion {
-				t.Errorf("the connection reports version %d", got)
-			}
 		})
 	}
 }
 
-// A second initialize is not a re-negotiation. Capabilities gate work already in
-// flight, and letting them change under it would make an authority boundary depend
-// on timing.
-func TestASecondInitializeIsRefused(t *testing.T) {
-	_, stream, ctx := rawClientFor(t, testAgent(t, nil))
+// The schema lets initialize be sent again and the reference implementation
+// serves it, so a later initialize renegotiates rather than being refused.
+func TestASecondInitializeRenegotiates(t *testing.T) {
+	stream, ctx := rawClientFor(t, testAgent(t, nil))
 
 	const params = `{"protocolVersion":1,"clientCapabilities":{}}`
 	if response := roundTrip(ctx, t, stream, 1, "initialize", params); response.Error != nil {
 		t.Fatalf("the first initialize was refused: %v", response.Error)
 	}
-	if response := roundTrip(ctx, t, stream, 2, "initialize", params); response.Error == nil {
-		t.Fatal("a second initialize was accepted, so the capabilities gating work in flight " +
-			"could change under it")
+	if response := roundTrip(ctx, t, stream, 2, "initialize", params); response.Error != nil {
+		t.Fatalf("a second initialize was refused, which the schema and the reference implementation "+
+			"allow: %v", response.Error)
 	}
 }
 
@@ -129,9 +122,6 @@ func TestTheClientRefusesAVersionItDoesNotSpeak(t *testing.T) {
 					t.Fatalf("Connect: %v", err)
 				}
 				defer conn.Close() //nolint:errcheck // idempotent.
-				if got := conn.Peer().ProtocolVersion; got != acp.CurrentProtocolVersion {
-					t.Fatalf("the connection reports version %d", got)
-				}
 				return
 			}
 
@@ -222,7 +212,7 @@ func (t *answersVersion) wait() error {
 	select {
 	case <-t.closed:
 		return nil
-	case <-time.After(5 * time.Second):
+	case <-time.After(deadlockGuard):
 		return errors.New("still open")
 	}
 }

@@ -2,9 +2,14 @@ package acp_test
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"slices"
 	"testing"
 
 	"github.com/Tangerg/acp"
+	"github.com/Tangerg/acp/jsonrpc"
 )
 
 // Normalisation has to be a fixed point: whatever a peer sends, decoding it and
@@ -100,4 +105,72 @@ func FuzzNewSessionRequestNormalisationIsAFixedPoint(f *testing.F) {
 			t.Fatalf("normalisation is not a fixed point:\n first %s\nsecond %s", encoded, reencoded)
 		}
 	})
+}
+
+// A byte-stream framer must answer the same however the stream was split into
+// reads: a pipe delivers a line in as many pieces as the kernel likes, and a
+// framer whose result depended on where a read ended would decode one peer's
+// message differently on every run.
+func FuzzIOTransportFramingIgnoresReadBoundaries(f *testing.F) {
+	f.Add([]byte("{\"jsonrpc\":\"2.0\",\"method\":\"_a\"}\n{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n"), uint8(1))
+	f.Add([]byte("\n\n{\"jsonrpc\":\"2.0\",\"method\":\"_a\"}"), uint8(3))
+	f.Add([]byte("not json\n{\"jsonrpc\":\"1.0\",\"method\":\"_a\"}\n"), uint8(2))
+	f.Add([]byte("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1}}\r\n"), uint8(5))
+	f.Fuzz(func(t *testing.T, stream []byte, chunk uint8) {
+		whole := readFramed(t, stream, len(stream)+1)
+		split := readFramed(t, stream, int(chunk)%16+1)
+		if !slices.Equal(whole, split) {
+			t.Fatalf("framing depends on read boundaries:\nwhole: %q\nsplit: %q", whole, split)
+		}
+	})
+}
+
+// readFramed reads every message from stream, delivered chunk bytes at a time,
+// and describes each result: the re-encoded message, or the kind of error.
+func readFramed(t *testing.T, stream []byte, chunk int) []string {
+	t.Helper()
+	transport := acp.NewIOTransport(&acp.IOConfig{
+		Reader: &chunkedReader{data: stream, chunk: chunk},
+		Writer: io.Discard,
+		Close:  func() error { return nil },
+	})
+	conn, err := transport.Connect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var results []string
+	for {
+		message, err := conn.Read(t.Context())
+		if decodeErr, ok := errors.AsType[*jsonrpc.DecodeError](err); ok {
+			results = append(results, fmt.Sprintf("undecodable syntax=%t response=%s", decodeErr.Syntax,
+				decodeErr.ResponseID))
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			return results
+		}
+		if err != nil {
+			return append(results, "failed")
+		}
+		encoded, err := jsonrpc.EncodeMessage(message)
+		if err != nil {
+			t.Fatalf("a decoded message does not encode: %v", err)
+		}
+		results = append(results, string(encoded))
+	}
+}
+
+// A chunkedReader returns at most chunk bytes per Read.
+type chunkedReader struct {
+	data  []byte
+	chunk int
+}
+
+func (r *chunkedReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p[:min(len(p), r.chunk)], r.data)
+	r.data = r.data[n:]
+	return n, nil
 }
