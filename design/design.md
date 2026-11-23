@@ -345,6 +345,16 @@ only from handlers that happen to hold a session.
 context when `session/cancel` arrives, so the obligation is kept whether or not
 the application observes the notification.
 
+`NewSession` chooses the session's identifier, so it cannot be given the session
+it is creating, and the client cannot route an update naming that identifier
+until the answer reaches it. `SessionOpened` is the moment both hold: it runs
+after the answer to `session/new`, `session/load` or `session/resume` is written.
+Before it, an agent had no handle at all for a new session until the client's
+first prompt, so Zed showed a new thread without its slash commands. A handle
+obtainable from the connection by identifier was the alternative; it would let
+an agent update a session before the client knew it, which is the ordering this
+hook exists to guarantee.
+
 Every client handler receives `*ClientConn` after its context. A shared client
 can drive several agents, and two agents may use the same session identifier.
 Holding all connection handles does not tell a callback which one produced its

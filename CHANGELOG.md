@@ -82,6 +82,12 @@ migration instructions.
   handler's context whether or not it is set.
 - `ErrResourceNotFound` matches a peer's `-32002`, the code the protocol gives
   a session or file the peer does not have.
+- `AgentConfig.SessionOpened` runs once a successful `session/new`,
+  `session/load` or `session/resume` answer is on the wire, with the session's
+  handle. A `NewSession` handler has no session to update, and an update sent
+  before the answer names a session the client does not know, so an agent had no
+  way to announce its slash commands before the first prompt. Zed showed none
+  for a new thread until then.
 
 ### Fixed
 

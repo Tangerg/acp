@@ -109,6 +109,9 @@ session-scoped handlers receive an `*acp.AgentSession`, which streams
 `sessionId`. `NewSession`, `Authenticate`, `Logout`, and `ListSessions` have no
 session in their wire params and receive an `*acp.AgentConn`, which is how a
 handler answering `authenticate`, say, can still elicit input from the user.
+`SessionOpened` receives the session once the client holds it, after the answer
+to `session/new`, `session/load` or `session/resume` is written, which is where
+an agent announces what the session offers, such as its slash commands.
 
 `session/cancel` cancels the running `Prompt` handler's context, so `Cancel` is
 optional; set it only to observe the notification.

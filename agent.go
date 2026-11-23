@@ -39,6 +39,15 @@ type AgentConfig struct {
 	// this nil.
 	Cancel func(ctx context.Context, session *AgentSession, notification *CancelNotification)
 
+	// SessionOpened runs once the client holds a session: after a successful
+	// session/new, session/load or session/resume response has been written. A
+	// client cannot route an update for a session whose identifier it has not
+	// been given, so this is where an agent announces what a session offers, such
+	// as its available commands. ctx ends with the connection. It runs in the
+	// request's place, so work that outlasts the announcement belongs in a
+	// goroutine of its own.
+	SessionOpened func(ctx context.Context, session *AgentSession)
+
 	// Authenticate performs an agent-handled method listed in AuthMethods. The
 	// identifier has already been checked against what this agent offered.
 	Authenticate func(ctx context.Context, conn *AgentConn, request *AuthenticateRequest) (*AuthenticateResponse, error)
@@ -134,10 +143,10 @@ func (a *AgentConfig) methods() map[string]*methodBinding[*AgentConn] {
 		},
 		methodAuthenticate:           answering(serveAuthenticate(a.Authenticate)),
 		methodLogout:                 handled(a.Logout),
-		methodSessionNew:             handled(a.NewSession),
+		methodSessionNew:             handled(a.NewSession).registeredBy(opensSession(a.SessionOpened)),
 		methodSessionList:            handled(a.ListSessions),
-		methodSessionLoad:            handledInSession(a.LoadSession),
-		methodSessionResume:          handledInSession(a.ResumeSession),
+		methodSessionLoad:            handledInSession(a.LoadSession).registeredBy(opensSession(a.SessionOpened)),
+		methodSessionResume:          handledInSession(a.ResumeSession).registeredBy(opensSession(a.SessionOpened)),
 		methodSessionSetMode:         handledInSession(a.SetMode),
 		methodSessionSetConfigOption: handledInSession(a.SetConfigOption),
 		methodSessionDelete:          handledInSession(a.DeleteSession),
@@ -156,6 +165,33 @@ func (a *AgentConfig) resolveCapabilities(serves func(method string) bool) (Agen
 		return AgentCapabilities{}, fmt.Errorf("acp: AgentConfig.Capabilities: %v", unserved)
 	}
 	return stated, nil
+}
+
+// opensSession registers a call whose success gives the client a session, so
+// that opened runs once the answer is on the wire. A load or resume names its
+// session on the wire, read here before a handler could edit its request;
+// session/new learns it only from the answer.
+func opensSession(
+	opened func(context.Context, *AgentSession),
+) func(*AgentConn, *inboundRequest) registration {
+	if opened == nil {
+		return nil
+	}
+	return func(c *AgentConn, call *inboundRequest) registration {
+		var session SessionID
+		if named, ok := call.params.(sessionScoped); ok {
+			session = named.sessionID()
+		}
+		return dispatched(callHooks{finished: func(written any) {
+			if written == nil {
+				return
+			}
+			if created, ok := written.(*NewSessionResponse); ok {
+				session = created.SessionID
+			}
+			opened(c.life.ctx, c.session(session))
+		}})
+	}
 }
 
 // handledInSession binds a session-scoped request to a handler given the
