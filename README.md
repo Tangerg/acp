@@ -259,7 +259,7 @@ The module is pre-1.0, so its Go API may change. Its protocol target is fixed:
 | --- | --- |
 | Protocol version | 1 |
 | Schema release | [Pinned stable release](./schema/provenance.json) |
-| Module version | `v0.3.0` |
+| Module version | `v0.4.0` |
 | Minimum Go version | Declared in [go.mod](./go.mod) |
 
 The [published
