@@ -190,12 +190,12 @@ func TestEveryNameInTheSchemaCanBeAllocated(t *testing.T) {
 // wrong.
 func TestUnimplementedKeywordsAreReported(t *testing.T) {
 	const withUnknown = `{"$defs":{"Thing":{"type":"object","properties":{` +
-		`"a":{"type":"string","minLength":3}}}}}`
+		`"a":{"type":"string","maxLength":3}}}}}`
 	err := checkKnownKeywords([]byte(withUnknown))
 	if err == nil {
 		t.Fatal("an unimplemented keyword was accepted")
 	}
-	if !strings.Contains(err.Error(), "minLength") {
+	if !strings.Contains(err.Error(), "maxLength") {
 		t.Fatalf("the failure %q does not name the keyword", err)
 	}
 	if !strings.Contains(err.Error(), "#/$defs/Thing/properties/a") {

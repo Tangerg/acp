@@ -71,28 +71,27 @@ func TestARequestMethodSentAsANotificationIsDropped(t *testing.T) {
 	killed := make(chan struct{}, 1)
 	updated := make(chan struct{}, 1)
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate: func(context.Context, *acp.SessionNotification) {
+		SessionUpdate: func(context.Context, *acp.ClientConn, *acp.SessionNotification) {
 			updated <- struct{}{}
 		},
 		RequestPermission: denyingPermission,
 		Terminal: &acp.TerminalHandlers{
-			Create: func(context.Context, *acp.CreateTerminalRequest) (*acp.CreateTerminalResponse, error) {
+			Create: func(context.Context, *acp.ClientConn, *acp.CreateTerminalRequest) (*acp.CreateTerminalResponse, error) {
 				return &acp.CreateTerminalResponse{TerminalID: "term-1"}, nil
 			},
-			Output: func(context.Context, *acp.TerminalOutputRequest) (*acp.TerminalOutputResponse, error) {
+			Output: func(context.Context, *acp.ClientConn, *acp.TerminalOutputRequest) (*acp.TerminalOutputResponse, error) {
 				return &acp.TerminalOutputResponse{}, nil
 			},
 			WaitForExit: func(
-				context.Context,
-				*acp.WaitForTerminalExitRequest,
+				context.Context, *acp.ClientConn, *acp.WaitForTerminalExitRequest,
 			) (*acp.WaitForTerminalExitResponse, error) {
 				return &acp.WaitForTerminalExitResponse{}, nil
 			},
-			Kill: func(context.Context, *acp.KillTerminalRequest) (*acp.KillTerminalResponse, error) {
+			Kill: func(context.Context, *acp.ClientConn, *acp.KillTerminalRequest) (*acp.KillTerminalResponse, error) {
 				killed <- struct{}{}
 				return &acp.KillTerminalResponse{}, nil
 			},
-			Release: func(context.Context, *acp.ReleaseTerminalRequest) (*acp.ReleaseTerminalResponse, error) {
+			Release: func(context.Context, *acp.ClientConn, *acp.ReleaseTerminalRequest) (*acp.ReleaseTerminalResponse, error) {
 				return &acp.ReleaseTerminalResponse{}, nil
 			},
 		},
@@ -443,6 +442,10 @@ func TestErrorDataKeepsItsThreeStatesOutbound(t *testing.T) {
 		},
 		"null": {
 			data: acp.OptNull[json.RawMessage](),
+			want: `{"code":-32000,"message":"no","data":null}`,
+		},
+		"a present nil raw value": {
+			data: acp.OptValue(json.RawMessage(nil)),
 			want: `{"code":-32000,"message":"no","data":null}`,
 		},
 		"a scalar": {

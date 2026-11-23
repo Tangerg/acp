@@ -22,13 +22,14 @@ type Schema struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
 
-	Type    TypeSet           `json:"type"`
-	Format  string            `json:"format"`
-	Const   json.RawMessage   `json:"const"`
-	Enum    []json.RawMessage `json:"enum"`
-	Default json.RawMessage   `json:"default"`
-	Minimum *json.Number      `json:"minimum"`
-	Maximum *json.Number      `json:"maximum"`
+	Type      TypeSet           `json:"type"`
+	Format    string            `json:"format"`
+	Const     json.RawMessage   `json:"const"`
+	Enum      []json.RawMessage `json:"enum"`
+	Default   json.RawMessage   `json:"default"`
+	Minimum   *json.Number      `json:"minimum"`
+	Maximum   *json.Number      `json:"maximum"`
+	MinLength *uint64           `json:"minLength"`
 
 	Properties map[string]*Schema `json:"properties"`
 	Required   []string           `json:"required"`
@@ -45,9 +46,8 @@ type Schema struct {
 		PropertyName string `json:"propertyName"`
 	} `json:"discriminator"`
 
-	// The schema's own deserialisation extensions. Neither has any meaning to a
-	// plain JSON decoder, and between them they cover 413 property occurrences.
 	DefaultOnError   bool `json:"x-deserialize-default-on-error"`
+	DefaultOnNull    bool `json:"x-deserialize-default-on-null"`
 	SkipInvalidItems bool `json:"x-deserialize-skip-invalid-items"`
 
 	Method     string `json:"x-method"`
@@ -71,13 +71,14 @@ type Schema struct {
 var knownKeywords = map[string]bool{
 	"$ref": true, "title": true, "description": true,
 	"type": true, "format": true, "const": true, "enum": true,
-	"default": true, "minimum": true, "maximum": true,
+	"default": true, "minimum": true, "maximum": true, "minLength": true,
 	"properties": true, "required": true, "items": true,
 	"allOf": true, "anyOf": true, "oneOf": true, "not": true,
 	"additionalProperties": true, "unevaluatedProperties": true,
 	"discriminator":                  true,
 	"x-deserialize-default-on-error": true, "x-deserialize-skip-invalid-items": true,
-	"x-method": true, "x-side": true, "x-docs-ignore": true,
+	"x-deserialize-default-on-null": true,
+	"x-method":                      true, "x-side": true, "x-docs-ignore": true,
 }
 
 func (s *Schema) UnmarshalJSON(data []byte) error {

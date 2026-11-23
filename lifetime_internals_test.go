@@ -64,7 +64,7 @@ func TestDrainingPreservesNotificationsAndCancelsRequestWork(t *testing.T) {
 				requests := make(chan error, 1)
 				entered := make(chan struct{})
 				conn.client = &Client{config: ClientConfig{
-					NotifyFallback: func(ctx context.Context, notification *ExtNotification) {
+					NotifyFallback: func(ctx context.Context, _ *ClientConn, notification *ExtNotification) {
 						if notification.Method == "_test/active" {
 							close(entered)
 							<-ctx.Done()
@@ -72,7 +72,7 @@ func TestDrainingPreservesNotificationsAndCancelsRequestWork(t *testing.T) {
 						}
 						notifications <- ctx.Err()
 					},
-					CallFallback: func(ctx context.Context, _ *ExtRequest) (json.RawMessage, error) {
+					CallFallback: func(ctx context.Context, _ *ClientConn, _ *ExtRequest) (json.RawMessage, error) {
 						requests <- ctx.Err()
 						return json.RawMessage(`{}`), nil
 					},

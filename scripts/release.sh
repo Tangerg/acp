@@ -22,7 +22,6 @@
 
 set -euo pipefail
 
-GORELEASE=golang.org/x/exp/cmd/gorelease@v0.0.0-20260820142414-ca536658362e
 REMOTE=origin
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
@@ -55,6 +54,12 @@ if [[ -z "$version" ]]; then
 	echo "usage: scripts/release.sh X.Y.Z [--execute]" >&2
 	exit 2
 fi
+
+command -v jq >/dev/null || {
+	echo "release: jq is required to read schema/provenance.json" >&2
+	exit 2
+}
+GORELEASE="golang.org/x/exp/cmd/gorelease@$(jq -er '.tools.goreleaseVersion' schema/provenance.json)"
 
 # Accept the number and own the "v" ourselves, so a tag cannot be created as
 # "vv0.2.0" by someone who typed the prefix out of habit.

@@ -216,18 +216,19 @@ func TestRawItemsRefusesWhatIsNotAnArray(t *testing.T) {
 }
 
 func TestValidateURIUsesTheSchemaMeaningOfURI(t *testing.T) {
+	constraints := wire.StringConstraints{AbsoluteURI: true}
 	for _, value := range []string{
 		"https://example.invalid/sign-in",
 		"mailto:user@example.invalid",
 		"urn:example:animal:ferret:nose",
 		"https:",
 	} {
-		if err := wire.ValidateURI(value); err != nil {
+		if err := constraints.Validate(value); err != nil {
 			t.Errorf("ValidateURI(%q): %v", value, err)
 		}
 	}
 	for _, value := range []string{"", "not a URI", "/sign-in"} {
-		if err := wire.ValidateURI(value); err == nil {
+		if err := constraints.Validate(value); err == nil {
 			t.Errorf("ValidateURI(%q) accepted a value with no URI scheme", value)
 		}
 	}

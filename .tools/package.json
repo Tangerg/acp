@@ -6,7 +6,7 @@
   "scripts": {
     "docs:lint": "cd .. && node .tools/lint-docs.mjs",
     "spell": "cd .. && .tools/node_modules/.bin/cspell --no-progress --no-summary",
-    "docs:test": "node --test docs-toolchain.test.mjs",
+    "docs:test": "node --test *.test.mjs",
     "docs:check": "npm audit --audit-level=low && npm run docs:test && npm run spell && npm run docs:lint"
   },
   "devDependencies": {

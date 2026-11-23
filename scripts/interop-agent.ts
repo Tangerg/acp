@@ -8,7 +8,7 @@
 // repository wrote.
 //
 // It runs inside a checkout of agentclientprotocol/typescript-sdk pinned by
-// scripts/interop.sh, and internal/cmd/interop drives it.
+// schema/provenance.json, and internal/cmd/interop drives it.
 //
 // The scenarios are chosen for what they exercise, not for realism:
 //
@@ -23,25 +23,20 @@
 //   - "workspace" reads a file, writes one, and runs a terminal to its exit,
 //     which is every capability-gated method a client may be asked for.
 
-import { AgentSideConnection, RequestError, ndJsonStream } from "./src/acp.js";
-import type { Agent } from "./src/acp.js";
-import * as schema from "./src/schema/index.js";
+import { agent, methods, RequestError, ndJsonStream } from "./src/v1/stable/acp.js";
+import type { AgentContext } from "./src/v1/stable/acp.js";
+import * as schema from "./src/v1/schema/index.js";
 import { Readable, Writable } from "node:stream";
 
 const sessionID = "interop-session";
 
-class InteropAgent implements Agent {
-  private conn: AgentSideConnection;
+class InteropAgent {
   private authenticated = false;
   private cancelled: (() => void) | undefined;
 
-  constructor(conn: AgentSideConnection) {
-    this.conn = conn;
-  }
-
-  initialize(params: schema.InitializeRequest): schema.InitializeResponse {
+  initialize(_params: schema.InitializeRequest): schema.InitializeResponse {
     return {
-      protocolVersion: Math.min(params.protocolVersion, 1),
+      protocolVersion: schema.PROTOCOL_VERSION,
       agentCapabilities: { loadSession: false },
       authMethods: [{ id: "interop", name: "Interoperability" }],
       agentInfo: { name: "interop-agent", version: "0.0.0" },
@@ -63,40 +58,40 @@ class InteropAgent implements Agent {
   }
 
   loadSession(): schema.LoadSessionResponse {
-    throw RequestError.methodNotFound("session/load");
+    throw RequestError.methodNotFound(methods.agent.session.load);
   }
 
   async cancel(_params: schema.CancelNotification): Promise<void> {
     this.cancelled?.();
   }
 
-  async prompt(params: schema.PromptRequest): Promise<schema.PromptResponse> {
+  async prompt(params: schema.PromptRequest, client: AgentContext): Promise<schema.PromptResponse> {
     const first = params.prompt[0];
     const scenario = first && first.type === "text" ? first.text : "turn";
 
     switch (scenario) {
       case "cancel":
-        return await this.cancelledTurn(params.sessionId);
+        return await this.cancelledTurn(client, params.sessionId);
       case "workspace":
-        return await this.workspaceTurn(params.sessionId);
+        return await this.workspaceTurn(client, params.sessionId);
       case "elicit":
-        return await this.elicitingTurn(params.sessionId);
+        return await this.elicitingTurn(client, params.sessionId);
       default:
-        return await this.ordinaryTurn(params.sessionId);
+        return await this.ordinaryTurn(client, params.sessionId);
     }
   }
 
-  private async chunk(session: string, text: string): Promise<void> {
-    await this.conn.sessionUpdate({
+  private async chunk(client: AgentContext, session: string, text: string): Promise<void> {
+    await client.notify(methods.client.session.update, {
       sessionId: session,
       update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
     });
   }
 
-  private async ordinaryTurn(session: string): Promise<schema.PromptResponse> {
-    await this.chunk(session, "thinking");
+  private async ordinaryTurn(client: AgentContext, session: string): Promise<schema.PromptResponse> {
+    await this.chunk(client, session, "thinking");
 
-    await this.conn.sessionUpdate({
+    await client.notify(methods.client.session.update, {
       sessionId: session,
       update: {
         sessionUpdate: "tool_call",
@@ -107,7 +102,7 @@ class InteropAgent implements Agent {
       },
     });
 
-    const outcome = await this.conn.requestPermission({
+    const outcome = await client.request(methods.client.session.requestPermission, {
       sessionId: session,
       toolCall: { toolCallId: "call-1" },
       options: [
@@ -118,7 +113,7 @@ class InteropAgent implements Agent {
     const chosen =
       outcome.outcome.outcome === "selected" ? outcome.outcome.optionId : "cancelled";
 
-    await this.conn.sessionUpdate({
+    await client.notify(methods.client.session.update, {
       sessionId: session,
       update: {
         sessionUpdate: "tool_call_update",
@@ -126,26 +121,28 @@ class InteropAgent implements Agent {
         status: chosen === "allow" ? "completed" : "failed",
       },
     });
-    await this.chunk(session, `decided: ${chosen}`);
+    await this.chunk(client, session, `decided: ${chosen}`);
     return { stopReason: "end_turn" };
   }
 
-  private async cancelledTurn(session: string): Promise<schema.PromptResponse> {
-    await this.chunk(session, "working");
-    await new Promise<void>((resolve) => {
+  private async cancelledTurn(client: AgentContext, session: string): Promise<schema.PromptResponse> {
+    const cancelled = new Promise<void>((resolve) => {
       this.cancelled = resolve;
     });
+    await this.chunk(client, session, "working");
+    await cancelled;
+    this.cancelled = undefined;
     // A final update after the cancellation, which the client must keep
     // accepting until the prompt is answered.
-    await this.chunk(session, "stopping");
+    await this.chunk(client, session, "stopping");
     return { stopReason: "cancelled" };
   }
 
   // Both elicitation modes, from the side this package's client serves. A form
   // asks for a value and gets one back; a URL sends the user somewhere and is
   // finished later by a notification rather than by its own response.
-  private async elicitingTurn(session: string): Promise<schema.PromptResponse> {
-    const form = await this.conn.createElicitation({
+  private async elicitingTurn(client: AgentContext, session: string): Promise<schema.PromptResponse> {
+    const form = await client.request(methods.client.elicitation.create, {
       sessionId: session,
       message: "which branch?",
       mode: "form",
@@ -157,9 +154,9 @@ class InteropAgent implements Agent {
     });
     const answered =
       form.action === "accept" && form.content ? JSON.stringify(form.content) : form.action;
-    await this.chunk(session, `form: ${answered}`);
+    await this.chunk(client, session, `form: ${answered}`);
 
-    const page = await this.conn.createElicitation({
+    const page = await client.request(methods.client.elicitation.create, {
       sessionId: session,
       toolCallId: "call-1",
       message: "sign in",
@@ -167,23 +164,23 @@ class InteropAgent implements Agent {
       elicitationId: "elicit-1",
       url: "https://example.invalid/sign-in",
     });
-    await this.chunk(session, `url: ${page.action}`);
-    await this.conn.completeElicitation({ elicitationId: "elicit-1" });
+    await this.chunk(client, session, `url: ${page.action}`);
+    await client.notify(methods.client.elicitation.complete, { elicitationId: "elicit-1" });
 
     return { stopReason: "end_turn" };
   }
 
-  private async workspaceTurn(session: string): Promise<schema.PromptResponse> {
-    const read = await this.conn.readTextFile({ sessionId: session, path: "/w/a.txt" });
-    await this.chunk(session, `read: ${read.content}`);
+  private async workspaceTurn(client: AgentContext, session: string): Promise<schema.PromptResponse> {
+    const read = await client.request(methods.client.fs.readTextFile, { sessionId: session, path: "/w/a.txt" });
+    await this.chunk(client, session, `read: ${read.content}`);
 
-    await this.conn.writeTextFile({
+    await client.request(methods.client.fs.writeTextFile, {
       sessionId: session,
       path: "/w/b.txt",
       content: "written by the interop agent\n",
     });
 
-    const terminal = await this.conn.createTerminal({
+    const terminal = await client.createTerminal({
       sessionId: session,
       command: "/bin/true",
       args: ["--quiet"],
@@ -191,7 +188,7 @@ class InteropAgent implements Agent {
     const exited = await terminal.waitForExit();
     const output = await terminal.currentOutput();
     await terminal.release();
-    await this.chunk(session, `ran: ${output.output.trim()} exit=${exited.exitCode}`);
+    await this.chunk(client, session, `ran: ${output.output.trim()} exit=${exited.exitCode}`);
 
     return { stopReason: "end_turn" };
   }
@@ -201,4 +198,12 @@ const stream = ndJsonStream(
   Writable.toWeb(process.stdout) as WritableStream<Uint8Array>,
   Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>,
 );
-new AgentSideConnection((conn) => new InteropAgent(conn), stream);
+const implementation = new InteropAgent();
+agent({ name: "interop-agent" })
+  .onRequest(methods.agent.initialize, (ctx) => implementation.initialize(ctx.params))
+  .onRequest(methods.agent.authenticate, (ctx) => implementation.authenticate(ctx.params))
+  .onRequest(methods.agent.session.new, (ctx) => implementation.newSession(ctx.params))
+  .onRequest(methods.agent.session.load, () => implementation.loadSession())
+  .onRequest(methods.agent.session.prompt, (ctx) => implementation.prompt(ctx.params, ctx.client))
+  .onNotification(methods.agent.session.cancel, (ctx) => implementation.cancel(ctx.params))
+  .connect(stream);

@@ -4,10 +4,51 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Tangerg/acp"
 )
+
+func TestAnInvalidFormSchemaNeverReachesThePeer(t *testing.T) {
+	var rendered atomic.Int32
+	client, err := acp.NewClient(&acp.ClientConfig{
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
+		RequestPermission: denyingPermission,
+		Elicitation: &acp.ElicitationHandlers{
+			Form: func(context.Context, *acp.ClientConn, *acp.CreateElicitationRequest, *acp.ElicitationFormMode) (*acp.CreateElicitationResponse, error) {
+				rendered.Add(1)
+				return &acp.CreateElicitationResponse{Value: &acp.CreateElicitationResponseDecline{}}, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var elicitationErr error
+	agent := testAgent(t, func(ctx context.Context, session *acp.AgentSession, _ *acp.PromptRequest) (*acp.PromptResponse, error) {
+		_, elicitationErr = session.CreateElicitation(ctx, &acp.CreateElicitationParams{
+			Message: "invalid form",
+			Mode: &acp.ElicitationFormMode{RequestedSchema: acp.ElicitationSchema{
+				Type: acp.ElicitationSchemaTypeObject,
+				Properties: map[string]acp.ElicitationPropertySchema{
+					"text": &acp.StringPropertySchema{Pattern: acp.OptValue("[")},
+				},
+			}},
+		})
+		return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+	})
+	session := connectAndOpen(t, client, agent)
+	if _, err := session.Prompt(t.Context(), &acp.PromptParams{}); err != nil {
+		t.Fatal(err)
+	}
+	if elicitationErr == nil || !strings.Contains(elicitationErr.Error(), "invalid elicitation schema") {
+		t.Errorf("invalid local schema returned %v", elicitationErr)
+	}
+	if rendered.Load() != 0 {
+		t.Fatal("the peer was asked to render an invalid local form")
+	}
+}
 
 // Elicitation, driven from an agent's prompt handler for the session scope and
 // from its authenticate handler for the request scope, because those are the two
@@ -29,12 +70,11 @@ func TestAFormElicitationReachesTheUserAndAnswers(t *testing.T) {
 	var sawScope acp.ElicitationFormModeValue
 
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Elicitation: &acp.ElicitationHandlers{
 			Form: func(
-				_ context.Context,
-				request *acp.CreateElicitationRequest,
+				_ context.Context, _ *acp.ClientConn, request *acp.CreateElicitationRequest,
 				mode *acp.ElicitationFormMode,
 			) (*acp.CreateElicitationResponse, error) {
 				sawMessage = request.Message
@@ -115,12 +155,11 @@ func TestAURLElicitationIsFinishedByItsCompletion(t *testing.T) {
 	finished := make(chan acp.ElicitationID, 1)
 
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Elicitation: &acp.ElicitationHandlers{
 			URL: func(
-				_ context.Context,
-				_ *acp.CreateElicitationRequest,
+				_ context.Context, _ *acp.ClientConn, _ *acp.CreateElicitationRequest,
 				mode *acp.ElicitationURLMode,
 			) (*acp.CreateElicitationResponse, error) {
 				accepted <- mode.ElicitationID
@@ -128,7 +167,7 @@ func TestAURLElicitationIsFinishedByItsCompletion(t *testing.T) {
 					Value: &acp.ElicitationAcceptAction{},
 				}, nil
 			},
-			Complete: func(_ context.Context, notification *acp.CompleteElicitationNotification) {
+			Complete: func(_ context.Context, _ *acp.ClientConn, notification *acp.CompleteElicitationNotification) {
 				finished <- notification.ElicitationID
 			},
 		},
@@ -180,12 +219,11 @@ func TestAURLElicitationIsFinishedByItsCompletion(t *testing.T) {
 func TestOnlyAnAcceptedURLElicitationBecomesOutstanding(t *testing.T) {
 	var handled int
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Elicitation: &acp.ElicitationHandlers{
 			URL: func(
-				context.Context,
-				*acp.CreateElicitationRequest,
+				context.Context, *acp.ClientConn, *acp.CreateElicitationRequest,
 				*acp.ElicitationURLMode,
 			) (*acp.CreateElicitationResponse, error) {
 				handled++
@@ -200,7 +238,7 @@ func TestOnlyAnAcceptedURLElicitationBecomesOutstanding(t *testing.T) {
 				}
 				return &acp.CreateElicitationResponse{Value: action}, nil
 			},
-			Complete: func(context.Context, *acp.CompleteElicitationNotification) {},
+			Complete: func(context.Context, *acp.ClientConn, *acp.CompleteElicitationNotification) {},
 		},
 	})
 	if err != nil {
@@ -272,12 +310,11 @@ func TestARequestScopedElicitationNamesTheRequestBeingServed(t *testing.T) {
 	scopes := make(chan acp.ElicitationFormModeValue, 1)
 
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Elicitation: &acp.ElicitationHandlers{
 			Form: func(
-				_ context.Context,
-				_ *acp.CreateElicitationRequest,
+				_ context.Context, _ *acp.ClientConn, _ *acp.CreateElicitationRequest,
 				mode *acp.ElicitationFormMode,
 			) (*acp.CreateElicitationResponse, error) {
 				scopes <- mode.Value
@@ -352,10 +389,10 @@ func isRequestScope(scope acp.ElicitationFormModeValue) bool {
 
 func TestARequestScopeCannotEscapeItsConnectionOrItsRequest(t *testing.T) {
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Elicitation: &acp.ElicitationHandlers{Form: func(
-			context.Context, *acp.CreateElicitationRequest, *acp.ElicitationFormMode,
+			context.Context, *acp.ClientConn, *acp.CreateElicitationRequest, *acp.ElicitationFormMode,
 		) (*acp.CreateElicitationResponse, error) {
 			return &acp.CreateElicitationResponse{Value: &acp.ElicitationAcceptAction{}}, nil
 		}},
@@ -416,12 +453,11 @@ func TestARequestScopeCannotEscapeItsConnectionOrItsRequest(t *testing.T) {
 func TestAModeTheClientDidNotAdvertiseIsRefusedBeforeTheWire(t *testing.T) {
 	var served int
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Elicitation: &acp.ElicitationHandlers{
 			Form: func(
-				context.Context,
-				*acp.CreateElicitationRequest,
+				context.Context, *acp.ClientConn, *acp.CreateElicitationRequest,
 				*acp.ElicitationFormMode,
 			) (*acp.CreateElicitationResponse, error) {
 				served++
@@ -478,12 +514,11 @@ func TestAModeTheClientDidNotAdvertiseIsRefusedBeforeTheWire(t *testing.T) {
 // than having it replaced in silence.
 func TestASuppliedScopeIsRefused(t *testing.T) {
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Elicitation: &acp.ElicitationHandlers{
 			Form: func(
-				context.Context,
-				*acp.CreateElicitationRequest,
+				context.Context, *acp.ClientConn, *acp.CreateElicitationRequest,
 				*acp.ElicitationFormMode,
 			) (*acp.CreateElicitationResponse, error) {
 				return &acp.CreateElicitationResponse{Value: &acp.ElicitationAcceptAction{}}, nil
@@ -539,20 +574,18 @@ func TestASuppliedScopeIsRefused(t *testing.T) {
 // client that chose not to.
 func TestElicitationConfigurationIsRefusedWhenItCannotBeServed(t *testing.T) {
 	form := func(
-		context.Context,
-		*acp.CreateElicitationRequest,
+		context.Context, *acp.ClientConn, *acp.CreateElicitationRequest,
 		*acp.ElicitationFormMode,
 	) (*acp.CreateElicitationResponse, error) {
 		return &acp.CreateElicitationResponse{}, nil
 	}
 	url := func(
-		context.Context,
-		*acp.CreateElicitationRequest,
+		context.Context, *acp.ClientConn, *acp.CreateElicitationRequest,
 		*acp.ElicitationURLMode,
 	) (*acp.CreateElicitationResponse, error) {
 		return &acp.CreateElicitationResponse{}, nil
 	}
-	complete := func(context.Context, *acp.CompleteElicitationNotification) {}
+	complete := func(context.Context, *acp.ClientConn, *acp.CompleteElicitationNotification) {}
 
 	for name, handlers := range map[string]*acp.ElicitationHandlers{
 		"neither mode":                  {},
@@ -560,7 +593,7 @@ func TestElicitationConfigurationIsRefusedWhenItCannotBeServed(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := acp.NewClient(&acp.ClientConfig{
-				SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+				SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 				RequestPermission: denyingPermission,
 				Elicitation:       handlers,
 			})
@@ -572,7 +605,7 @@ func TestElicitationConfigurationIsRefusedWhenItCannotBeServed(t *testing.T) {
 
 	t.Run("a url mode with no completion", func(t *testing.T) {
 		_, err := acp.NewClient(&acp.ClientConfig{
-			SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+			SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 			RequestPermission: denyingPermission,
 			Elicitation:       &acp.ElicitationHandlers{URL: url},
 		})
@@ -587,12 +620,11 @@ func TestElicitationConfigurationIsRefusedWhenItCannotBeServed(t *testing.T) {
 // would carry is refused rather than dropped.
 func TestARequestScopeRefusesAToolCall(t *testing.T) {
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Elicitation: &acp.ElicitationHandlers{
 			Form: func(
-				context.Context,
-				*acp.CreateElicitationRequest,
+				context.Context, *acp.ClientConn, *acp.CreateElicitationRequest,
 				*acp.ElicitationFormMode,
 			) (*acp.CreateElicitationResponse, error) {
 				return &acp.CreateElicitationResponse{Value: &acp.ElicitationAcceptAction{}}, nil
@@ -630,12 +662,11 @@ func TestARequestScopeRefusesAToolCall(t *testing.T) {
 // would send the client an elicitation tied to a call that is not happening.
 func TestARequestScopeOutsideAHandlerIsRefused(t *testing.T) {
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Elicitation: &acp.ElicitationHandlers{
 			Form: func(
-				context.Context,
-				*acp.CreateElicitationRequest,
+				context.Context, *acp.ClientConn, *acp.CreateElicitationRequest,
 				*acp.ElicitationFormMode,
 			) (*acp.CreateElicitationResponse, error) {
 				return &acp.CreateElicitationResponse{Value: &acp.ElicitationAcceptAction{}}, nil
@@ -681,17 +712,16 @@ func stringContent(value string) *acp.ElicitationContentValueString {
 // refused before anything is sent, and the message says which field.
 func TestElicitationRefusesWhatACallerGetsWrong(t *testing.T) {
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Elicitation: &acp.ElicitationHandlers{
 			URL: func(
-				context.Context,
-				*acp.CreateElicitationRequest,
+				context.Context, *acp.ClientConn, *acp.CreateElicitationRequest,
 				*acp.ElicitationURLMode,
 			) (*acp.CreateElicitationResponse, error) {
 				return &acp.CreateElicitationResponse{Value: &acp.ElicitationAcceptAction{}}, nil
 			},
-			Complete: func(context.Context, *acp.CompleteElicitationNotification) {},
+			Complete: func(context.Context, *acp.ClientConn, *acp.CompleteElicitationNotification) {},
 		},
 	})
 	if err != nil {
@@ -751,18 +781,17 @@ func TestElicitationRefusesWhatACallerGetsWrong(t *testing.T) {
 func TestAURLElicitationIdentifierIsUniqueWhileItIsOutstanding(t *testing.T) {
 	accepted := make(chan struct{}, 4)
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Elicitation: &acp.ElicitationHandlers{
 			URL: func(
-				context.Context,
-				*acp.CreateElicitationRequest,
+				context.Context, *acp.ClientConn, *acp.CreateElicitationRequest,
 				*acp.ElicitationURLMode,
 			) (*acp.CreateElicitationResponse, error) {
 				accepted <- struct{}{}
 				return &acp.CreateElicitationResponse{Value: &acp.ElicitationAcceptAction{}}, nil
 			},
-			Complete: func(context.Context, *acp.CompleteElicitationNotification) {},
+			Complete: func(context.Context, *acp.ClientConn, *acp.CompleteElicitationNotification) {},
 		},
 	})
 	if err != nil {
@@ -835,12 +864,11 @@ func TestAURLElicitationIdentifierIsUniqueWhileItIsOutstanding(t *testing.T) {
 // client already knows is part of a conversation.
 func TestARequestScopeRefusesASessionScopedRequest(t *testing.T) {
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Elicitation: &acp.ElicitationHandlers{
 			Form: func(
-				context.Context,
-				*acp.CreateElicitationRequest,
+				context.Context, *acp.ClientConn, *acp.CreateElicitationRequest,
 				*acp.ElicitationFormMode,
 			) (*acp.CreateElicitationResponse, error) {
 				return &acp.CreateElicitationResponse{Value: &acp.ElicitationAcceptAction{}}, nil
@@ -884,12 +912,11 @@ func TestARequestScopeRefusesASessionScopedRequest(t *testing.T) {
 // with that wiring removed.
 func TestTheOutstandingURLElicitationBoundIsTheConfiguredOne(t *testing.T) {
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Elicitation: &acp.ElicitationHandlers{
 			URL: func(
-				context.Context,
-				*acp.CreateElicitationRequest,
+				context.Context, *acp.ClientConn, *acp.CreateElicitationRequest,
 				*acp.ElicitationURLMode,
 			) (*acp.CreateElicitationResponse, error) {
 				return &acp.CreateElicitationResponse{Value: &acp.ElicitationAcceptAction{}}, nil

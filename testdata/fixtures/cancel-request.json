@@ -58,18 +58,11 @@
     },
     {
       "name": "a fractional identifier",
-      "why": "the schema types this arm as an integer, and the reference implementation does not check that",
+      "why": "the schema requires an integer, and a fractional value cannot identify a request",
       "input": {
         "requestId": 1.5
       },
-      "accepted": true,
-      "normalized": {
-        "requestId": 1.5
-      },
-      "divergence": {
-        "accepted": false,
-        "because": "The schema types this arm `{\"type\":\"integer\",\"format\":\"int64\"}`, and 1.5 is not an integer. The reference implementation validates it as `z.number()` — it reaches for `z.int()` only where the schema also states a minimum, so most of its integer fields accept fractions. AGENTS.md says the schema wins, so this is refused here, and the difference belongs upstream rather than in a local dialect."
-      }
+      "accepted": false
     },
     {
       "name": "no identifier",

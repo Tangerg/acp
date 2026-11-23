@@ -14,7 +14,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -24,8 +23,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"syscall"
 
 	"github.com/Tangerg/acp"
@@ -57,14 +54,19 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	place := &workspace{root: root, input: bufio.NewReader(os.Stdin)}
+	place, openErr := openWorkspace(root)
+	if openErr != nil {
+		return openErr
+	}
+	defer func() { _ = place.root.Close() }()
+	permissions := newPermissionPrompt(ctx, os.Stdin, os.Stdout)
 
 	client, err := acp.NewClient(&acp.ClientConfig{
 		Info:   &acp.Implementation{Name: "example-client", Version: "0.1.0"},
 		Logger: logger,
 
 		SessionUpdate:     printUpdate,
-		RequestPermission: place.requestPermission,
+		RequestPermission: permissions.requestPermission,
 
 		// Setting these is what advertises fs.readTextFile and fs.writeTextFile. An
 		// agent may not call what this client did not advertise, and the connection
@@ -144,7 +146,7 @@ func agentTransport(ctx context.Context) acp.Transport {
 
 // The agent's running commentary. Rendering is a client's whole job on this side,
 // so this is the switch a real one grows into a user interface.
-func printUpdate(_ context.Context, notification *acp.SessionNotification) {
+func printUpdate(_ context.Context, _ *acp.ClientConn, notification *acp.SessionNotification) {
 	switch update := notification.Update.(type) {
 	case *acp.AgentMessageChunk:
 		if text, ok := update.Content.(*acp.TextContent); ok {
@@ -165,115 +167,4 @@ func printUpdate(_ context.Context, notification *acp.SessionNotification) {
 			fmt.Printf("  - %s (%s)\n", entry.Content, entry.Status)
 		}
 	}
-}
-
-// A workspace is the directory this client is willing to expose, and the user it
-// can ask about it.
-//
-// Containment is enforced here because nothing else can enforce it: an agent may
-// name any path it likes, and the capability it was granted says "this client
-// reads files", not "this client reads that file".
-type workspace struct {
-	root  string
-	input *bufio.Reader
-}
-
-func (w *workspace) resolve(path string) (string, error) {
-	// The schema requires an absolute path, so a relative one is a protocol error
-	// rather than something to resolve against a guess.
-	if !filepath.IsAbs(path) {
-		return "", &acp.Error{Code: acp.ErrorCodeInvalidParams, Message: path + " is not an absolute path"}
-	}
-	clean := filepath.Clean(path)
-	if clean != w.root && !strings.HasPrefix(clean, w.root+string(filepath.Separator)) {
-		return "", &acp.Error{Code: acp.ErrorCodeInvalidParams, Message: path + " is outside this workspace"}
-	}
-	return clean, nil
-}
-
-func (w *workspace) readTextFile(
-	_ context.Context,
-	request *acp.ReadTextFileRequest,
-) (*acp.ReadTextFileResponse, error) {
-	path, err := w.resolve(request.Path)
-	if err != nil {
-		return nil, err
-	}
-	content, err := os.ReadFile(path) //nolint:gosec // resolve has just confirmed the path is inside the workspace.
-	if err != nil {
-		return nil, &acp.Error{Code: acp.ErrorCodeResourceNotFound, Message: "cannot read " + request.Path}
-	}
-	return &acp.ReadTextFileResponse{Content: window(string(content), request.Line, request.Limit)}, nil
-}
-
-func (w *workspace) writeTextFile(
-	_ context.Context,
-	request *acp.WriteTextFileRequest,
-) (*acp.WriteTextFileResponse, error) {
-	path, err := w.resolve(request.Path)
-	if err != nil {
-		return nil, err
-	}
-	if writeErr := os.WriteFile(path, []byte(request.Content), 0o600); writeErr != nil {
-		return nil, &acp.Error{Code: acp.ErrorCodeInternalError, Message: "cannot write " + request.Path}
-	}
-	return &acp.WriteTextFileResponse{}, nil
-}
-
-// The user decides. This client has no policy of its own, which is the honest
-// default: the protocol defines no outcome a client may assume.
-func (w *workspace) requestPermission(
-	_ context.Context,
-	request *acp.RequestPermissionRequest,
-) (*acp.RequestPermissionResponse, error) {
-	title, _ := request.ToolCall.Title.Get()
-	fmt.Printf("\n\nthe agent wants to: %s\n", title)
-	for index, option := range request.Options {
-		fmt.Printf("  %d) %s\n", index+1, option.Name)
-	}
-	fmt.Print("choose: ")
-
-	// Blocking on a human is safe here: a permission request is a request, and this
-	// handler runs on a goroutine of its own. A notification handler must never
-	// block like this — see the package documentation.
-	line, err := w.input.ReadString('\n')
-	fmt.Println()
-	choice, numberErr := strconv.Atoi(strings.TrimSpace(line))
-	if err == nil && numberErr == nil && choice >= 1 && choice <= len(request.Options) {
-		return &acp.RequestPermissionResponse{
-			Outcome: &acp.SelectedPermissionOutcome{OptionID: request.Options[choice-1].OptionID},
-		}, nil
-	}
-
-	// No usable answer. The cancelled outcome is not the way to say no — it means
-	// the turn ended — so this falls back to a refusal the agent offered, and fails
-	// if it offered none.
-	for _, option := range request.Options {
-		if option.Kind == acp.PermissionOptionKindRejectOnce || option.Kind == acp.PermissionOptionKindRejectAlways {
-			fmt.Println("declining")
-			return &acp.RequestPermissionResponse{
-				Outcome: &acp.SelectedPermissionOutcome{OptionID: option.OptionID},
-			}, nil
-		}
-	}
-	return nil, &acp.Error{
-		Code:    acp.ErrorCodeInternalError,
-		Message: "nobody answered and no option means no",
-	}
-}
-
-// The line window the schema defines: a 1-based first line and a maximum count,
-// either of which may be absent.
-func window(text string, from, limit acp.Opt[uint32]) string {
-	lines := strings.SplitAfter(text, "\n")
-	if start, given := from.Get(); given && start > 1 {
-		if uint64(start-1) >= uint64(len(lines)) {
-			return ""
-		}
-		lines = lines[start-1:]
-	}
-	if count, given := limit.Get(); given && uint64(count) < uint64(len(lines)) {
-		lines = lines[:count]
-	}
-	return strings.Join(lines, "")
 }

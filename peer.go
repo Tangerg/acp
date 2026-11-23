@@ -159,6 +159,19 @@ func (p PeerInfo) permitsConfigOptionValue(value SetSessionConfigOptionRequestVa
 	if _, boolean := value.(*SetSessionConfigOptionRequestBoolean); !boolean {
 		return nil
 	}
+	return p.permitsBooleanConfigOptions()
+}
+
+func (p PeerInfo) permitsConfigOptions(options []SessionConfigOption) error {
+	for _, option := range options {
+		if _, boolean := option.Value.(*SessionConfigBoolean); boolean {
+			return p.permitsBooleanConfigOptions()
+		}
+	}
+	return nil
+}
+
+func (p PeerInfo) permitsBooleanConfigOptions() error {
 	session, hasSession := p.ClientCapabilities.Session.Get()
 	if hasSession {
 		if options, hasOptions := session.ConfigOptions.Get(); hasOptions &&

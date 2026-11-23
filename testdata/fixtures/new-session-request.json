@@ -15,8 +15,8 @@
       }
     },
     {
-      "name": "missing required array with recovery",
-      "why": "x-deserialize-default-on-error recovers from a malformed value, never from an absent one",
+      "name": "missing required array",
+      "why": "mcpServers is required; absence cannot invent a server configuration",
       "input": {
         "cwd": "/work"
       },
@@ -24,20 +24,16 @@
     },
     {
       "name": "required array malformed",
-      "why": "a required array that cannot be null recovers to an empty array rather than failing",
+      "why": "operation parameters must reject a non-array rather than remove configured servers",
       "input": {
         "cwd": "/work",
         "mcpServers": "none"
       },
-      "accepted": true,
-      "normalized": {
-        "cwd": "/work",
-        "mcpServers": []
-      }
+      "accepted": false
     },
     {
       "name": "required array with an invalid item",
-      "why": "x-deserialize-skip-invalid-items drops the item, not the message",
+      "why": "a malformed server rejects the request instead of silently shrinking the tool set",
       "input": {
         "cwd": "/work",
         "mcpServers": [
@@ -59,24 +55,7 @@
           }
         ]
       },
-      "accepted": true,
-      "normalized": {
-        "cwd": "/work",
-        "mcpServers": [
-          {
-            "name": "a",
-            "url": "https://a",
-            "headers": [],
-            "type": "http"
-          },
-          {
-            "name": "c",
-            "command": "/bin/c",
-            "args": [],
-            "env": []
-          }
-        ]
-      }
+      "accepted": false
     },
     {
       "name": "optional array absent",
@@ -93,22 +72,17 @@
     },
     {
       "name": "optional array malformed",
-      "why": "the same fallback as the required case: an array that cannot be null recovers to empty",
+      "why": "an invalid additionalDirectories value must not alter the workspace scope",
       "input": {
         "cwd": "/work",
         "mcpServers": [],
         "additionalDirectories": 3
       },
-      "accepted": true,
-      "normalized": {
-        "cwd": "/work",
-        "additionalDirectories": [],
-        "mcpServers": []
-      }
+      "accepted": false
     },
     {
       "name": "optional array with an invalid item",
-      "why": "item recovery applies to arrays of scalars too",
+      "why": "invalid directory entries reject the request instead of silently narrowing its scope",
       "input": {
         "cwd": "/work",
         "mcpServers": [],
@@ -118,15 +92,7 @@
           "/b"
         ]
       },
-      "accepted": true,
-      "normalized": {
-        "cwd": "/work",
-        "additionalDirectories": [
-          "/a",
-          "/b"
-        ],
-        "mcpServers": []
-      }
+      "accepted": false
     },
     {
       "name": "optional array empty",
@@ -220,7 +186,7 @@
     },
     {
       "name": "server arm with an unknown tag",
-      "why": "no arm claims the tag and the untagged arm does not match, so the item is dropped",
+      "why": "no union arm accepts the server, so the operation request is rejected",
       "input": {
         "cwd": "/work",
         "mcpServers": [
@@ -236,18 +202,7 @@
           }
         ]
       },
-      "accepted": true,
-      "normalized": {
-        "cwd": "/work",
-        "mcpServers": [
-          {
-            "name": "d",
-            "command": "/bin/d",
-            "args": [],
-            "env": []
-          }
-        ]
-      }
+      "accepted": false
     },
     {
       "name": "missing required string",
@@ -268,6 +223,33 @@
       "normalized": {
         "cwd": "",
         "mcpServers": []
+      }
+    },
+    {
+      "name": "null stdio argument and environment lists default to empty",
+      "why": "x-deserialize-default-on-null preserves the published defaults without accepting other malformed values",
+      "input": {
+        "cwd": "/work",
+        "mcpServers": [
+          {
+            "name": "stdio",
+            "command": "/bin/server",
+            "args": null,
+            "env": null
+          }
+        ]
+      },
+      "accepted": true,
+      "normalized": {
+        "cwd": "/work",
+        "mcpServers": [
+          {
+            "name": "stdio",
+            "command": "/bin/server",
+            "args": [],
+            "env": []
+          }
+        ]
       }
     }
   ]

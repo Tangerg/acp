@@ -144,6 +144,9 @@ func TestAZeroLimitTakesItsDefault(t *testing.T) {
 		t.Fatalf("InflightRequests resolved to %d, want the default %d",
 			resolved.InflightRequests, defaultInflightRequests)
 	}
+	if resolved.PendingCalls != defaultPendingCalls {
+		t.Fatalf("PendingCalls resolved to %d, want the default %d", resolved.PendingCalls, defaultPendingCalls)
+	}
 	if resolved.SessionHandles != defaultSessionHandles {
 		t.Fatalf("SessionHandles resolved to %d, want the default %d",
 			resolved.SessionHandles, defaultSessionHandles)
@@ -167,8 +170,8 @@ func TestAZeroLimitTakesItsDefault(t *testing.T) {
 // connection for what is a configuration error rather than a peer's fault.
 func TestANegativeLimitIsRefusedAtConstruction(t *testing.T) {
 	_, clientErr := NewClient(&ClientConfig{
-		SessionUpdate: func(context.Context, *SessionNotification) {},
-		RequestPermission: func(context.Context, *RequestPermissionRequest) (*RequestPermissionResponse, error) {
+		SessionUpdate: func(context.Context, *ClientConn, *SessionNotification) {},
+		RequestPermission: func(context.Context, *ClientConn, *RequestPermissionRequest) (*RequestPermissionResponse, error) {
 			return &RequestPermissionResponse{}, nil
 		},
 		Limits: Limits{QueuedDeliveries: -1},

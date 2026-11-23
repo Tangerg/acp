@@ -18,11 +18,10 @@ func TestTheFilesystemOperations(t *testing.T) {
 	files := map[string]string{"/w/a.go": "package main\n"}
 
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		ReadTextFile: func(
-			_ context.Context,
-			request *acp.ReadTextFileRequest,
+			_ context.Context, _ *acp.ClientConn, request *acp.ReadTextFileRequest,
 		) (*acp.ReadTextFileResponse, error) {
 			content, ok := files[request.Path]
 			if !ok {
@@ -31,8 +30,7 @@ func TestTheFilesystemOperations(t *testing.T) {
 			return &acp.ReadTextFileResponse{Content: content}, nil
 		},
 		WriteTextFile: func(
-			_ context.Context,
-			request *acp.WriteTextFileRequest,
+			_ context.Context, _ *acp.ClientConn, request *acp.WriteTextFileRequest,
 		) (*acp.WriteTextFileResponse, error) {
 			files[request.Path] = request.Content
 			return &acp.WriteTextFileResponse{}, nil
@@ -96,12 +94,11 @@ func TestTheTerminalOperations(t *testing.T) {
 	released := false
 
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Terminal: &acp.TerminalHandlers{
 			Create: func(
-				_ context.Context,
-				request *acp.CreateTerminalRequest,
+				_ context.Context, _ *acp.ClientConn, request *acp.CreateTerminalRequest,
 			) (*acp.CreateTerminalResponse, error) {
 				if request.Command != "/bin/go" {
 					return nil, errors.New("unexpected command")
@@ -109,22 +106,20 @@ func TestTheTerminalOperations(t *testing.T) {
 				return &acp.CreateTerminalResponse{TerminalID: "term-1"}, nil
 			},
 			Output: func(
-				_ context.Context,
-				_ *acp.TerminalOutputRequest,
+				_ context.Context, _ *acp.ClientConn, _ *acp.TerminalOutputRequest,
 			) (*acp.TerminalOutputResponse, error) {
 				return &acp.TerminalOutputResponse{Output: "ok\n", Truncated: false}, nil
 			},
 			WaitForExit: func(
-				_ context.Context,
-				_ *acp.WaitForTerminalExitRequest,
+				_ context.Context, _ *acp.ClientConn, _ *acp.WaitForTerminalExitRequest,
 			) (*acp.WaitForTerminalExitResponse, error) {
 				return &acp.WaitForTerminalExitResponse{ExitCode: acp.OptValue(uint32(0))}, nil
 			},
-			Kill: func(_ context.Context, _ *acp.KillTerminalRequest) (*acp.KillTerminalResponse, error) {
+			Kill: func(_ context.Context, _ *acp.ClientConn, _ *acp.KillTerminalRequest) (*acp.KillTerminalResponse, error) {
 				killed = true
 				return &acp.KillTerminalResponse{}, nil
 			},
-			Release: func(_ context.Context, _ *acp.ReleaseTerminalRequest) (*acp.ReleaseTerminalResponse, error) {
+			Release: func(_ context.Context, _ *acp.ClientConn, _ *acp.ReleaseTerminalRequest) (*acp.ReleaseTerminalResponse, error) {
 				released = true
 				return &acp.ReleaseTerminalResponse{}, nil
 			},
@@ -200,10 +195,10 @@ func TestTheTerminalOperations(t *testing.T) {
 // boolean. A partial set is a client that would refuse a method it advertised.
 func TestAPartialTerminalHandlerSetIsRefused(t *testing.T) {
 	_, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Terminal: &acp.TerminalHandlers{
-			Create: func(context.Context, *acp.CreateTerminalRequest) (*acp.CreateTerminalResponse, error) {
+			Create: func(context.Context, *acp.ClientConn, *acp.CreateTerminalRequest) (*acp.CreateTerminalResponse, error) {
 				return &acp.CreateTerminalResponse{TerminalID: "term-1"}, nil
 			},
 		},
@@ -222,7 +217,7 @@ func TestAPartialTerminalHandlerSetIsRefused(t *testing.T) {
 // can accept a request it would have to fail.
 func TestAnAdvertisementBeyondTheHandlersIsRefused(t *testing.T) {
 	_, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Capabilities: &acp.ClientCapabilities{
 			Fs:       acp.FileSystemCapabilities{ReadTextFile: true},
@@ -245,7 +240,7 @@ func TestTheBaselineHandlersAreRequired(t *testing.T) {
 		t.Error("a client with no SessionUpdate handler was accepted")
 	}
 	if _, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate: func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate: func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 	}); err == nil {
 		t.Error("a client with no RequestPermission handler was accepted: there is no outcome to synthesise")
 	}
@@ -276,29 +271,28 @@ func TestTheBaselineHandlersAreRequired(t *testing.T) {
 func TestAReleasedTerminalHandleRefusesEverything(t *testing.T) {
 	served := make(chan string, 8)
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Terminal: &acp.TerminalHandlers{
-			Create: func(context.Context, *acp.CreateTerminalRequest) (*acp.CreateTerminalResponse, error) {
+			Create: func(context.Context, *acp.ClientConn, *acp.CreateTerminalRequest) (*acp.CreateTerminalResponse, error) {
 				served <- "create"
 				return &acp.CreateTerminalResponse{TerminalID: "term-1"}, nil
 			},
-			Output: func(context.Context, *acp.TerminalOutputRequest) (*acp.TerminalOutputResponse, error) {
+			Output: func(context.Context, *acp.ClientConn, *acp.TerminalOutputRequest) (*acp.TerminalOutputResponse, error) {
 				served <- "output"
 				return &acp.TerminalOutputResponse{}, nil
 			},
 			WaitForExit: func(
-				context.Context,
-				*acp.WaitForTerminalExitRequest,
+				context.Context, *acp.ClientConn, *acp.WaitForTerminalExitRequest,
 			) (*acp.WaitForTerminalExitResponse, error) {
 				served <- "wait"
 				return &acp.WaitForTerminalExitResponse{}, nil
 			},
-			Kill: func(context.Context, *acp.KillTerminalRequest) (*acp.KillTerminalResponse, error) {
+			Kill: func(context.Context, *acp.ClientConn, *acp.KillTerminalRequest) (*acp.KillTerminalResponse, error) {
 				served <- "kill"
 				return &acp.KillTerminalResponse{}, nil
 			},
-			Release: func(context.Context, *acp.ReleaseTerminalRequest) (*acp.ReleaseTerminalResponse, error) {
+			Release: func(context.Context, *acp.ClientConn, *acp.ReleaseTerminalRequest) (*acp.ReleaseTerminalResponse, error) {
 				served <- "release"
 				return &acp.ReleaseTerminalResponse{}, nil
 			},
@@ -361,25 +355,24 @@ func TestAReleasedTerminalHandleRefusesEverything(t *testing.T) {
 func TestATerminalReleaseCanRetryWhenNothingWasSent(t *testing.T) {
 	released := make(chan struct{}, 1)
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Terminal: &acp.TerminalHandlers{
-			Create: func(context.Context, *acp.CreateTerminalRequest) (*acp.CreateTerminalResponse, error) {
+			Create: func(context.Context, *acp.ClientConn, *acp.CreateTerminalRequest) (*acp.CreateTerminalResponse, error) {
 				return &acp.CreateTerminalResponse{TerminalID: "term-1"}, nil
 			},
-			Output: func(context.Context, *acp.TerminalOutputRequest) (*acp.TerminalOutputResponse, error) {
+			Output: func(context.Context, *acp.ClientConn, *acp.TerminalOutputRequest) (*acp.TerminalOutputResponse, error) {
 				return &acp.TerminalOutputResponse{}, nil
 			},
 			WaitForExit: func(
-				context.Context,
-				*acp.WaitForTerminalExitRequest,
+				context.Context, *acp.ClientConn, *acp.WaitForTerminalExitRequest,
 			) (*acp.WaitForTerminalExitResponse, error) {
 				return &acp.WaitForTerminalExitResponse{}, nil
 			},
-			Kill: func(context.Context, *acp.KillTerminalRequest) (*acp.KillTerminalResponse, error) {
+			Kill: func(context.Context, *acp.ClientConn, *acp.KillTerminalRequest) (*acp.KillTerminalResponse, error) {
 				return &acp.KillTerminalResponse{}, nil
 			},
-			Release: func(context.Context, *acp.ReleaseTerminalRequest) (*acp.ReleaseTerminalResponse, error) {
+			Release: func(context.Context, *acp.ClientConn, *acp.ReleaseTerminalRequest) (*acp.ReleaseTerminalResponse, error) {
 				released <- struct{}{}
 				return &acp.ReleaseTerminalResponse{}, nil
 			},
@@ -432,25 +425,24 @@ func TestATerminalReleaseCanRetryWhenNothingWasSent(t *testing.T) {
 // rule is that the schema wins.
 func TestAnEmptyIdentifierIsAcceptedBecauseTheSchemaDeclaresNoMinimum(t *testing.T) {
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Terminal: &acp.TerminalHandlers{
-			Create: func(context.Context, *acp.CreateTerminalRequest) (*acp.CreateTerminalResponse, error) {
+			Create: func(context.Context, *acp.ClientConn, *acp.CreateTerminalRequest) (*acp.CreateTerminalResponse, error) {
 				return &acp.CreateTerminalResponse{TerminalID: ""}, nil
 			},
-			Output: func(context.Context, *acp.TerminalOutputRequest) (*acp.TerminalOutputResponse, error) {
+			Output: func(context.Context, *acp.ClientConn, *acp.TerminalOutputRequest) (*acp.TerminalOutputResponse, error) {
 				return &acp.TerminalOutputResponse{}, nil
 			},
 			WaitForExit: func(
-				context.Context,
-				*acp.WaitForTerminalExitRequest,
+				context.Context, *acp.ClientConn, *acp.WaitForTerminalExitRequest,
 			) (*acp.WaitForTerminalExitResponse, error) {
 				return &acp.WaitForTerminalExitResponse{}, nil
 			},
-			Kill: func(context.Context, *acp.KillTerminalRequest) (*acp.KillTerminalResponse, error) {
+			Kill: func(context.Context, *acp.ClientConn, *acp.KillTerminalRequest) (*acp.KillTerminalResponse, error) {
 				return &acp.KillTerminalResponse{}, nil
 			},
-			Release: func(context.Context, *acp.ReleaseTerminalRequest) (*acp.ReleaseTerminalResponse, error) {
+			Release: func(context.Context, *acp.ClientConn, *acp.ReleaseTerminalRequest) (*acp.ReleaseTerminalResponse, error) {
 				return &acp.ReleaseTerminalResponse{}, nil
 			},
 		},
@@ -497,13 +489,13 @@ func TestAnEmptyIdentifierIsAcceptedBecauseTheSchemaDeclaresNoMinimum(t *testing
 func TestARelativePathIsRefusedBeforeItIsSent(t *testing.T) {
 	var reached int
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
-		ReadTextFile: func(context.Context, *acp.ReadTextFileRequest) (*acp.ReadTextFileResponse, error) {
+		ReadTextFile: func(context.Context, *acp.ClientConn, *acp.ReadTextFileRequest) (*acp.ReadTextFileResponse, error) {
 			reached++
 			return &acp.ReadTextFileResponse{}, nil
 		},
-		WriteTextFile: func(context.Context, *acp.WriteTextFileRequest) (*acp.WriteTextFileResponse, error) {
+		WriteTextFile: func(context.Context, *acp.ClientConn, *acp.WriteTextFileRequest) (*acp.WriteTextFileResponse, error) {
 			reached++
 			return &acp.WriteTextFileResponse{}, nil
 		},

@@ -136,10 +136,9 @@ func TestCancellingATurnAnswersPendingPermissionRequests(t *testing.T) {
 		dialogClosed := make(chan struct{})
 
 		client, err := acp.NewClient(&acp.ClientConfig{
-			SessionUpdate: func(context.Context, *acp.SessionNotification) {},
+			SessionUpdate: func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 			RequestPermission: func(
-				ctx context.Context,
-				_ *acp.RequestPermissionRequest,
+				ctx context.Context, _ *acp.ClientConn, _ *acp.RequestPermissionRequest,
 			) (*acp.RequestPermissionResponse, error) {
 				// A dialog the user never answers. The handler's context being
 				// cancelled is how it learns to take the dialog down.
@@ -219,10 +218,9 @@ func TestALateUserDecisionIsDropped(t *testing.T) {
 		decide := make(chan struct{})
 
 		client, err := acp.NewClient(&acp.ClientConfig{
-			SessionUpdate: func(context.Context, *acp.SessionNotification) {},
+			SessionUpdate: func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 			RequestPermission: func(
-				context.Context,
-				*acp.RequestPermissionRequest,
+				context.Context, *acp.ClientConn, *acp.RequestPermissionRequest,
 			) (*acp.RequestPermissionResponse, error) {
 				close(asked)
 				<-decide

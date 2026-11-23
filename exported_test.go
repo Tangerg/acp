@@ -75,11 +75,12 @@ var handWritten = map[string]string{
 	"ExtNotification": "extension.go — a notification for one",
 
 	// The sentinels, which exist only where control flow needs one.
-	"ErrAuthRequired":     "error.go — how an agent says authenticate first, which is control flow",
-	"ErrRequestCancelled": "error.go — a peer's -32800, which does not prove anybody cancelled anything",
-	"ErrConnectionClosed": "error.go — a local state rather than a wire error: nobody sent it",
-	"ErrPromptInProgress": "session.go — one prompt at a time per session, because session/cancel names no turn",
-	"ErrTerminalReleased": "workspace.go — a released terminal identifier is the client's to reuse, so the handle is spent",
+	"ErrAuthRequired":        "error.go — how an agent says authenticate first, which is control flow",
+	"ErrRequestCancelled":    "error.go — a peer's -32800, which does not prove anybody cancelled anything",
+	"ErrConnectionClosed":    "error.go — a local state rather than a wire error: nobody sent it",
+	"ErrPromptInProgress":    "session.go — one prompt at a time per session, because session/cancel names no turn",
+	"ErrTerminalReleased":    "workspace.go — a released terminal identifier is the client's to reuse, so the handle is spent",
+	"ErrTooManyPendingCalls": "limits.go — outbound backpressure before a request reaches the transport",
 }
 
 // The manifest decides generation scope and schema/exported.txt records what that

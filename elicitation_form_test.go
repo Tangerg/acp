@@ -1,12 +1,199 @@
 package acp
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/Tangerg/acp/internal/wire"
+	ecmascript "github.com/faustbrian/go-ecma-regexp/v2"
 )
+
+func TestFormSchemaIsCompiledBeforeTheHandlerRuns(t *testing.T) {
+	called := false
+	conn := &ClientConn{client: &Client{config: ClientConfig{Elicitation: &ElicitationHandlers{
+		Form: func(context.Context, *ClientConn, *CreateElicitationRequest, *ElicitationFormMode) (*CreateElicitationResponse, error) {
+			called = true
+			return &CreateElicitationResponse{Value: &CreateElicitationResponseDecline{}}, nil
+		},
+	}}}}
+	_, err := conn.createElicitation(t.Context(), rawCall(1, methodElicitationCreate,
+		`{"mode":"form","sessionId":"s","message":"form","requestedSchema":{"type":"object","properties":{"field":{"type":"string","pattern":"["}}}}`))
+	if called {
+		t.Error("an invalid form reached the application handler")
+	}
+	var failure *Error
+	if !errors.As(err, &failure) || failure.Code != ErrorCodeInvalidParams {
+		t.Errorf("invalid peer schema returned %v, want invalid params", err)
+	}
+}
+
+func TestCompiledFormOwnsConstraintsAfterTheWireModelChanges(t *testing.T) {
+	property := &StringPropertySchema{Pattern: OptValue(`^main$`), MinLength: OptValue(uint32(4))}
+	schema := ElicitationSchema{
+		Type:       ElicitationSchemaTypeObject,
+		Properties: map[string]ElicitationPropertySchema{"branch": property},
+	}
+	form, err := newCompiledForm(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	property.Pattern = OptValue(`^x$`)
+	property.MinLength = OptValue(uint32(1))
+	delete(schema.Properties, "branch")
+	valid := ElicitationContentValueString("main")
+	if err := form.validate(t.Context(), map[string]ElicitationContentValue{"branch": &valid}); err != nil {
+		t.Fatalf("changing the wire model changed compiled constraints: %v", err)
+	}
+	invalid := ElicitationContentValueString("x")
+	if err := form.validate(t.Context(), map[string]ElicitationContentValue{"branch": &invalid}); err == nil {
+		t.Fatal("changing the wire model weakened compiled constraints")
+	}
+}
+
+func TestFormAnswersEnforceDeclaredStringFormats(t *testing.T) {
+	for _, test := range []struct {
+		format StringFormat
+		valid  string
+	}{
+		{format: StringFormatEmail, valid: "user@example.com"},
+		{format: StringFormatURI, valid: "https://example.com/path"},
+		{format: StringFormatDate, valid: "2026-11-08"},
+		{format: StringFormatDateTime, valid: "2026-11-08T00:00:00Z"},
+	} {
+		t.Run(string(test.format), func(t *testing.T) {
+			form, err := newCompiledForm(ElicitationSchema{
+				Type: ElicitationSchemaTypeObject,
+				Properties: map[string]ElicitationPropertySchema{
+					"value": &StringPropertySchema{Format: OptValue(test.format)},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, text := range []string{test.valid, "not an email, URI, date or time"} {
+				value := ElicitationContentValueString(text)
+				err := form.validate(t.Context(), map[string]ElicitationContentValue{"value": &value})
+				if (err == nil) != (text == test.valid) {
+					t.Errorf("format %q, answer %q: %v", test.format, text, err)
+				}
+			}
+		})
+	}
+}
+
+func TestFormPatternResourceFailureDoesNotBecomeAMismatch(t *testing.T) {
+	form, err := newCompiledForm(ElicitationSchema{
+		Type: ElicitationSchemaTypeObject,
+		Properties: map[string]ElicitationPropertySchema{
+			"text": &StringPropertySchema{Pattern: OptValue(`^x$|^(a+)+$`)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := ElicitationContentValueString(strings.Repeat("a", 32) + "!")
+	var limit *ecmascript.LimitError
+	var timeout *ecmascript.TimeoutError
+	if err := form.validate(t.Context(), map[string]ElicitationContentValue{"text": &value}); !errors.As(err, &limit) && !errors.As(err, &timeout) {
+		t.Fatalf("excessive pattern work returned %v, want a resource-limit failure", err)
+	}
+	value = "x"
+	if err := form.validate(t.Context(), map[string]ElicitationContentValue{"text": &value}); err != nil {
+		t.Fatalf("a resource failure poisoned the next answer: %v", err)
+	}
+}
+
+func TestFormPatternsRejectNonECMAScriptSyntax(t *testing.T) {
+	for _, pattern := range []string{
+		`^(?>a)$`,
+		`(?i)^a$`,
+		`(?=a)(?>a)`,
+		`(?'word'a)`,
+		`(?#comment)a`,
+		`\q`,
+		`a{`,
+	} {
+		t.Run(pattern, func(t *testing.T) {
+			_, err := newCompiledForm(ElicitationSchema{
+				Type: ElicitationSchemaTypeObject,
+				Properties: map[string]ElicitationPropertySchema{
+					"text": &StringPropertySchema{Pattern: OptValue(pattern)},
+				},
+			})
+			if _, ok := errors.AsType[*ecmascript.SyntaxError](err); !ok {
+				t.Fatalf("invalid ECMAScript pattern returned %v, want a syntax error", err)
+			}
+		})
+	}
+}
+
+func TestFormPatternCompilationHasAResourceBudget(t *testing.T) {
+	pattern := strings.Repeat("a", formPatternMaxBytes+1)
+	_, err := newCompiledForm(ElicitationSchema{
+		Type: ElicitationSchemaTypeObject,
+		Properties: map[string]ElicitationPropertySchema{
+			"text": &StringPropertySchema{Pattern: OptValue(pattern)},
+		},
+	})
+	var limit *ecmascript.LimitError
+	if !errors.As(err, &limit) || limit.Kind != ecmascript.LimitPatternBytes {
+		t.Fatalf("excessive pattern size returned %v, want a pattern-size limit error", err)
+	}
+}
+
+func TestFormPatternValidationHonorsCancellation(t *testing.T) {
+	form, err := newCompiledForm(ElicitationSchema{
+		Type: ElicitationSchemaTypeObject,
+		Properties: map[string]ElicitationPropertySchema{
+			"text": &StringPropertySchema{Pattern: OptValue(`^a$`)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	value := ElicitationContentValueString("a")
+	if err := form.validate(ctx, map[string]ElicitationContentValue{"text": &value}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled validation returned %v, want context.Canceled", err)
+	}
+	if err := form.validate(t.Context(), map[string]ElicitationContentValue{"text": &value}); err != nil {
+		t.Fatalf("cancellation poisoned the next answer: %v", err)
+	}
+}
+
+func TestFormURIsFollowJSONSchemaInsteadOfBrowserRepairRules(t *testing.T) {
+	form, err := newCompiledForm(ElicitationSchema{
+		Type: ElicitationSchemaTypeObject,
+		Properties: map[string]ElicitationPropertySchema{
+			"link": &StringPropertySchema{Format: OptValue(StringFormatURI)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		text  string
+		valid bool
+	}{
+		{text: "urn:example:note", valid: true},
+		{text: "custom:", valid: true},
+		{text: "https://example.org/a%20b", valid: true},
+		{text: "https://example.org/a b"},
+		{text: "https://example.org/界"},
+		{text: "https://example.org/?q=%zz"},
+		{text: "https://[not-an-ipv6-address]/"},
+	} {
+		value := ElicitationContentValueString(test.text)
+		err := form.validate(t.Context(), map[string]ElicitationContentValue{"link": &value})
+		if (err == nil) != test.valid {
+			t.Errorf("URI %q valid=%t, error=%v", test.text, test.valid, err)
+		}
+	}
+}
 
 // The form answer, checked against the form that asked for it.
 //
@@ -160,12 +347,33 @@ func TestAFormAnswerIsCheckedAgainstItsSchema(t *testing.T) {
 			content: map[string]ElicitationContentValue{"tags": list("a")},
 		},
 		{
-			name: "an unsupported pattern is reported instead of discarded",
+			name: "an ECMAScript lookahead that does not match",
 			schema: schema(map[string]ElicitationPropertySchema{
 				"branch": &StringPropertySchema{Pattern: OptValue(`^(?=.*x)`)},
 			}),
 			content: map[string]ElicitationContentValue{"branch": text("anything")},
 			wants:   "pattern",
+		},
+		{
+			name: "an ECMAScript lookahead that matches",
+			schema: schema(map[string]ElicitationPropertySchema{
+				"branch": &StringPropertySchema{Pattern: OptValue(`^(?=.*x)`)},
+			}),
+			content: map[string]ElicitationContentValue{"branch": text("extra")},
+		},
+		{
+			name: "an ECMAScript backreference that matches",
+			schema: schema(map[string]ElicitationPropertySchema{
+				"branch": &StringPropertySchema{Pattern: OptValue(`^(.)\1$`)},
+			}),
+			content: map[string]ElicitationContentValue{"branch": text("aa")},
+		},
+		{
+			name: "an ECMAScript surrogate-pair escape",
+			schema: schema(map[string]ElicitationPropertySchema{
+				"branch": &StringPropertySchema{Pattern: OptValue(`^\uD83D\uDE00$`)},
+			}),
+			content: map[string]ElicitationContentValue{"branch": text("😀")},
 		},
 		{
 			name: "a supported pattern that does not match",
@@ -195,7 +403,11 @@ func TestAFormAnswerIsCheckedAgainstItsSchema(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := test.schema.validate(test.content)
+			form, err := newCompiledForm(test.schema)
+			if err != nil {
+				t.Fatalf("compiling form: %v", err)
+			}
+			err = form.validate(t.Context(), test.content)
 			if test.wants == "" {
 				if err != nil {
 					t.Fatalf("refused a valid answer: %v (%s)", err, test.why)
@@ -244,12 +456,16 @@ func TestNullFormOptionsMeanNoConstraint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := schema.validate(content); err != nil {
+	form, err := newCompiledForm(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := form.validate(t.Context(), content); err != nil {
 		t.Fatalf("null options constrained the answer: %v", err)
 	}
 	invalid := ElicitationContentValueInteger(1)
 	content["text"] = &invalid
-	if err := schema.validate(content); err == nil {
+	if err := form.validate(t.Context(), content); err == nil {
 		t.Fatal("normalizing schema options removed the string type constraint")
 	}
 	after, err := json.Marshal(schema)
@@ -269,7 +485,11 @@ func TestAFormAnswerCannotHideANilUnionArm(t *testing.T) {
 			"branch": &StringPropertySchema{},
 		},
 	}
-	err := schema.validate(map[string]ElicitationContentValue{"branch": text})
+	form, err := newCompiledForm(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = form.validate(t.Context(), map[string]ElicitationContentValue{"branch": text})
 	if err == nil || !strings.Contains(err.Error(), "nil *ElicitationContentValueString arm") {
 		t.Fatalf("validation returned %v, want the typed-nil union error", err)
 	}

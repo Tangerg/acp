@@ -4,7 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
+	"time"
+
+	"github.com/Tangerg/acp/jsonrpc"
 )
 
 // The operations an agent performs on a client's workspace: the filesystem, and
@@ -46,9 +51,36 @@ func isAbsolutePath(path string) bool {
 	}
 }
 
-func absoluteDirectories(directories []string) error {
+func absoluteDirectories(field string, directories []string) error {
 	for i, directory := range directories {
-		if err := absolutePath(fmt.Sprintf("additionalDirectories[%d]", i), directory); err != nil {
+		if err := absolutePath(fmt.Sprintf("%s[%d]", field, i), directory); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func absoluteMCPCommands(servers []McpServer) error {
+	for i, server := range servers {
+		if stdio, ok := server.(*McpServerStdio); ok && stdio != nil {
+			if err := absolutePath(fmt.Sprintf("mcpServers[%d].command", i), stdio.Command); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func absoluteToolCallPaths(content []ToolCallContent, locations []ToolCallLocation) error {
+	for i, item := range content {
+		if diff, ok := item.(*Diff); ok && diff != nil {
+			if err := absolutePath(fmt.Sprintf("content[%d].path", i), diff.Path); err != nil {
+				return err
+			}
+		}
+	}
+	for i, location := range locations {
+		if err := absolutePath(fmt.Sprintf("locations[%d].path", i), location.Path); err != nil {
 			return err
 		}
 	}
@@ -77,6 +109,86 @@ type terminalState struct {
 	// WaitForExit. Only a proven no-commit failure leaves Release retryable.
 	sending  chan struct{}
 	released bool
+}
+
+// The response can arrive after the caller leaves. This record owns the terminal
+// until either the caller takes it or a cleanup task receives that ownership.
+type terminalCreation struct {
+	session *AgentSession
+
+	mu        sync.Mutex
+	abandoned bool
+	handle    *TerminalHandle
+	response  *CreateTerminalResponse
+}
+
+func (c *terminalCreation) accept(answer *jsonrpc.Response) error {
+	response := new(CreateTerminalResponse)
+	if err := decodeResponse(answer, response); err != nil {
+		return err
+	}
+	handle := &TerminalHandle{
+		id: response.TerminalID, session: c.session,
+		state: &terminalState{sending: make(chan struct{}, 1)},
+	}
+	c.mu.Lock()
+	abandoned := c.abandoned
+	if !abandoned {
+		c.handle, c.response = handle, response
+	}
+	c.mu.Unlock()
+	if abandoned {
+		c.release(handle)
+	}
+	return nil
+}
+
+func (c *terminalCreation) take() (*TerminalHandle, *CreateTerminalResponse) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	handle, response := c.handle, c.response
+	c.handle, c.response = nil, nil
+	return handle, response
+}
+
+func (c *terminalCreation) abandon() {
+	c.mu.Lock()
+	c.abandoned = true
+	handle := c.handle
+	c.handle, c.response = nil, nil
+	c.mu.Unlock()
+	if handle != nil {
+		c.release(handle)
+	}
+}
+
+const abandonedTerminalReleaseTimeout = 5 * time.Second
+
+func (c *terminalCreation) release(handle *TerminalHandle) {
+	conn := c.session.conn
+	conn.life.spawn(func() {
+		// The create caller has already left; cleanup must own its deadline.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(conn.life.ctx), abandonedTerminalReleaseTimeout)
+		defer cancel()
+		if err := releaseAbandonedTerminal(ctx, handle); err != nil && !errors.Is(err, ErrConnectionClosed) {
+			conn.logger.Warn("acp: releasing a terminal from an abandoned create request failed",
+				slog.String("terminalId", string(handle.id)), slog.Any("error", err))
+		}
+	})
+}
+
+func releaseAbandonedTerminal(ctx context.Context, handle *TerminalHandle) error {
+	for {
+		_, err := handle.Release(ctx, nil)
+		if !errors.Is(err, ErrTooManyPendingCalls) {
+			return err
+		}
+		// Quota refusal proves no write occurred; retrying this release cannot
+		// target a terminal whose identifier the client already reused.
+		if waitErr := handle.session.conn.calls.awaitCapacity(ctx); waitErr != nil {
+			return waitErr
+		}
+	}
 }
 
 // ErrTerminalReleased is returned by an operation on a terminal handle that has
@@ -174,7 +286,7 @@ func (t *TerminalHandle) send(ctx context.Context, method string, request any) (
 	if t.state.released {
 		return outboundCall{}, ErrTerminalReleased
 	}
-	call, err := beginGatedCall(ctx, t.session.conn, method, request)
+	call, err := beginGatedCall(ctx, t.session.conn, method, request, nil)
 	if method == methodTerminalRelease && (err == nil || t.session.conn.ended()) {
 		t.state.released = true
 	}
@@ -185,7 +297,7 @@ func (t *TerminalHandle) send(ctx context.Context, method string, request any) (
 // would be refused there too, and asking wastes a round trip while making a
 // developer read a wire trace to find out what they forgot.
 func callGated[Response any](ctx context.Context, c *AgentConn, method string, request any) (*Response, error) {
-	call, err := beginGatedCall(ctx, c, method, request)
+	call, err := beginGatedCall(ctx, c, method, request, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -204,6 +316,7 @@ func beginGatedCall(
 	c *AgentConn,
 	method string,
 	request any,
+	accept func(*jsonrpc.Response) error,
 ) (outboundCall, error) {
 	if err := c.awaitHandshake(ctx, method); err != nil {
 		return outboundCall{}, err
@@ -211,5 +324,5 @@ func beginGatedCall(
 	if err := c.Peer().permits(method); err != nil {
 		return outboundCall{}, err
 	}
-	return c.send(ctx, method, request, nil, nil)
+	return c.send(ctx, method, request, accept, nil)
 }

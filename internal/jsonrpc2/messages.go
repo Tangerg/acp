@@ -12,7 +12,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
+	"unicode/utf8"
+
+	"github.com/Tangerg/acp/internal/jsonnumber"
 )
 
 // ID is a JSON-RPC request identifier: a string, integer, or null.
@@ -42,11 +44,11 @@ func (id *ID) UnmarshalJSON(data []byte) error {
 		*id = StringID(text)
 		return nil
 	}
-	number, ok := new(big.Rat).SetString(string(data))
-	if !ok || !number.IsInt() || !number.Num().IsInt64() {
+	number, err := jsonnumber.Parse[int64](data)
+	if err != nil {
 		return fmt.Errorf("%w: request ID %s is not a string, null, or int64", ErrParse, data)
 	}
-	*id = Int64ID(number.Num().Int64())
+	*id = Int64ID(number)
 	return nil
 }
 
@@ -138,6 +140,14 @@ func NewResponse(id ID, result any, rerr *WireError) (*Response, error) {
 	if err != nil {
 		return nil, err
 	}
+	if rerr != nil {
+		if _, encodeErr := marshalToRaw(rerr); encodeErr != nil {
+			return nil, fmt.Errorf("jsonrpc: construct error: %w", encodeErr)
+		}
+		wireError := *rerr
+		wireError.Data = bytes.Clone(rerr.Data)
+		rerr = &wireError
+	}
 	response := &Response{ID: id, Result: r, Error: rerr}
 	if invalid := response.validate(); invalid != nil {
 		return nil, fmt.Errorf("jsonrpc: construct response: %w", invalid)
@@ -157,6 +167,8 @@ func (r *Response) validate() error {
 		return errors.New("nil response")
 	case !r.ID.IsValid():
 		return errors.New("response has no request id")
+	case r.Result != nil && len(r.Result) == 0:
+		return errors.New("response result is empty JSON")
 	case r.Error != nil && len(r.Result) > 0:
 		return errors.New("response has both result and error")
 	case r.Error == nil && len(r.Result) == 0:
@@ -172,6 +184,9 @@ func EncodeMessage(msg Message) ([]byte, error) {
 		if msg == nil {
 			return nil, errors.New("jsonrpc: marshal message: nil request")
 		}
+		if msg.Params != nil && len(msg.Params) == 0 {
+			return nil, errors.New("jsonrpc: marshal message: params is empty JSON")
+		}
 	case *Response:
 		if err := msg.validate(); err != nil {
 			return nil, fmt.Errorf("jsonrpc: marshal message: %w", err)
@@ -181,7 +196,7 @@ func EncodeMessage(msg Message) ([]byte, error) {
 	}
 	wire := wireCombined{VersionTag: wireVersion}
 	msg.marshal(&wire)
-	data, err := json.Marshal(&wire)
+	data, err := marshalToRaw(&wire)
 	if err != nil {
 		return data, fmt.Errorf("jsonrpc: marshal message: %w", err)
 	}
@@ -259,6 +274,9 @@ func marshalToRaw(obj any) (json.RawMessage, error) {
 	data, err := json.Marshal(obj)
 	if err != nil {
 		return nil, err
+	}
+	if !utf8.Valid(data) {
+		return nil, errors.New("jsonrpc: encoded JSON contains invalid UTF-8")
 	}
 	return json.RawMessage(data), nil
 }

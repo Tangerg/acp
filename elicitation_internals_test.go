@@ -209,11 +209,11 @@ func (*scopedElicitationStream) Close() error { return nil }
 func TestAnUnadvertisedModeIsRefusedInbound(t *testing.T) {
 	var served int
 	client, err := NewClient(&ClientConfig{
-		SessionUpdate:     func(context.Context, *SessionNotification) {},
+		SessionUpdate:     func(context.Context, *ClientConn, *SessionNotification) {},
 		RequestPermission: denyingPermissionInternal,
 		Elicitation: &ElicitationHandlers{
 			Form: func(
-				context.Context,
+				context.Context, *ClientConn,
 				*CreateElicitationRequest,
 				*ElicitationFormMode,
 			) (*CreateElicitationResponse, error) {
@@ -259,10 +259,10 @@ func TestAnUnadvertisedModeIsRefusedInbound(t *testing.T) {
 
 func TestAFormHandlerCannotRewriteTheSchemaUsedToValidateItsAnswer(t *testing.T) {
 	client, err := NewClient(&ClientConfig{
-		SessionUpdate:     func(context.Context, *SessionNotification) {},
+		SessionUpdate:     func(context.Context, *ClientConn, *SessionNotification) {},
 		RequestPermission: denyingPermissionInternal,
 		Elicitation: &ElicitationHandlers{Form: func(
-			_ context.Context, _ *CreateElicitationRequest, mode *ElicitationFormMode,
+			_ context.Context, _ *ClientConn, _ *CreateElicitationRequest, mode *ElicitationFormMode,
 		) (*CreateElicitationResponse, error) {
 			mode.RequestedSchema.Required = OptValue([]string{})
 			return &CreateElicitationResponse{Value: &ElicitationAcceptAction{
@@ -288,7 +288,7 @@ func TestAFormHandlerCannotRewriteTheSchemaUsedToValidateItsAnswer(t *testing.T)
 // mode: it advertised nothing, so the agent was told the method was not there.
 func TestElicitationIsMethodNotFoundWithoutHandlers(t *testing.T) {
 	client, err := NewClient(&ClientConfig{
-		SessionUpdate:     func(context.Context, *SessionNotification) {},
+		SessionUpdate:     func(context.Context, *ClientConn, *SessionNotification) {},
 		RequestPermission: denyingPermissionInternal,
 	})
 	if err != nil {
@@ -319,9 +319,9 @@ func TestAURIErrorKeepsItsGeneratedPropertyPath(t *testing.T) {
 	_, err = json.Marshal(ElicitationURLMode{
 		ElicitationID: "e-1",
 		URL:           "/sign-in",
-		Value: &ElicitationURLModeSession{ElicitationSessionScope: ElicitationSessionScope{
+		Value: &ElicitationURLModeSession{
 			SessionID: "s-1",
-		}},
+		},
 	})
 	assertPathError(t, err, "/url")
 }
@@ -388,7 +388,7 @@ func connectRawClient(t *testing.T, client *Client) (Connection, *ClientConn) {
 var errNotInitialize = newError(ErrorCodeInvalidRequest, "the client did not open with initialize")
 
 func denyingPermissionInternal(
-	context.Context,
+	context.Context, *ClientConn,
 	*RequestPermissionRequest,
 ) (*RequestPermissionResponse, error) {
 	return &RequestPermissionResponse{Outcome: &RequestPermissionOutcomeCancelled{}}, nil
@@ -457,17 +457,17 @@ func TestTheRecordedEditorCanBeElicitedFrom(t *testing.T) {
 func TestACompletionForAnUnknownElicitationIsIgnored(t *testing.T) {
 	completions := make(chan ElicitationID, 4)
 	client, err := NewClient(&ClientConfig{
-		SessionUpdate:     func(context.Context, *SessionNotification) {},
+		SessionUpdate:     func(context.Context, *ClientConn, *SessionNotification) {},
 		RequestPermission: denyingPermissionInternal,
 		Elicitation: &ElicitationHandlers{
 			URL: func(
-				context.Context,
+				context.Context, *ClientConn,
 				*CreateElicitationRequest,
 				*ElicitationURLMode,
 			) (*CreateElicitationResponse, error) {
 				return &CreateElicitationResponse{Value: &ElicitationAcceptAction{}}, nil
 			},
-			Complete: func(_ context.Context, notification *CompleteElicitationNotification) {
+			Complete: func(_ context.Context, _ *ClientConn, notification *CompleteElicitationNotification) {
 				completions <- notification.ElicitationID
 			},
 		},
@@ -526,11 +526,11 @@ func TestACompletionForAnUnknownElicitationIsIgnored(t *testing.T) {
 func TestAReusedOutstandingURLIDIsRefusedBeforeTheHandler(t *testing.T) {
 	var served int
 	client, err := NewClient(&ClientConfig{
-		SessionUpdate:     func(context.Context, *SessionNotification) {},
+		SessionUpdate:     func(context.Context, *ClientConn, *SessionNotification) {},
 		RequestPermission: denyingPermissionInternal,
 		Elicitation: &ElicitationHandlers{
 			URL: func(
-				context.Context,
+				context.Context, *ClientConn,
 				*CreateElicitationRequest,
 				*ElicitationURLMode,
 			) (*CreateElicitationResponse, error) {
@@ -570,11 +570,11 @@ func TestAReusedOutstandingURLIDIsRefusedBeforeTheHandler(t *testing.T) {
 func TestAnUnencodableURLAcceptDoesNotKeepItsID(t *testing.T) {
 	var served int
 	client, err := NewClient(&ClientConfig{
-		SessionUpdate:     func(context.Context, *SessionNotification) {},
+		SessionUpdate:     func(context.Context, *ClientConn, *SessionNotification) {},
 		RequestPermission: denyingPermissionInternal,
 		Elicitation: &ElicitationHandlers{
 			URL: func(
-				context.Context,
+				context.Context, *ClientConn,
 				*CreateElicitationRequest,
 				*ElicitationURLMode,
 			) (*CreateElicitationResponse, error) {
@@ -626,11 +626,11 @@ func TestAnUnencodableURLAcceptDoesNotKeepItsID(t *testing.T) {
 // still tracks them, because the tracking is what the ignore rule is made of.
 func TestACompletionIsClosedEvenWithNoHandler(t *testing.T) {
 	client, err := NewClient(&ClientConfig{
-		SessionUpdate:     func(context.Context, *SessionNotification) {},
+		SessionUpdate:     func(context.Context, *ClientConn, *SessionNotification) {},
 		RequestPermission: denyingPermissionInternal,
 		Elicitation: &ElicitationHandlers{
 			URL: func(
-				context.Context,
+				context.Context, *ClientConn,
 				*CreateElicitationRequest,
 				*ElicitationURLMode,
 			) (*CreateElicitationResponse, error) {

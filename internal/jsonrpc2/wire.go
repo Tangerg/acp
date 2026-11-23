@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/Tangerg/acp/internal/jsonnumber"
 )
 
 // This file contains the Go forms of the JSON-RPC wire specification.
@@ -48,6 +50,16 @@ type WireError struct {
 	Data json.RawMessage `json:"data,omitempty"`
 }
 
+func (w WireError) MarshalJSON() ([]byte, error) {
+	// omitempty would erase an explicitly supplied empty RawMessage before its
+	// invalid JSON could be reported. Only nil represents omitted data.
+	if w.Data != nil && len(w.Data) == 0 {
+		return nil, errors.New("jsonrpc: error data is empty JSON")
+	}
+	type encodedError WireError
+	return json.Marshal(encodedError(w))
+}
+
 func (w *WireError) UnmarshalJSON(data []byte) error {
 	if w == nil {
 		return errors.New("jsonrpc: decode error into nil target")
@@ -65,9 +77,11 @@ func (w *WireError) UnmarshalJSON(data []byte) error {
 	if !hasCode || bytes.Equal(bytes.TrimSpace(rawCode), []byte("null")) {
 		return errors.New("jsonrpc: decode error: missing or null code")
 	}
-	if decodeErr := json.Unmarshal(rawCode, &decoded.Code); decodeErr != nil {
-		return fmt.Errorf("jsonrpc: decode error code: %w", decodeErr)
+	code, codeErr := jsonnumber.Parse[int64](rawCode)
+	if codeErr != nil {
+		return fmt.Errorf("jsonrpc: decode error code: %w", codeErr)
 	}
+	decoded.Code = code
 	rawMessage, hasMessage := members["message"]
 	if !hasMessage || bytes.Equal(bytes.TrimSpace(rawMessage), []byte("null")) {
 		return errors.New("jsonrpc: decode error: missing or null message")

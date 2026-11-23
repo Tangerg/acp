@@ -33,8 +33,7 @@ func count[T any](seq func(func(T) bool)) int {
 }
 
 func denyingPermission(
-	_ context.Context,
-	_ *acp.RequestPermissionRequest,
+	_ context.Context, _ *acp.ClientConn, _ *acp.RequestPermissionRequest,
 ) (*acp.RequestPermissionResponse, error) {
 	return &acp.RequestPermissionResponse{Outcome: &acp.RequestPermissionOutcomeCancelled{}}, nil
 }
@@ -42,7 +41,7 @@ func denyingPermission(
 func testClient(t *testing.T) *acp.Client {
 	t.Helper()
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 	})
 	if err != nil {

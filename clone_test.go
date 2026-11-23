@@ -63,7 +63,7 @@ func TestAnAgentDoesNotShareItsConfigurationWithItsCaller(t *testing.T) {
 	terminal.ID = "tampered"
 
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Capabilities:      &acp.ClientCapabilities{Auth: acp.AuthCapabilities{Terminal: true}},
 	})
@@ -144,7 +144,7 @@ func TestPeerHandsOutASnapshotNobodyElseHolds(t *testing.T) {
 // forcing every number through interface{} as float64.
 func TestMetaDecodesIntoTheRequestedType(t *testing.T) {
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Meta:              mustMeta(t, map[string]any{"count": 3, "nested": map[string]any{"count": 4}}),
 	})
@@ -206,7 +206,7 @@ func TestMetaDoesNotRetainArbitraryGoObjects(t *testing.T) {
 	stamp := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	value := map[string]any{"stamp": stamp}
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Meta:              mustMeta(t, map[string]any{"stamp": stamp, "nested": value}),
 	})

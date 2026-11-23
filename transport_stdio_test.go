@@ -38,7 +38,7 @@ func TestATurnOverNewlineDelimitedJSON(t *testing.T) {
 
 	updates := make(chan string, 4)
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate: func(_ context.Context, notification *acp.SessionNotification) {
+		SessionUpdate: func(_ context.Context, _ *acp.ClientConn, notification *acp.SessionNotification) {
 			if chunk, ok := notification.Update.(*acp.AgentMessageChunk); ok {
 				if text, ok := chunk.Content.(*acp.TextContent); ok {
 					updates <- text.Text
@@ -60,7 +60,7 @@ func TestATurnOverNewlineDelimitedJSON(t *testing.T) {
 		}
 		if updateErr := session.Update(ctx, &acp.SessionUpdateParams{
 			Update: &acp.AgentMessageChunk{
-				ContentChunk: acp.ContentChunk{Content: &acp.TextContent{Text: "echo: " + text.Text}},
+				Content: &acp.TextContent{Text: "echo: " + text.Text},
 			},
 		}); updateErr != nil {
 			return nil, updateErr
@@ -152,6 +152,9 @@ func TestByteStreamFramingRefusesWhatIsNotAMessage(t *testing.T) {
 		{name: "not JSON at all", stream: "hello\n", refused: true},
 		{name: "JSON that is not a message", stream: "[1,2,3]\n", refused: true},
 		{name: "the wrong protocol version", stream: `{"jsonrpc":"1.0","method":"x"}` + "\n", refused: true},
+		{name: "Unicode text", stream: `{"jsonrpc":"2.0","method":"x","params":{"text":"你好"}}`},
+		{name: "invalid UTF-8 method", stream: "{\"jsonrpc\":\"2.0\",\"method\":\"\xff\"}", refused: true},
+		{name: "invalid UTF-8 payload", stream: "{\"jsonrpc\":\"2.0\",\"method\":\"x\",\"params\":{\"text\":\"\xff\"}}", refused: true},
 	}
 
 	for _, test := range tests {

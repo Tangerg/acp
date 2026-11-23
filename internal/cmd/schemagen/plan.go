@@ -74,6 +74,9 @@ type Def struct {
 	// schema does not declare. The schema gives such an arm additionalProperties,
 	// so those keys are a vendor's payload and have to survive.
 	Retained bool
+	// ExcludedExtraKeys is the complete declared-property set of the composed
+	// object, including its common fields. Extra may own only the remainder.
+	ExcludedExtraKeys []string
 	// Alternatives are the arms a catch-all arm is itself a union of. A value
 	// matches the catch-all only if it decodes as one of them.
 	//
@@ -89,8 +92,8 @@ type Def struct {
 	ReservedTags []string
 	TagProperty  string
 
-	// kindNewtype, kindNumberUnion, kindNullArm.
-	GoBase string
+	// kindNewtype, kindNumberUnion.
+	Base *ValueType
 
 	// kindStringUnion.
 	Values []*EnumValue
@@ -137,9 +140,10 @@ type Field struct {
 	Nullable bool
 	Opt      bool // the Go type is Opt[...], so absent and null stay apart
 
-	Value    *ValueType
-	Skip     bool // x-deserialize-skip-invalid-items
-	Fallback fallbackKind
+	Value         *ValueType
+	Skip          bool // x-deserialize-skip-invalid-items
+	DefaultOnNull bool
+	Fallback      fallbackKind
 	// DefaultLit is the Go literal the fbDefault fallback assigns.
 	DefaultLit string
 }
@@ -203,8 +207,9 @@ type ValueType struct {
 	IsUnion bool   // a vRef whose definition is a union with a generated selector
 	// Format is the schema's `format` for a string, which is a constraint rather
 	// than a Go type: the field stays a string and the codec enforces it.
-	Format string
-	Elem   *ValueType
+	Format    string
+	MinLength uint64
+	Elem      *ValueType
 }
 
 // A Manifest is the committed root set. Generation scope is its transitive $ref
@@ -751,14 +756,18 @@ func (p *planner) plan(name string) (*Def, error) {
 		}
 	case schema.Type.Base() == jsonString:
 		def.Kind = kindNewtype
-		def.GoBase = goString
+		base, err := p.valueType(schema)
+		if err != nil {
+			return nil, err
+		}
+		def.Base = base
 	case schema.Type.Base() == "integer" || schema.Type.Base() == "number":
-		base, err := goNumericType(schema)
+		base, err := p.valueType(schema)
 		if err != nil {
 			return nil, err
 		}
 		def.Kind = kindNewtype
-		def.GoBase = base
+		def.Base = base
 	case len(arms) > 0:
 		// Everything left is a union whose arms are different JSON shapes rather
 		// than different values of one shape.
@@ -802,12 +811,16 @@ func (p *planner) planField(jsonName string, schema *Schema, required bool) (*Fi
 		// A property the schema does not constrain admits null along with
 		// everything else, so it is nullable however the schema spells it — which
 		// is not at all.
-		Nullable: schema.Nullable() || value.Kind == vAny,
-		Value:    value,
-		Skip:     schema.SkipInvalidItems,
+		Nullable:      schema.Nullable() || value.Kind == vAny,
+		Value:         value,
+		Skip:          schema.SkipInvalidItems,
+		DefaultOnNull: schema.DefaultOnNull,
 	}
 	if field.Skip && value.Kind != vSlice {
 		return nil, errors.New("x-deserialize-skip-invalid-items on a property that is not an array")
+	}
+	if field.DefaultOnNull && (value.Kind != vSlice && value.Kind != vMap || field.Nullable) {
+		return nil, errors.New("x-deserialize-default-on-null requires a non-null array or map schema")
 	}
 
 	hasDefault := len(schema.Default) > 0
@@ -868,6 +881,9 @@ func (p *planner) planFallback(field *Field, schema *Schema, hasDefault bool) er
 }
 
 func (p *planner) valueType(schema *Schema) (*ValueType, error) {
+	if schema.MinLength != nil && schema.Type.Base() != jsonString {
+		return nil, errors.New("minLength requires a string schema")
+	}
 	if ref := schema.SoleRef(); ref != "" {
 		target, ok := p.doc.Defs[ref]
 		if !ok {
@@ -887,17 +903,7 @@ func (p *planner) valueType(schema *Schema) (*ValueType, error) {
 
 	switch base := schema.Type.Base(); base {
 	case jsonString:
-		// A format is a constraint the schema states and something has to enforce.
-		// Dropping one silently is how a package accepts what the grammar refuses,
-		// so an unimplemented format stops generation instead.
-		switch schema.Format {
-		case "":
-			return &ValueType{Kind: vScalar, Go: goString}, nil
-		case formatURI:
-			return &ValueType{Kind: vScalar, Go: goString, Format: formatURI}, nil
-		default:
-			return nil, fmt.Errorf("unimplemented string format %q", schema.Format)
-		}
+		return stringValueType(schema)
 	case "boolean":
 		return &ValueType{Kind: vScalar, Go: goBool}, nil
 	case "integer", "number":
@@ -944,6 +950,22 @@ func (p *planner) valueType(schema *Schema) (*ValueType, error) {
 		return nil, fmt.Errorf("unimplemented property shape: keywords %v", schema.Keywords)
 	default:
 		return nil, fmt.Errorf("unimplemented property shape: keywords %v", schema.Keywords)
+	}
+}
+
+func stringValueType(schema *Schema) (*ValueType, error) {
+	value := &ValueType{Kind: vScalar, Go: goString}
+	if schema.MinLength != nil {
+		value.MinLength = *schema.MinLength
+	}
+	switch schema.Format {
+	case "":
+		return value, nil
+	case formatURI:
+		value.Format = formatURI
+		return value, nil
+	default:
+		return nil, fmt.Errorf("unimplemented string format %q", schema.Format)
 	}
 }
 
@@ -994,11 +1016,11 @@ func (p *planner) planNumberUnion(def *Def, arms []*Schema) error {
 		if err != nil {
 			return err
 		}
-		if def.GoBase == "" {
-			def.GoBase = goType
+		if def.Base == nil {
+			def.Base = &ValueType{Kind: vScalar, Go: goType}
 		}
-		if def.GoBase != goType {
-			return fmt.Errorf("arms disagree about the numeric format: %s and %s", def.GoBase, goType)
+		if def.Base.Go != goType {
+			return fmt.Errorf("arms disagree about the numeric format: %s and %s", def.Base.Go, goType)
 		}
 		if len(arm.Const) == 0 {
 			def.Closed = false
@@ -1103,7 +1125,7 @@ func (p *planner) planValueUnion(def *Def, arms []*Schema) error {
 			GoName: goType,
 			Ident:  goName(goType),
 			Kind:   kindNewtype,
-			GoBase: base.Go,
+			Base:   base,
 			Doc:    valueArmDoc(goType, def.GoName, arm.Description),
 		}
 		p.order = append(p.order, goType)
@@ -1148,7 +1170,7 @@ func (p *planner) planObjectUnion(def *Def, schema *Schema) error {
 		payload := armPayload(arm)
 		switch {
 		case planned.CatchAll:
-			wrapper, err := p.planCatchAllArm(goType, arm, def, reserved)
+			wrapper, err := p.planCatchAllArm(goType, arm, def, reserved, schema.PropertyOrder)
 			if err != nil {
 				return fmt.Errorf("arm %d: %w", i, err)
 			}
@@ -1159,11 +1181,11 @@ func (p *planner) planObjectUnion(def *Def, schema *Schema) error {
 			if err != nil {
 				return fmt.Errorf("arm %d: #/$defs/%s: %w", i, payload, err)
 			}
-			if payloadErr := p.checkArmPayload(target, def.Discriminant); payloadErr != nil {
+			if payloadErr := p.checkArmPayload(target, def.Discriminant, schema.PropertyOrder); payloadErr != nil {
 				return fmt.Errorf("arm %d: %w", i, payloadErr)
 			}
 		default:
-			wrapper, err := p.planWrapperArm(goType, arm, def, payload)
+			wrapper, err := p.planWrapperArm(goType, arm, def, payload, schema.PropertyOrder)
 			if err != nil {
 				return fmt.Errorf("arm %d: %w", i, err)
 			}
@@ -1180,7 +1202,7 @@ func (p *planner) planObjectUnion(def *Def, schema *Schema) error {
 // payload — SessionUpdate has three arms carrying a ContentChunk, and only the
 // discriminant tells them apart. And an arm with no payload at all carries
 // nothing but its discriminant, so there is no existing type to be.
-func (p *planner) planWrapperArm(goType string, arm *Schema, union *Def, payload string) (*Def, error) {
+func (p *planner) planWrapperArm(goType string, arm *Schema, union *Def, payload string, common []string) (*Def, error) {
 	def := &Def{
 		GoName: goType,
 		Ident:  goName(goType),
@@ -1197,6 +1219,9 @@ func (p *planner) planWrapperArm(goType string, arm *Schema, union *Def, payload
 		if jsonName == union.Discriminant {
 			continue // the union writes and reads its own discriminant
 		}
+		if slices.Contains(common, jsonName) {
+			return nil, fmt.Errorf("arm %s redeclares common property %q", goType, jsonName)
+		}
 		field, err := p.planField(jsonName, arm.Properties[jsonName], slices.Contains(arm.Required, jsonName))
 		if err != nil {
 			return nil, fmt.Errorf("property %q: %w", jsonName, err)
@@ -1209,7 +1234,7 @@ func (p *planner) planWrapperArm(goType string, arm *Schema, union *Def, payload
 		if err != nil {
 			return nil, fmt.Errorf("#/$defs/%s: %w", payload, err)
 		}
-		if payloadErr := p.checkArmPayload(target, union.Discriminant); payloadErr != nil {
+		if payloadErr := p.checkArmPayload(target, union.Discriminant, common); payloadErr != nil {
 			return nil, payloadErr
 		}
 		if len(def.Fields) > 0 {
@@ -1227,25 +1252,21 @@ func (p *planner) planWrapperArm(goType string, arm *Schema, union *Def, payload
 	return def, nil
 }
 
-// checkArmPayload refuses a payload that declares the union's discriminant.
-//
-// The discriminant is written by the union rather than by the arm, by splicing
-// it into the arm's encoded object. That is safe without re-parsing the arm's
-// output only if the arm cannot have written the same key itself, so the
-// generator checks here instead of the encoder checking on every message.
-func (p *planner) checkArmPayload(payload *Def, discriminantName string) error {
-	if discriminantName == "" {
-		return nil
-	}
+// Composition is safe only when each part owns disjoint keys. Detect declared
+// collisions during generation rather than re-parsing every encoded message.
+func (p *planner) checkArmPayload(payload *Def, discriminantName string, common []string) error {
 	for _, field := range payload.Fields {
 		if field.JSONName == discriminantName {
 			return fmt.Errorf("payload %s declares the discriminant property %q", payload.GoName, discriminantName)
+		}
+		if slices.Contains(common, field.JSONName) {
+			return fmt.Errorf("payload %s redeclares common property %q", payload.GoName, field.JSONName)
 		}
 	}
 	return nil
 }
 
-func (p *planner) planCatchAllArm(goType string, arm *Schema, union *Def, reserved []string) (*Def, error) {
+func (p *planner) planCatchAllArm(goType string, arm *Schema, union *Def, reserved, common []string) (*Def, error) {
 	doc := []string{goType + " — the open catch-all arm of " + union.GoName + "."}
 	if described := docComment("", arm.Description); len(described) > 0 {
 		doc = append(doc, "")
@@ -1255,8 +1276,8 @@ func (p *planner) planCatchAllArm(goType string, arm *Schema, union *Def, reserv
 	doc = append(doc, wrap(76, fmt.Sprintf(
 		"The schema's `not` clause reserves the discriminant values %s's known arms claim, so a value carrying "+
 			"one of those is a malformed known arm rather than a custom one and does not land here. Every "+
-			"property this arm does not declare is kept in Extra, because the schema gives the arm "+
-			"additionalProperties: those keys are the sender's payload.", union.GoName))...)
+			"property neither this arm nor its containing object declares is kept in Extra, because the schema "+
+			"gives the arm additionalProperties: those keys are the sender's payload.", union.GoName))...)
 
 	def := &Def{
 		GoName:       goType,
@@ -1268,12 +1289,17 @@ func (p *planner) planCatchAllArm(goType string, arm *Schema, union *Def, reserv
 		Doc:          doc,
 	}
 	for _, jsonName := range arm.PropertyOrder {
+		if slices.Contains(common, jsonName) {
+			return nil, fmt.Errorf("catch-all %s redeclares common property %q", goType, jsonName)
+		}
 		field, err := p.planField(jsonName, arm.Properties[jsonName], slices.Contains(arm.Required, jsonName))
 		if err != nil {
 			return nil, fmt.Errorf("property %q: %w", jsonName, err)
 		}
 		def.Fields = append(def.Fields, field)
+		def.ExcludedExtraKeys = append(def.ExcludedExtraKeys, jsonName)
 	}
+	def.ExcludedExtraKeys = append(def.ExcludedExtraKeys, common...)
 	if len(def.Fields) == 0 {
 		return nil, errors.New("a catch-all arm with no declared discriminant property")
 	}

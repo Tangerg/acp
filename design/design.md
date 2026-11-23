@@ -46,10 +46,11 @@ This package diverges in three load-bearing areas:
 The last of those is the one that separates this package from all four rather
 than from some of them, and it was re-checked against them rather than assumed.
 Upstream publishes two schemas per release: `schema.json`, the stable grammar, and
-`schema.unstable.json`, which is that plus whatever is being tried. At
-`schema-v1.21.0` the unstable one is a superset — 265 definitions against 170, and
-17 methods the stable grammar does not have, among them `session/fork`, `nes/*`,
-`providers/*`, `document/did*` and `mcp/connect`.
+`schema.unstable.json`, which is that plus whatever is being tried. The original
+comparison used `schema-v1.21.0`: its unstable asset added 95 definitions and 17
+methods, including `session/fork`, `nes/*`, `providers/*`, `document/did*` and
+`mcp/connect`. That comparison records the initial design evidence; the current
+stable input is selected by `schema/provenance.json`.
 
 All four generate from the unstable channel. `spachava753/acp-sdk` and
 `eino-contrib/acp` generate from it alone, so their entire public API is the
@@ -116,8 +117,11 @@ shutdown are the connection's.
 
 ### Generate and commit protocol types
 
-`schema/schema.json` is the published `schema-v1.21.0` release asset, vendored
-with its SHA-256 recorded. `schema.gen.go` is generated from it and committed.
+`schema/schema.json` is the published stable release asset selected by
+`schema/provenance.json`. That file also owns the schema and metadata hashes,
+the reference TypeScript commit, and shared tool pins. The generator and both
+recording scripts read that source directly. `schema.gen.go` is generated from
+the vendored schema and committed.
 
 Committing the output is the decision worth arguing about. It means `go get`
 needs no generator and no network, `pkg.go.dev` has something to document, and a
@@ -127,8 +131,7 @@ regenerates and fails if anything differs. This also proves deterministic output
 Go map iteration cannot determine generated source order.
 
 What gets generated is the transitive `$ref` closure of a committed root set
-(`schema/manifest.json`), currently 153 of the schema's 170 definitions. A root
-is added when an operation needs it, so the exported surface is an output CI
+(`schema/manifest.json`). A root is added when an operation needs it, so the exported surface is an output CI
 checks rather than a number maintained by hand. The generator refuses rather than
 guesses: a union it cannot discriminate, a numeric bound the Go type does not
 already enforce, or an inline object type stops generation with the definition
@@ -222,9 +225,17 @@ belongs to `Wait` and cannot replace the operation's deadline or write failure.
 Shutdown of a spawned agent is bounded rather than best-effort: closing the
 connection closes the pipes, waits, asks the process to stop, waits again, and
 finally kills it, with `CommandConfig.TerminationGrace` as each step's deadline.
+Before start, a zero `exec.Cmd.WaitDelay` takes the effective grace period; an
+explicit value stays unchanged. Process exit and output-copy completion are
+different facts: inherited diagnostic pipes may keep the copy running after the
+agent is gone. `WaitDelay` bounds those pipes, while a caller-supplied writer must
+finish its own `Write` calls.
+
 The agent's exit status is not the connection's error. An agent that exits
-non-zero after a shutdown request has still stopped. Failure to reap the process
-is a connection error because the subprocess remains owned and may still run.
+non-zero after a shutdown request has still stopped. Expected exit status and
+bounded pipe drainage are ignored; unexpected copy errors and failure to reap
+remain connection errors. `transport_command.go` owns this process lifecycle,
+while `transport_stdio.go` owns byte framing and stream release.
 
 `NewInMemoryTransports` carries messages rather than bytes. An in-memory
 transport that encoded and re-decoded would be testing the codec twice and hiding
@@ -254,10 +265,10 @@ and a session has its own history. Calling the connection a session would put
 
 ```go
 type ClientConfig struct {
-	SessionUpdate     func(ctx context.Context, notification *SessionNotification)
-	RequestPermission func(ctx context.Context, request *RequestPermissionRequest) (*RequestPermissionResponse, error)
-	ReadTextFile      func(ctx context.Context, request *ReadTextFileRequest) (*ReadTextFileResponse, error)
-	WriteTextFile     func(ctx context.Context, request *WriteTextFileRequest) (*WriteTextFileResponse, error)
+	SessionUpdate     func(ctx context.Context, conn *ClientConn, notification *SessionNotification)
+	RequestPermission func(ctx context.Context, conn *ClientConn, request *RequestPermissionRequest) (*RequestPermissionResponse, error)
+	ReadTextFile      func(ctx context.Context, conn *ClientConn, request *ReadTextFileRequest) (*ReadTextFileResponse, error)
+	WriteTextFile     func(ctx context.Context, conn *ClientConn, request *WriteTextFileRequest) (*WriteTextFileResponse, error)
 	Terminal          *TerminalHandlers
 	// Optional handlers omitted.
 }
@@ -305,19 +316,15 @@ handler, before a session exists.
 method. It also makes request-scoped elicitation reachable where the specification
 puts it rather than only from handlers that happen to hold a session.
 
-Two things stayed as they were, and the reasons are not the same reason.
+Every client handler receives `*ClientConn` after its context. A shared client
+can drive several agents, and two agents may use the same session identifier.
+Holding all connection handles does not tell a callback which one produced its
+payload. The explicit connection supplies that scope without changing the wire
+message. The setup context is not a hidden channel for connection identity.
 
-The extension fallbacks take no connection, on either side. What an extension
-carries is between the two implementations that agreed on it, which is why this
-package hands them their params undecoded; deciding that they need a connection
-would be this package shaping an extension it does not own.
-
-The client's handlers take no handle at all, and that is not an oversight to
-correct later. The two sides are not symmetric here: an agent serves, so the
-library is the only thing that can hand it a handle, while a client drives and
-already holds every handle it uses — it created the session it is being told
-about. Adding a parameter to nine client handlers would be churn for a need
-nothing has demonstrated.
+Extension fallbacks receive the originating `*ClientConn` or `*AgentConn` too.
+Their payload remains undecoded because its grammar belongs to the two peers;
+its connection identity belongs to this SDK regardless of that grammar.
 
 ### Capabilities are an authority boundary
 
@@ -392,6 +399,10 @@ are worth stating:
   establish no agreement, so once the error response settles, the next queued or
   later attempt may negotiate. Attempts are serialised in wire order, and every
   attempt ordered after an accepted one is an invalid renegotiation.
+
+The connection's completed lifetime removes it from its client's or agent's
+registry, including when completion races registration. `Conns` enumerates live
+membership; observing it does not cause resource cleanup.
 
 A protocol version is a grammar, not a feature level. This package speaks version
 1, so it answers 1 and refuses any other answer, rather than taking the minimum
@@ -565,8 +576,9 @@ share.
 The refusal is on the way out only. The specification puts the obligation on
 whoever writes the path, and a receiver refusing a relative path is a policy an
 application may reasonably want to set for itself; `SECURITY.md` already names a
-path arriving from a peer as a boundary the application owns, and the client in
-`examples/` shows one enforcing it.
+path arriving from a peer as a boundary the application owns. The example client
+uses an open `os.Root` for the actual file operations, so containment also holds
+during symlink resolution instead of ending at a lexical path check.
 
 A `TerminalHandle` binds the session and terminal identifiers required by all
 five terminal methods. It is named `TerminalHandle` rather than `Terminal`
@@ -580,6 +592,14 @@ an operation on a stale handle is not merely pointless: it may name a terminal
 that now belongs to something else, and the client would serve it. A refusal
 before the request reaches the transport rolls the claim back, so a caller can
 correct a context and retry.
+
+Terminal creation is a resource acquisition transaction. Cancelling its waiter
+does not discard a response that may still transfer a live terminal. One response
+observer either delivers the handle or schedules a release with a separate,
+bounded cleanup budget. Cleanup never blocks ordered delivery. Its failures are
+logged; uncertain write commitment is not retried, and unrelated sessions are not
+closed to hide the failure. Retained response observers count against
+`Limits.PendingCalls` until the response or connection shutdown settles them.
 
 The handle serializes admission and sending with release, preventing an earlier
 operation from being sent after release. It unlocks before waiting for responses,
@@ -603,14 +623,15 @@ and bypass the generated params type, the outbound gate, the session binding and
 the capability check. A standard method has exactly one path through the typed
 codec, and this keeps it the only one.
 
-Inbound extension messages reach `CallFallback` and `NotifyFallback` undecoded,
-because there is nothing to decode them against: what an extension carries is
+Inbound extension messages reach `CallFallback` and `NotifyFallback` with their
+originating connection and undecoded payload. What that payload carries is
 between the two implementations that agreed on it.
 
 ## Resource limits
 
-A connection holds at most 1024 messages read but not yet delivered, 1024 inbound
-calls at once, 1024 cached session handles, and 1024 URL elicitations in
+By default, a connection holds at most 1024 messages read but not yet delivered,
+1024 inbound calls, 1024 outbound calls waiting for responses, 1024 cached session
+handles, and 1024 URL elicitations in
 provisional, accepted, or completing states. Successful `session/close` and
 `session/delete` reclaim the named handle on both sides. Until then, a handle
 preserves caller-visible identity while the connection separately enforces one
@@ -622,12 +643,15 @@ documented rule that a notification handler must not wait on its own connection
 into a deadlock, because the response that would release it arrives on the read
 loop that is no longer reading. A URL reservation is different: creation can be
 refused before a new interaction exists, so exhausting that bound fails only the
-new elicitation and leaves the connection healthy.
+new elicitation and leaves the connection healthy. The pending-call limit likewise
+refuses new work with `ErrTooManyPendingCalls` before writing it, without closing
+the connection. Observed calls retain their slot after a waiter cancels because
+their late answer may still own a resource or protocol state.
 
 These counts bound how much state a peer can create. They are not memory proofs
 because one legal message can still be large.
 
-The four are `Limits` on both configurations, with a zero field taking the
+The five are `Limits` on both configurations, with a zero field taking the
 default and a negative one refused at construction. The delivery backlog is the
 one an honest connection most readily reaches: a turn's `session/update` stream
 is produced by an agent and consumed by a handler that may render it, so its depth
@@ -703,8 +727,10 @@ The mode is deep-copied before the scope is written into it. The value is the
 caller's, and an agent holding one prepared schema and eliciting with it twice
 would otherwise find the second call carrying the first call's scope.
 
-The client validates a form answer against its private snapshot of the received
-schema. Edits to the handler's form model do not change the peer's constraints.
+The client compiles a private form before invoking a handler, and an agent
+compiles its form before sending it. Malformed schemas fail at those boundaries,
+even when the eventual answer would be a decline. Answer validation reuses that
+compiled object; edits to the handler's wire model cannot change the constraints.
 
 ### Two modes, two capabilities, one method
 
@@ -768,7 +794,7 @@ could not reach it either: a zero value's map is nil. `wire` now has
 `MarshalMapFunc` and `UnmarshalMapFunc` beside the slice pair, and the generator
 emits them when a map's values are a union.
 
-Form-answer semantics are delegated to
+Form field types, required fields, bounds and declared formats use
 `github.com/santhosh-tekuri/jsonschema/v6`. Both schema bounds and answer numbers
 retain their exact JSON representation, including adjacent integers beyond
 float precision. The generator uses the same validator for schema structure,
@@ -778,9 +804,14 @@ The form adapter compiles a private projection: a catch-all arm is not partially
 interpreted, and optional nulls become omissions as ACP requires. Counts larger
 than Go can represent become equivalent constraints: a larger maximum cannot
 exclude any string or slice, and a larger minimum cannot admit one. Metadata and
-the source wire model remain unchanged. Patterns that the validator cannot
-compile produce an explicit schema error; they are never silently discarded.
-`format` remains an annotation.
+the source wire model remain unchanged. Declared formats are assertions in this
+adapter, including email, URI, date and date-time. Pattern syntax and matching
+belong to the pure Go engine `github.com/faustbrian/go-ecma-regexp/v2`, using its
+JSON Schema profile with Unicode semantics and unanchored search. Parsing,
+compilation and execution have explicit budgets. The pattern owner checks
+matches separately from the JSON Schema library's boolean adapter so that
+resource-limit and cancellation errors remain errors rather than ordinary
+mismatches. Neither invalid patterns nor exhausted limits are ignored.
 
 The URL field itself follows the published `format: "uri"` grammar. That is not
 the same language as the TypeScript reference's WHATWG-style URL helper: values
@@ -858,9 +889,11 @@ in agreement:
 ## Version and release policy
 
 The module is pre-1.0 and its Go API is expected to change; the protocol version
-it targets is not. The language floor is Go 1.25, chosen for `testing/synctest`
-and kept as low as it can be justified, because a floor is a cost imposed on
-everyone who imports the module.
+it targets is not. The language floor belongs to [go.mod](../go.mod) and selects
+a supported, patched toolchain for the protocol validation dependencies. CI
+derives both the exact floor and its Go release's latest patch from that owner.
+Concurrency tests use `testing/synctest` to verify lifecycle behavior without
+sleeps.
 
 ### The experimental channel is not generated, and cannot be half-opened
 
@@ -937,7 +970,8 @@ the compatibility layer this repository's rules forbid: not a path being removed
 but a second one being kept alive inside every method.
 
 How much of a different grammar it is was measured rather than assumed.
-`schema-v2.0.0-alpha.3` against the pinned v1.21.0: 40 definitions gone, 45 new,
+The initial comparison of `schema-v2.0.0-alpha.3` against v1.21.0 found
+40 definitions gone, 45 new,
 and 11 of the 25 methods removed against 2 added. The removals are not
 peripheral — all five `terminal/*` methods and both `fs/*` methods stop existing,
 `authenticate` and `logout` become `auth/login` and `auth/logout`, `session/load`

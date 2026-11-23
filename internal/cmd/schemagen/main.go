@@ -13,6 +13,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"maps"
@@ -20,11 +21,6 @@ import (
 	"path/filepath"
 	"slices"
 )
-
-// schemaTag is the upstream release the vendored schema is pinned to. It is
-// recorded in the generated header so that a reader of the generated code knows
-// which grammar it implements without going looking.
-const schemaTag = "schema-v1.21.0"
 
 func main() {
 	check := flag.Bool("check", false, "verify the committed output is up to date instead of writing it")
@@ -38,6 +34,10 @@ func main() {
 }
 
 func run(root string, check bool) error {
+	schemaTag, sourceErr := readSchemaTag(root)
+	if sourceErr != nil {
+		return sourceErr
+	}
 	schemaPath := filepath.Join(root, "schema", "schema.json")
 	rawSchema, readErr := readRepositoryFile(schemaPath)
 	if readErr != nil {
@@ -112,6 +112,26 @@ func run(root string, check bool) error {
 		}
 	}
 	return nil
+}
+
+func readSchemaTag(root string) (string, error) {
+	path := filepath.Join(root, "schema", "provenance.json")
+	data, readErr := readRepositoryFile(path)
+	if readErr != nil {
+		return "", readErr
+	}
+	var source struct {
+		Schema struct {
+			Tag string `json:"tag"`
+		} `json:"schema"`
+	}
+	if err := json.Unmarshal(data, &source); err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	if source.Schema.Tag == "" {
+		return "", errors.New("schema/provenance.json: schema.tag is required")
+	}
+	return source.Schema.Tag, nil
 }
 
 func verify(outputs map[string][]byte) error {

@@ -8,9 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"sync"
-	"time"
+	"unicode/utf8"
 
 	"github.com/Tangerg/acp/jsonrpc"
 )
@@ -124,6 +123,9 @@ func (c *ioConnection) Read(ctx context.Context) (jsonrpc.Message, error) {
 		if err != nil {
 			return nil, err
 		}
+		if !utf8.Valid(line) {
+			return nil, errors.New("acp: message is not valid UTF-8")
+		}
 		if len(bytes.TrimSpace(line)) == 0 {
 			// Blank lines are not messages. Skipping them keeps a stream that
 			// somebody pretty-printed into readable rather than fatal.
@@ -220,167 +222,4 @@ func (c *ioConnection) Close() error {
 		c.closeErr = c.release()
 	})
 	return c.closeErr
-}
-
-// terminationGrace is how long a subprocess is given to stop at each step of
-// being asked, when the caller did not say.
-//
-// Five seconds gives an agent time to flush while keeping shutdown bounded.
-const terminationGrace = 5 * time.Second
-
-// A CommandConfig is how an agent is run as a subprocess.
-type CommandConfig struct {
-	// Command is the agent, unstarted. Its stdin and stdout become the protocol
-	// stream, so setting either is a mistake this reports rather than works
-	// around.
-	//
-	// Stderr is left alone, which means it goes wherever the command was
-	// configured to send it. A client that wants the agent's diagnostics sets
-	// cmd.Stderr before calling this; a client that does not gets the behaviour
-	// os/exec already has.
-	Command *exec.Cmd
-
-	// TerminationGrace is how long the agent is given to exit at each step of
-	// being asked to: once after its stdin is closed, and again after it is
-	// signalled. Zero means five seconds.
-	//
-	// It is here because the right answer is the agent's, not this package's. An
-	// agent that persists a session on the way out needs longer than one that does
-	// not, and a client with its own shutdown deadline needs shorter.
-	TerminationGrace time.Duration
-}
-
-// NewCommandTransport returns the client's side of a local connection: it starts
-// the agent as a subprocess and frames newline-delimited JSON over its stdin and
-// stdout.
-//
-// Closing the connection closes the pipes and reaps the process within the
-// configured shutdown budget.
-func NewCommandTransport(config *CommandConfig) Transport {
-	var owned CommandConfig
-	if config != nil {
-		owned = *config
-	}
-	return &commandTransport{config: owned}
-}
-
-type commandTransport struct {
-	singleUse
-	config CommandConfig
-}
-
-func (t *commandTransport) Connect(ctx context.Context) (Connection, error) {
-	if err := t.claim(); err != nil {
-		return nil, err
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	cmd := t.config.Command
-	if cmd == nil {
-		return nil, errors.New("acp: CommandConfig.Command is required")
-	}
-	if t.config.TerminationGrace < 0 {
-		return nil, errors.New("acp: CommandConfig.TerminationGrace must not be negative")
-	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("acp: connecting to the agent's stdin: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, errors.Join(
-			fmt.Errorf("acp: connecting to the agent's stdout: %w", err),
-			stdin.Close(),
-		)
-	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return nil, errors.Join(ctxErr, stdin.Close(), stdout.Close())
-	}
-	if startErr := cmd.Start(); startErr != nil {
-		return nil, errors.Join(
-			fmt.Errorf("acp: starting the agent: %w", startErr),
-			stdin.Close(),
-			stdout.Close(),
-		)
-	}
-
-	grace := t.config.TerminationGrace
-	if grace == 0 {
-		grace = terminationGrace
-	}
-	return &commandConnection{
-		ioConnection: newIOConnection(IOConfig{
-			Reader: stdout,
-			Writer: stdin,
-			Close:  func() error { return errors.Join(stdout.Close(), stdin.Close()) },
-		}),
-		cmd:   cmd,
-		grace: grace,
-	}, nil
-}
-
-type commandConnection struct {
-	*ioConnection
-	cmd   *exec.Cmd
-	grace time.Duration
-
-	reapOnce sync.Once
-	reapErr  error
-}
-
-// Close reaps the agent on a bounded sequence; see reap.
-//
-// The exit status is not reported. A client that closed the connection expects it
-// to be closed, and an agent that exits non-zero, or dies of the signal it was
-// sent, has stopped rather than failed. What is reported is a pipe that would not
-// close, or a process this package could not reap at all.
-func (c *commandConnection) Close() error {
-	closeErr := c.ioConnection.Close()
-	c.reapOnce.Do(func() { c.reapErr = c.reap() })
-	return errors.Join(closeErr, c.reapErr)
-}
-
-// reap escalates for as long as the process is still there: the pipes are already
-// closed, which is the polite way to say stop, then the platform's way of asking,
-// then the way that is not a request. Every step is bounded, because ownership of
-// a subprocess is not ownership if the owner can be held by it.
-func (c *commandConnection) reap() error {
-	exited := make(chan struct{})
-	go func() {
-		defer close(exited)
-		// The status is deliberately discarded; see Close.
-		_ = c.cmd.Wait()
-	}()
-
-	timer := time.NewTimer(c.grace)
-	defer timer.Stop()
-	waited := func() bool {
-		select {
-		case <-exited:
-			return true
-		case <-timer.C:
-			timer.Reset(c.grace)
-			return false
-		}
-	}
-
-	// The pipes are already closed, which is the polite way to say stop.
-	if waited() {
-		return nil
-	}
-	// Then the platform's way of asking. If asking is not something this platform
-	// can do, or it fails, there is no point waiting for an answer.
-	if askToStop(c.cmd.Process) && waited() {
-		return nil
-	}
-	// Then the way that is not a request.
-	if err := c.cmd.Process.Kill(); err != nil {
-		return fmt.Errorf("acp: killing the agent: %w", err)
-	}
-	if waited() {
-		return nil
-	}
-	return fmt.Errorf("acp: the agent did not exit within %s of being killed", c.grace)
 }

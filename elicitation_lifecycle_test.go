@@ -64,13 +64,13 @@ func TestCallerCancellationStillObservesAStateOwningResponse(t *testing.T) {
 	life.mu.Lock()
 	life.stopped = true
 	life.mu.Unlock()
-	l := &link{life: life, calls: newCalls()}
-	call, open := l.calls.begin(func(*jsonrpc.Response) error {
+	l := &link{life: life, calls: newCalls(defaultPendingCalls)}
+	call, beginErr := l.calls.begin(func(*jsonrpc.Response) error {
 		reservation.accept()
 		return nil
 	}, reservation.reject)
-	if !open {
-		t.Fatal("begin call")
+	if beginErr != nil {
+		t.Fatal(beginErr)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

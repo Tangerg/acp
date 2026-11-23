@@ -2,8 +2,20 @@ package wire
 
 import (
 	"encoding/json"
+	"maps"
 	"slices"
 )
+
+// UnmarshalMap rejects null entries instead of letting encoding/json turn them
+// into zero values that the declared item type does not permit.
+func UnmarshalMap[T any](data []byte) (map[string]T, error) {
+	return UnmarshalMapFunc(data, decodeValue[T])
+}
+
+// MarshalMap preserves the schema's object shape even when a required map is nil.
+func MarshalMap[T any](values map[string]T) ([]byte, error) {
+	return MarshalMapFunc(values, encodeValue[T])
+}
 
 // The map counterpart of slice.go, for the one thing a JSON object keyed by
 // arbitrary names has in common with an array: its values may be a union.
@@ -26,7 +38,7 @@ func UnmarshalMapFunc[T any](
 		return nil, err
 	}
 	out := make(map[string]T, len(object))
-	for _, key := range slices.Sorted(mapKeys(object)) {
+	for _, key := range slices.Sorted(maps.Keys(object)) {
 		value, decodeErr := decode(object[key])
 		if decodeErr != nil {
 			return nil, At(key, decodeErr)
@@ -45,7 +57,7 @@ func UnmarshalMapFunc[T any](
 func MarshalMapFunc[T any](values map[string]T, encode func(T) ([]byte, error)) ([]byte, error) {
 	out := make([]byte, 0, 2+len(values)*32)
 	out = append(out, '{')
-	for i, key := range slices.Sorted(mapKeys(values)) {
+	for i, key := range slices.Sorted(maps.Keys(values)) {
 		if i > 0 {
 			out = append(out, ',')
 		}
@@ -63,14 +75,4 @@ func MarshalMapFunc[T any](values map[string]T, encode func(T) ([]byte, error)) 
 		out = append(out, raw...)
 	}
 	return append(out, '}'), nil
-}
-
-func mapKeys[T any](m map[string]T) func(func(string) bool) {
-	return func(yield func(string) bool) {
-		for key := range m {
-			if !yield(key) {
-				return
-			}
-		}
-	}
 }

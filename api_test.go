@@ -177,9 +177,9 @@ func TestLoadSessionIsRefusedWithoutTheCapability(t *testing.T) {
 func TestExtensionNotifications(t *testing.T) {
 	clientHeard := make(chan string, 1)
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
-		NotifyFallback: func(_ context.Context, notification *acp.ExtNotification) {
+		NotifyFallback: func(_ context.Context, _ *acp.ClientConn, notification *acp.ExtNotification) {
 			clientHeard <- notification.Method
 		},
 	})
@@ -192,7 +192,7 @@ func TestExtensionNotifications(t *testing.T) {
 		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
 		},
-		NotifyFallback: func(_ context.Context, notification *acp.ExtNotification) {
+		NotifyFallback: func(_ context.Context, _ *acp.AgentConn, notification *acp.ExtNotification) {
 			agentHeard <- notification.Method
 		},
 		Prompt: func(ctx context.Context, session *acp.AgentSession, _ *acp.PromptRequest) (*acp.PromptResponse, error) {

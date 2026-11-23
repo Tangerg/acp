@@ -120,3 +120,15 @@ func TestMapDecodingRequiresAnObject(t *testing.T) {
 		}
 	}
 }
+
+func TestTypedMapsRejectNullValues(t *testing.T) {
+	for _, data := range []string{`{"KEY":null}`, `{"KEY":17}`} {
+		if _, err := wire.UnmarshalMap[string]([]byte(data)); err == nil {
+			t.Fatalf("accepted invalid environment value: %s", data)
+		}
+	}
+	decoded, err := wire.UnmarshalMap[int64]([]byte(`{"KEY":1e0}`))
+	if err != nil || decoded["KEY"] != 1 {
+		t.Fatalf("map did not use the integer value contract: %v, %v", decoded, err)
+	}
+}

@@ -2,10 +2,9 @@
 // against.
 //
 // The Agent Client Protocol's schema carries decoding semantics that no plain
-// JSON decoder implements: 378 properties recover to a declared default rather
-// than failing the message, 35 arrays drop invalid items rather than failing,
-// four unions have a catch-all arm whose extra properties are its payload, and
-// required properties, closed enumerations and numeric bounds are all
+// JSON decoder implements: selected properties recover to defaults, selected
+// arrays drop invalid items, and open unions retain a catch-all arm's extra
+// payload. Required properties, closed enumerations and numeric bounds are all
 // unenforced by Go field types alone. Generation turns each of those into
 // explicit code; this package holds the pieces that code is built from, so the
 // semantics live in one reviewable place instead of being restated throughout

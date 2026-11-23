@@ -245,6 +245,9 @@ func (s *AgentSession) Update(ctx context.Context, params *SessionUpdateParams) 
 	if err := s.conn.awaitHandshake(ctx, methodSessionUpdate); err != nil {
 		return err
 	}
+	if err := s.conn.Peer().validateSessionUpdate(params.Update); err != nil {
+		return err
+	}
 	notification := &SessionNotification{
 		SessionID: s.id,
 		Update:    params.Update,
@@ -265,13 +268,30 @@ func (s *AgentSession) RequestPermission(
 	if params == nil {
 		return nil, paramsRequired("RequestPermission", "ToolCall and Options")
 	}
+	content, _ := params.ToolCall.Content.Get()
+	locations, _ := params.ToolCall.Locations.Get()
+	if err := absoluteToolCallPaths(content, locations); err != nil {
+		return nil, err
+	}
+	options := deepCopy(params.Options)
+	identities, err := ownPermissionOptions(options)
+	if err != nil {
+		return nil, newError(ErrorCodeInvalidParams, "%s", err)
+	}
 	request := &RequestPermissionRequest{
 		SessionID: s.id,
 		ToolCall:  params.ToolCall,
-		Options:   params.Options,
+		Options:   options,
 		Meta:      params.Meta,
 	}
-	return callGated[RequestPermissionResponse](ctx, s.conn, methodSessionRequestPermission, request)
+	response, err := callGated[RequestPermissionResponse](ctx, s.conn, methodSessionRequestPermission, request)
+	if err != nil {
+		return nil, err
+	}
+	if invalid := identities.validate(response.Outcome); invalid != nil {
+		return nil, newError(ErrorCodeInvalidParams, "%s", invalid)
+	}
+	return response, nil
 }
 
 // CreateElicitation asks the user for structured input within this session.
@@ -347,6 +367,11 @@ func (s *AgentSession) WriteTextFile(
 //
 // The response is returned as well as the handle, because it carries _meta besides
 // the identifier and returning only a handle would make that unreachable.
+//
+// Cancellation can race a terminal already created by the client. A late success
+// is released on a bounded cleanup context because the caller can no longer own
+// it. A network or remote cleanup failure is logged; it cannot guarantee that the
+// client's process was released.
 func (s *AgentSession) CreateTerminal(
 	ctx context.Context,
 	params *CreateTerminalParams,
@@ -368,14 +393,18 @@ func (s *AgentSession) CreateTerminal(
 		OutputByteLimit: params.OutputByteLimit,
 		Meta:            params.Meta,
 	}
-	response, err := callGated[CreateTerminalResponse](ctx, s.conn, methodTerminalCreate, request)
+	creation := &terminalCreation{session: s}
+	call, err := beginGatedCall(ctx, s.conn, methodTerminalCreate, request, creation.accept)
 	if err != nil {
+		creation.abandon() //nolint:contextcheck // cleanup owns a new deadline after the caller leaves.
 		return nil, nil, err
 	}
-	return &TerminalHandle{
-		id: response.TerminalID, session: s,
-		state: &terminalState{sending: make(chan struct{}, 1)},
-	}, response, nil
+	if _, awaitErr := s.conn.await(ctx, call); awaitErr != nil {
+		creation.abandon() //nolint:contextcheck // cleanup owns a new deadline after the caller leaves.
+		return nil, nil, awaitErr
+	}
+	handle, response := creation.take()
+	return handle, response, nil
 }
 
 // A sessionRequest is a request that names the session it belongs to, which is

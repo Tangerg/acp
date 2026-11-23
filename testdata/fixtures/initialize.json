@@ -258,8 +258,8 @@
       }
     },
     {
-      "name": "a malformed map recovers",
-      "why": "env is a map with x-deserialize-default-on-error and no declared default",
+      "name": "a malformed terminal auth falls through to the untagged arm",
+      "why": "terminal env rejects a non-object, but the untagged anyOf arm still accepts id and name",
       "type": "InitializeResponse",
       "input": {
         "protocolVersion": 1,
@@ -296,8 +296,7 @@
         "authMethods": [
           {
             "id": "cli",
-            "name": "n",
-            "type": "terminal"
+            "name": "n"
           }
         ]
       }
@@ -337,6 +336,50 @@
           {
             "id": "eye",
             "name": "Look at the camera"
+          }
+        ]
+      }
+    },
+    {
+      "name": "null terminal authentication map and args default to empty",
+      "type": "InitializeResponse",
+      "why": "the selected stable schema defaults null terminal auth collections without discarding the method",
+      "input": {
+        "protocolVersion": 1,
+        "authMethods": [
+          {
+            "type": "terminal",
+            "id": "cli",
+            "name": "CLI",
+            "args": null,
+            "env": null
+          }
+        ]
+      },
+      "accepted": true,
+      "normalized": {
+        "protocolVersion": 1,
+        "agentCapabilities": {
+          "loadSession": false,
+          "promptCapabilities": {
+            "image": false,
+            "audio": false,
+            "embeddedContext": false
+          },
+          "mcpCapabilities": {
+            "http": false,
+            "sse": false
+          },
+          "sessionCapabilities": {},
+          "auth": {}
+        },
+        "authMethods": [
+          {
+            "id": "cli",
+            "name": "CLI",
+            "args": [],
+            "env": {},
+            "type": "terminal"
           }
         ]
       }

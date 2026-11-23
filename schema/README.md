@@ -8,50 +8,55 @@ wire grammar shows up in a diff when it moves.
 
 | File | What it is |
 | --- | --- |
-| `schema.json` | Published stable v1 JSON Schema: 170 definitions and 32 unions |
+| `schema.json` | Published stable v1 JSON Schema |
 | `meta.json` | Method table: 13 agent methods, 11 client methods, and 1 protocol method |
 | `manifest.json` | Generator roots described in [Choose generation roots](#choose-generation-roots) |
+| `provenance.json` | Schema release, asset hashes, reference SDK commit and shared tool pins |
 
 ## Verify provenance
 
-| Fact | Value |
-| --- | --- |
-| Release tag | `schema-v1.21.0` |
-| Published by | Zed Industries, under the Apache License, Version 2.0 |
-| Upstream | [Agent Client Protocol repository](https://github.com/agentclientprotocol/agent-client-protocol) |
-| Obtained from | The two assets attached to the upstream `schema-v1.21.0` release |
-| `schema.json` SHA-256 | `caf62ff962ada396878372ced11efb2c6764e59d90919a38583c319948931a42` |
-| `meta.json` SHA-256 | `061edb6efa8fb2aa2792459a86ec7268de5fe665bba48b2ffe7939df01481f88` |
+[`provenance.json`](./provenance.json) is the only editable source of the release
+tag and asset hashes. The generator reads its schema tag, both recording scripts
+read the same SDK commit, and CI verifies the vendored assets against the hashes.
+The SDK package version is derived from the archived commit's `package.json`.
 
-The TypeScript checkout also contains experimental additions under the same v1
-tag. They are deliberately not copied: the release assets are the published wire
-contract, and repository-local SDK additions cannot widen it.
+The assets are published by Zed Industries under the Apache License, Version 2.0,
+in the [Agent Client Protocol repository](https://github.com/agentclientprotocol/agent-client-protocol).
+The separate unstable and v2 assets are not inputs to this module.
 
 ## Update the schema pin
 
-Moving the pin is a deliberate, reviewable commit, never a build step:
-
-Set the new release tag, download both assets, and record their hashes:
+Moving the pin is a deliberate, reviewable commit, never a build step. Edit
+`schema.tag` and `typescript.commit` in `provenance.json` to select a published
+stable schema and a reference SDK that implements it. Fetch the selected assets:
 
 ```sh
-tag=schema-v1.22.0
+tag=$(jq -er '.schema.tag' schema/provenance.json)
 base=https://github.com/agentclientprotocol/agent-client-protocol/releases/download
 curl -fsSL -o schema/schema.json "$base/$tag/schema.json"
 curl -fsSL -o schema/meta.json "$base/$tag/meta.json"
 shasum -a 256 schema/schema.json schema/meta.json
-go generate ./...
 ```
 
-Update the provenance table with the new hashes. Commit the downloaded assets and
-generated output together. If the release adds or removes a method, also update
-the capability table that continuous integration (CI) compares with `meta.json`.
+Record the two hashes in `schema.sha256` and `schema.metaSha256` of the same
+provenance file. Then regenerate the Go model and both independent corpora:
 
-Two tests fail on a release that changes more than shapes, and both are meant to.
-`TestEveryNormativeClauseInTheSchemaIsClassified` fails when the prose states an
-obligation nothing has answered, or when a row answers one upstream has dropped;
-the fixture corpus fails where the reference implementation and this package now
-disagree. Neither is satisfied by editing the expectation — the first wants a
-reading of the new clause, and the second wants `scripts/update-fixtures.sh`.
+```sh
+go generate ./...
+scripts/update-fixtures.sh
+scripts/interop.sh
+```
+
+Commit the provenance, downloaded assets, generated output and recordings
+together. If a release introduces a deserialization keyword, the generator must
+implement it before the pin can move. If it changes a method, update the
+capability table that CI compares with `meta.json`.
+
+Two checks intentionally fail on a release that changes more than shapes.
+`TestEveryNormativeClauseInTheSchemaIsClassified` requires a decision for each new
+or removed obligation. The fixture corpus requires agreement with the independent
+reference implementation, or an explicit, still-current schema-based divergence.
+Changing an expected answer to match this implementation is not evidence.
 
 ## Choose generation roots
 

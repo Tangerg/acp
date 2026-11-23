@@ -53,17 +53,13 @@
     {
       "name": "a negative line",
       "type": "ReadTextFileRequest",
-      "why": "the format is unsigned, so a negative value is not in range — and it recovers rather than failing",
+      "why": "the unsigned line constraint rejects an invalid operation parameter",
       "input": {
         "sessionId": "sess-1",
         "path": "/w/a.go",
         "line": -1
       },
-      "accepted": true,
-      "normalized": {
-        "sessionId": "sess-1",
-        "path": "/w/a.go"
-      }
+      "accepted": false
     },
     {
       "name": "file contents",
@@ -152,7 +148,7 @@
     {
       "name": "a terminal with an invalid environment entry",
       "type": "CreateTerminalRequest",
-      "why": "x-deserialize-skip-invalid-items drops the entry rather than the request",
+      "why": "dropping an environment entry could change execution; the request must fail",
       "input": {
         "sessionId": "sess-1",
         "command": "/bin/go",
@@ -170,37 +166,18 @@
           }
         ]
       },
-      "accepted": true,
-      "normalized": {
-        "sessionId": "sess-1",
-        "command": "/bin/go",
-        "env": [
-          {
-            "name": "A",
-            "value": "1"
-          },
-          {
-            "name": "C",
-            "value": "3"
-          }
-        ]
-      }
+      "accepted": false
     },
     {
       "name": "a terminal with a malformed argument list",
       "type": "CreateTerminalRequest",
-      "why": "an array that is not an array recovers to an empty one, because the property cannot be null",
+      "why": "invalid arguments cannot be replaced with an empty command argument list",
       "input": {
         "sessionId": "sess-1",
         "command": "/bin/go",
         "args": "test ./..."
       },
-      "accepted": true,
-      "normalized": {
-        "sessionId": "sess-1",
-        "command": "/bin/go",
-        "args": []
-      }
+      "accepted": false
     },
     {
       "name": "terminal output while it runs",
@@ -255,6 +232,43 @@
       "input": {},
       "accepted": true,
       "normalized": {}
+    },
+    {
+      "name": "a terminal with a malformed argument entry",
+      "type": "CreateTerminalRequest",
+      "why": "dropping a single argument changes execution just as replacing the whole list does",
+      "input": {
+        "sessionId": "sess-1",
+        "command": "/bin/run",
+        "args": [
+          "--safe",
+          17,
+          "file"
+        ]
+      },
+      "accepted": false
+    },
+    {
+      "name": "a terminal with a malformed working directory",
+      "type": "CreateTerminalRequest",
+      "why": "an invalid cwd must not silently fall back to the process working directory",
+      "input": {
+        "sessionId": "sess-1",
+        "command": "/bin/run",
+        "cwd": 17
+      },
+      "accepted": false
+    },
+    {
+      "name": "a file read with a malformed limit",
+      "type": "ReadTextFileRequest",
+      "why": "a malformed range cannot silently widen into an unrestricted file read",
+      "input": {
+        "sessionId": "sess-1",
+        "path": "/work/file",
+        "limit": "broken"
+      },
+      "accepted": false
     }
   ]
 }

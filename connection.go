@@ -265,26 +265,24 @@ func (s *sessions[Handle]) forget(id SessionID) {
 	s.mu.Unlock()
 }
 
-// registry lists the connections a client or agent has opened and not closed.
-//
-// It forgets an ended connection when it is next asked rather than when it ends,
-// because nothing else has to be told: a connection that will accept nothing
-// further is not open, however much is still being handed to the callers that were
-// already waiting.
-type registry[Conn interface{ ended() bool }] struct {
+type registry[Conn comparable] struct {
 	mu   sync.Mutex
 	open []Conn
 }
 
-func (r *registry[Conn]) add(connection Conn) {
+func (r *registry[Conn]) add(connection Conn, life *lifetime) {
 	r.mu.Lock()
 	r.open = append(r.open, connection)
 	r.mu.Unlock()
+	life.onRelease(func() {
+		r.mu.Lock()
+		r.open = slices.DeleteFunc(r.open, func(open Conn) bool { return open == connection })
+		r.mu.Unlock()
+	})
 }
 
 func (r *registry[Conn]) all() iter.Seq[Conn] {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.open = slices.DeleteFunc(r.open, func(connection Conn) bool { return connection.ended() })
 	return slices.Values(slices.Clone(r.open))
 }

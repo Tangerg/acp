@@ -189,7 +189,7 @@ func TestAdvertisingAnUnimplementedMethodIsRefusedAtConstruction(t *testing.T) {
 
 	t.Run("a client advertising an elicitation mode it cannot render", func(t *testing.T) {
 		_, err := NewClient(&ClientConfig{
-			SessionUpdate:     func(context.Context, *SessionNotification) {},
+			SessionUpdate:     func(context.Context, *ClientConn, *SessionNotification) {},
 			RequestPermission: permissionStub,
 			Capabilities: &ClientCapabilities{Elicitation: OptValue(ElicitationCapabilities{
 				Form: OptValue(ElicitationFormCapabilities{}),
@@ -205,7 +205,7 @@ func TestAdvertisingAnUnimplementedMethodIsRefusedAtConstruction(t *testing.T) {
 	// the handlers serve is refused, advertising less is a client's own choice.
 	t.Run("a client advertising one mode of two it serves", func(t *testing.T) {
 		_, err := NewClient(&ClientConfig{
-			SessionUpdate:     func(context.Context, *SessionNotification) {},
+			SessionUpdate:     func(context.Context, *ClientConn, *SessionNotification) {},
 			RequestPermission: permissionStub,
 			Elicitation: &ElicitationHandlers{
 				Form: formStub,
@@ -244,8 +244,8 @@ func TestNullCapabilityObjectsDoNotAdvertiseMethods(t *testing.T) {
 	}
 
 	_, err = NewClient(&ClientConfig{
-		SessionUpdate: func(context.Context, *SessionNotification) {},
-		RequestPermission: func(context.Context, *RequestPermissionRequest) (*RequestPermissionResponse, error) {
+		SessionUpdate: func(context.Context, *ClientConn, *SessionNotification) {},
+		RequestPermission: func(context.Context, *ClientConn, *RequestPermissionRequest) (*RequestPermissionResponse, error) {
 			return &RequestPermissionResponse{Outcome: &RequestPermissionOutcomeCancelled{}}, nil
 		},
 		Capabilities: &ClientCapabilities{Elicitation: OptNull[ElicitationCapabilities]()},
@@ -472,7 +472,9 @@ func TestEveryCapabilityIsRead(t *testing.T) {
 		"agentCapabilities.mcpCapabilities.sse":                       "PeerInfo.permitsSessionSetup",
 		"agentCapabilities.sessionCapabilities.additionalDirectories": "PeerInfo.permitsSessionSetup",
 		"clientCapabilities.elicitation.form":                         "PeerInfo.permitsElicitationMode",
-		"clientCapabilities.session.configOptions.boolean":            "PeerInfo.permitsConfigOptionValue",
+		"clientCapabilities.session.configOptions.boolean":            "PeerInfo.permitsBooleanConfigOptions",
+		"clientCapabilities.session.compaction":                       "PeerInfo.validateSessionUpdate",
+		"clientCapabilities.session.notices":                          "PeerInfo.validateSessionUpdate",
 		"clientCapabilities.auth.terminal":                            "authenticationMethods.offered and validateOffer",
 	}
 
@@ -494,14 +496,14 @@ func TestEveryCapabilityIsRead(t *testing.T) {
 }
 
 func permissionStub(
-	context.Context,
+	context.Context, *ClientConn,
 	*RequestPermissionRequest,
 ) (*RequestPermissionResponse, error) {
 	return &RequestPermissionResponse{Outcome: &RequestPermissionOutcomeCancelled{}}, nil
 }
 
 func formStub(
-	context.Context,
+	context.Context, *ClientConn,
 	*CreateElicitationRequest,
 	*ElicitationFormMode,
 ) (*CreateElicitationResponse, error) {
@@ -509,7 +511,7 @@ func formStub(
 }
 
 func urlStub(
-	context.Context,
+	context.Context, *ClientConn,
 	*CreateElicitationRequest,
 	*ElicitationURLMode,
 ) (*CreateElicitationResponse, error) {
@@ -530,7 +532,7 @@ func TestAnEmptyElicitationObjectAdvertisesNoMode(t *testing.T) {
 	}
 
 	client, err := NewClient(&ClientConfig{
-		SessionUpdate:     func(context.Context, *SessionNotification) {},
+		SessionUpdate:     func(context.Context, *ClientConn, *SessionNotification) {},
 		RequestPermission: permissionStub,
 		Capabilities: &ClientCapabilities{
 			Elicitation: OptValue(ElicitationCapabilities{}),

@@ -45,9 +45,9 @@ func Example() {
 
 			// Running commentary, for a client to render as it arrives.
 			if err := session.Update(ctx, &acp.SessionUpdateParams{
-				Update: &acp.AgentMessageChunk{ContentChunk: acp.ContentChunk{
+				Update: &acp.AgentMessageChunk{
 					Content: &acp.TextContent{Text: "working on: " + asked.Text},
-				}},
+				},
 			}); err != nil {
 				return nil, err
 			}
@@ -97,7 +97,7 @@ func Example() {
 	client, err := acp.NewClient(&acp.ClientConfig{
 		Info: &acp.Implementation{Name: "example-editor", Version: "0.1.0"},
 
-		SessionUpdate: func(_ context.Context, notification *acp.SessionNotification) {
+		SessionUpdate: func(_ context.Context, _ *acp.ClientConn, notification *acp.SessionNotification) {
 			chunk, ok := notification.Update.(*acp.AgentMessageChunk)
 			if !ok {
 				return
@@ -108,8 +108,7 @@ func Example() {
 		},
 
 		RequestPermission: func(
-			_ context.Context,
-			request *acp.RequestPermissionRequest,
+			_ context.Context, _ *acp.ClientConn, request *acp.RequestPermissionRequest,
 		) (*acp.RequestPermissionResponse, error) {
 			title, _ := request.ToolCall.Title.Get()
 			fmt.Println("permission:", title)
@@ -121,11 +120,11 @@ func Example() {
 
 		// Setting these two is what advertises fs.readTextFile and fs.writeTextFile.
 		// An agent may not call what a client did not advertise.
-		ReadTextFile: func(_ context.Context, request *acp.ReadTextFileRequest) (*acp.ReadTextFileResponse, error) {
+		ReadTextFile: func(_ context.Context, _ *acp.ClientConn, request *acp.ReadTextFileRequest) (*acp.ReadTextFileResponse, error) {
 			fmt.Println("read:", request.Path)
 			return &acp.ReadTextFileResponse{Content: "# acp\n"}, nil
 		},
-		WriteTextFile: func(_ context.Context, request *acp.WriteTextFileRequest) (*acp.WriteTextFileResponse, error) {
+		WriteTextFile: func(_ context.Context, _ *acp.ClientConn, request *acp.WriteTextFileRequest) (*acp.WriteTextFileResponse, error) {
 			fmt.Println("write:", request.Path)
 			return &acp.WriteTextFileResponse{}, nil
 		},
@@ -187,9 +186,9 @@ func ExampleClientSession_Cancel() {
 			// still accepting updates until it arrives. This context is cancelled, so
 			// a last word needs one that is not.
 			if err := session.Update(context.WithoutCancel(ctx), &acp.SessionUpdateParams{
-				Update: &acp.AgentMessageChunk{ContentChunk: acp.ContentChunk{
+				Update: &acp.AgentMessageChunk{
 					Content: &acp.TextContent{Text: "stopping"},
-				}},
+				},
 			}); err != nil {
 				return nil, err
 			}
@@ -208,7 +207,7 @@ func ExampleClientSession_Cancel() {
 	}
 
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate: func(_ context.Context, notification *acp.SessionNotification) {
+		SessionUpdate: func(_ context.Context, _ *acp.ClientConn, notification *acp.SessionNotification) {
 			if chunk, ok := notification.Update.(*acp.AgentMessageChunk); ok {
 				if text, ok := chunk.Content.(*acp.TextContent); ok {
 					fmt.Println("agent:", text.Text)
@@ -216,8 +215,7 @@ func ExampleClientSession_Cancel() {
 			}
 		},
 		RequestPermission: func(
-			context.Context,
-			*acp.RequestPermissionRequest,
+			context.Context, *acp.ClientConn, *acp.RequestPermissionRequest,
 		) (*acp.RequestPermissionResponse, error) {
 			return nil, errors.New("this example asks for nothing")
 		},
@@ -300,10 +298,9 @@ func ExampleClientConn_Authenticate() {
 	}
 
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate: func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate: func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: func(
-			context.Context,
-			*acp.RequestPermissionRequest,
+			context.Context, *acp.ClientConn, *acp.RequestPermissionRequest,
 		) (*acp.RequestPermissionResponse, error) {
 			return nil, errors.New("this example asks for nothing")
 		},
@@ -393,10 +390,9 @@ func ExampleAgentSession_CreateTerminal() {
 	}
 
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate: func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate: func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: func(
-			context.Context,
-			*acp.RequestPermissionRequest,
+			context.Context, *acp.ClientConn, *acp.RequestPermissionRequest,
 		) (*acp.RequestPermissionResponse, error) {
 			return nil, errors.New("this example asks for nothing")
 		},
@@ -405,26 +401,25 @@ func ExampleAgentSession_CreateTerminal() {
 		// every terminal method, so a client with four of them would refuse a call
 		// it had advertised. A real client runs the command; this one pretends.
 		Terminal: &acp.TerminalHandlers{
-			Create: func(_ context.Context, request *acp.CreateTerminalRequest) (*acp.CreateTerminalResponse, error) {
+			Create: func(_ context.Context, _ *acp.ClientConn, request *acp.CreateTerminalRequest) (*acp.CreateTerminalResponse, error) {
 				fmt.Println("running:", request.Command, strings.Join(request.Args, " "))
 				return &acp.CreateTerminalResponse{TerminalID: "terminal-1"}, nil
 			},
 			WaitForExit: func(
-				context.Context,
-				*acp.WaitForTerminalExitRequest,
+				context.Context, *acp.ClientConn, *acp.WaitForTerminalExitRequest,
 			) (*acp.WaitForTerminalExitResponse, error) {
 				return &acp.WaitForTerminalExitResponse{ExitCode: acp.OptValue[uint32](0)}, nil
 			},
-			Output: func(context.Context, *acp.TerminalOutputRequest) (*acp.TerminalOutputResponse, error) {
+			Output: func(context.Context, *acp.ClientConn, *acp.TerminalOutputRequest) (*acp.TerminalOutputResponse, error) {
 				return &acp.TerminalOutputResponse{
 					Output:     "PASS\nok  example.com/work  0.2s\n",
 					ExitStatus: acp.OptValue(acp.TerminalExitStatus{ExitCode: acp.OptValue[uint32](0)}),
 				}, nil
 			},
-			Kill: func(context.Context, *acp.KillTerminalRequest) (*acp.KillTerminalResponse, error) {
+			Kill: func(context.Context, *acp.ClientConn, *acp.KillTerminalRequest) (*acp.KillTerminalResponse, error) {
 				return &acp.KillTerminalResponse{}, nil
 			},
-			Release: func(_ context.Context, request *acp.ReleaseTerminalRequest) (*acp.ReleaseTerminalResponse, error) {
+			Release: func(_ context.Context, _ *acp.ClientConn, request *acp.ReleaseTerminalRequest) (*acp.ReleaseTerminalResponse, error) {
 				fmt.Println("released:", request.TerminalID)
 				return &acp.ReleaseTerminalResponse{}, nil
 			},
@@ -478,7 +473,7 @@ func ExampleClientConn_Call() {
 
 		// Every extension request arrives here, undecoded: the grammar of one is
 		// between the two implementations that agreed on it.
-		CallFallback: func(_ context.Context, request *acp.ExtRequest) (json.RawMessage, error) {
+		CallFallback: func(_ context.Context, _ *acp.AgentConn, request *acp.ExtRequest) (json.RawMessage, error) {
 			fmt.Println("agent served:", request.Method, string(request.Params))
 			return json.RawMessage(`{"models":["haiku","opus"]}`), nil
 		},
@@ -488,10 +483,9 @@ func ExampleClientConn_Call() {
 	}
 
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate: func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate: func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: func(
-			context.Context,
-			*acp.RequestPermissionRequest,
+			context.Context, *acp.ClientConn, *acp.RequestPermissionRequest,
 		) (*acp.RequestPermissionResponse, error) {
 			return nil, errors.New("this example asks for nothing")
 		},
@@ -587,10 +581,9 @@ func ExampleAgentSession_CreateElicitation() {
 	ctx := context.Background()
 
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate: func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate: func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: func(
-			context.Context,
-			*acp.RequestPermissionRequest,
+			context.Context, *acp.ClientConn, *acp.RequestPermissionRequest,
 		) (*acp.RequestPermissionResponse, error) {
 			return nil, errors.New("this example asks for nothing")
 		},
@@ -600,8 +593,7 @@ func ExampleAgentSession_CreateElicitation() {
 		// because this client never said it could show a page.
 		Elicitation: &acp.ElicitationHandlers{
 			Form: func(
-				_ context.Context,
-				request *acp.CreateElicitationRequest,
+				_ context.Context, _ *acp.ClientConn, request *acp.CreateElicitationRequest,
 				mode *acp.ElicitationFormMode,
 			) (*acp.CreateElicitationResponse, error) {
 				fmt.Println("asking:", request.Message)
@@ -758,10 +750,9 @@ func ExampleClientSession_SetConfigOption() {
 	}
 
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate: func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate: func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: func(
-			context.Context,
-			*acp.RequestPermissionRequest,
+			context.Context, *acp.ClientConn, *acp.RequestPermissionRequest,
 		) (*acp.RequestPermissionResponse, error) {
 			return nil, errors.New("this example asks for nothing")
 		},
@@ -883,10 +874,9 @@ func ExampleClientConn_ResumeSession() {
 	}
 
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate: func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate: func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: func(
-			context.Context,
-			*acp.RequestPermissionRequest,
+			context.Context, *acp.ClientConn, *acp.RequestPermissionRequest,
 		) (*acp.RequestPermissionResponse, error) {
 			return nil, errors.New("this example asks for nothing")
 		},
@@ -976,9 +966,9 @@ func ExampleTransport() {
 			_ *acp.PromptRequest,
 		) (*acp.PromptResponse, error) {
 			if err := session.Update(ctx, &acp.SessionUpdateParams{
-				Update: &acp.AgentMessageChunk{ContentChunk: acp.ContentChunk{
+				Update: &acp.AgentMessageChunk{
 					Content: &acp.TextContent{Text: "done"},
-				}},
+				},
 			}); err != nil {
 				return nil, err
 			}
@@ -991,10 +981,9 @@ func ExampleTransport() {
 	}
 
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate: func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate: func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: func(
-			context.Context,
-			*acp.RequestPermissionRequest,
+			context.Context, *acp.ClientConn, *acp.RequestPermissionRequest,
 		) (*acp.RequestPermissionResponse, error) {
 			return nil, errors.New("this example asks for nothing")
 		},

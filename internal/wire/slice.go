@@ -1,6 +1,10 @@
 package wire
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/Tangerg/acp/internal/jsonnumber"
+)
 
 // UnmarshalValue decodes one value, and refuses null.
 //
@@ -14,7 +18,31 @@ func UnmarshalValue[T any](data []byte) (T, error) {
 	if IsNull(data) {
 		return v, ErrNotNullable
 	}
-	err := json.Unmarshal(data, &v)
+	var err error
+	switch target := any(&v).(type) {
+	case *int:
+		*target, err = jsonnumber.Parse[int](data)
+	case *int8:
+		*target, err = jsonnumber.Parse[int8](data)
+	case *int16:
+		*target, err = jsonnumber.Parse[int16](data)
+	case *int32:
+		*target, err = jsonnumber.Parse[int32](data)
+	case *int64:
+		*target, err = jsonnumber.Parse[int64](data)
+	case *uint:
+		*target, err = jsonnumber.Parse[uint](data)
+	case *uint8:
+		*target, err = jsonnumber.Parse[uint8](data)
+	case *uint16:
+		*target, err = jsonnumber.Parse[uint16](data)
+	case *uint32:
+		*target, err = jsonnumber.Parse[uint32](data)
+	case *uint64:
+		*target, err = jsonnumber.Parse[uint64](data)
+	default:
+		err = json.Unmarshal(data, &v)
+	}
 	return v, err
 }
 
@@ -27,10 +55,9 @@ func UnmarshalSlice[T any](data []byte) ([]T, error) {
 // UnmarshalSliceSkippingInvalid decodes a JSON array, dropping the elements that
 // do not decode.
 //
-// This implements x-deserialize-skip-invalid-items, which 35 arrays in the
-// schema carry: one unrecognised item in a list of MCP servers or content roles
-// must not cost the message. The array itself still has to be an array — the
-// keyword salvages elements, not the value they are in.
+// This implements the schema's x-deserialize-skip-invalid-items policy: an
+// unrecognised display item must not cost the message. The array itself still
+// has to be an array; the keyword salvages elements, not the value they are in.
 func UnmarshalSliceSkippingInvalid[T any](data []byte) ([]T, error) {
 	return UnmarshalSliceFuncSkippingInvalid(data, decodeValue[T])
 }

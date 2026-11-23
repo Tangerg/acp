@@ -14,6 +14,8 @@ import (
 // ClientConfig defines a client's identity, handlers, and capability
 // advertisement. SessionUpdate and RequestPermission are required. Optional
 // handlers derive their corresponding capabilities unless Capabilities is set.
+// Callbacks receive their source connection because independent peers can reuse
+// session, terminal, and request identifiers on the same Client.
 type ClientConfig struct {
 	// Info identifies this client during initialize. Optional: the schema lets a
 	// peer stay anonymous.
@@ -27,7 +29,7 @@ type ClientConfig struct {
 
 	// SessionUpdate receives the agent's running commentary for a turn. Baseline:
 	// a client that cannot accept these cannot watch a turn happen.
-	SessionUpdate func(ctx context.Context, notification *SessionNotification)
+	SessionUpdate func(ctx context.Context, conn *ClientConn, notification *SessionNotification)
 
 	// RequestPermission asks the user to approve a tool call. Baseline, and
 	// required: there is no safe nil handler for it.
@@ -37,12 +39,12 @@ type ClientConfig struct {
 	// "deny" to synthesise for a client that will not answer. A missing handler
 	// therefore fails construction rather than inventing an outcome the protocol
 	// does not define.
-	RequestPermission func(ctx context.Context, request *RequestPermissionRequest) (*RequestPermissionResponse, error)
+	RequestPermission func(ctx context.Context, conn *ClientConn, request *RequestPermissionRequest) (*RequestPermissionResponse, error)
 
 	// ReadTextFile and WriteTextFile are gated on two independent capability
 	// booleans, so they are two independent handlers.
-	ReadTextFile  func(ctx context.Context, request *ReadTextFileRequest) (*ReadTextFileResponse, error)
-	WriteTextFile func(ctx context.Context, request *WriteTextFileRequest) (*WriteTextFileResponse, error)
+	ReadTextFile  func(ctx context.Context, conn *ClientConn, request *ReadTextFileRequest) (*ReadTextFileResponse, error)
+	WriteTextFile func(ctx context.Context, conn *ClientConn, request *WriteTextFileRequest) (*WriteTextFileResponse, error)
 
 	// Terminal is all five methods or none, because the capability that gates them
 	// is one boolean covering all five.
@@ -56,8 +58,8 @@ type ClientConfig struct {
 	// CallFallback and NotifyFallback receive extension methods: names outside the
 	// set the specification defines. A standard method never reaches them, however
 	// it is spelled.
-	CallFallback   func(ctx context.Context, request *ExtRequest) (json.RawMessage, error)
-	NotifyFallback func(ctx context.Context, notification *ExtNotification)
+	CallFallback   func(ctx context.Context, conn *ClientConn, request *ExtRequest) (json.RawMessage, error)
+	NotifyFallback func(ctx context.Context, conn *ClientConn, notification *ExtNotification)
 
 	// Capabilities is the complete desired advertisement, never a patch.
 	//
@@ -80,11 +82,11 @@ type ClientConfig struct {
 // TerminalHandlers is the complete terminal capability. When non-nil, all five
 // handlers are required because the protocol advertises them with one boolean.
 type TerminalHandlers struct {
-	Create      func(ctx context.Context, request *CreateTerminalRequest) (*CreateTerminalResponse, error)
-	Output      func(ctx context.Context, request *TerminalOutputRequest) (*TerminalOutputResponse, error)
-	WaitForExit func(ctx context.Context, request *WaitForTerminalExitRequest) (*WaitForTerminalExitResponse, error)
-	Kill        func(ctx context.Context, request *KillTerminalRequest) (*KillTerminalResponse, error)
-	Release     func(ctx context.Context, request *ReleaseTerminalRequest) (*ReleaseTerminalResponse, error)
+	Create      func(ctx context.Context, conn *ClientConn, request *CreateTerminalRequest) (*CreateTerminalResponse, error)
+	Output      func(ctx context.Context, conn *ClientConn, request *TerminalOutputRequest) (*TerminalOutputResponse, error)
+	WaitForExit func(ctx context.Context, conn *ClientConn, request *WaitForTerminalExitRequest) (*WaitForTerminalExitResponse, error)
+	Kill        func(ctx context.Context, conn *ClientConn, request *KillTerminalRequest) (*KillTerminalResponse, error)
+	Release     func(ctx context.Context, conn *ClientConn, request *ReleaseTerminalRequest) (*ReleaseTerminalResponse, error)
 }
 
 // A Client owns the workspace-facing handlers and capabilities shared by its
@@ -272,7 +274,7 @@ func (c *Client) Connect(ctx context.Context, transport Transport) (*ClientConn,
 		return nil, initErr
 	}
 
-	c.conns.add(conn)
+	c.conns.add(conn, conn.life)
 	return conn, nil
 }
 
@@ -462,6 +464,11 @@ func (c *ClientConn) ListSessions(
 	if params == nil {
 		params = &ListSessionsRequest{}
 	}
+	if cwd, set := params.Cwd.Get(); set {
+		if err := absolutePath("cwd", cwd); err != nil {
+			return nil, err
+		}
+	}
 	if err := c.Peer().permits(methodSessionList); err != nil {
 		return nil, err
 	}
@@ -600,23 +607,23 @@ func (c *ClientConn) serve(ctx context.Context, request *jsonrpc.Request) (any, 
 
 	switch request.Method {
 	case methodSessionUpdate:
-		return nil, dispatchNotificationContext(ctx, request, config.SessionUpdate)
+		return nil, dispatchConnNotification(ctx, c, request, config.SessionUpdate)
 	case methodSessionRequestPermission:
 		return c.requestPermission(ctx, request)
 	case methodFsReadTextFile:
-		return dispatchCall(ctx, request, config.ReadTextFile)
+		return dispatchConnCall(ctx, c, request, config.ReadTextFile)
 	case methodFsWriteTextFile:
-		return dispatchCall(ctx, request, config.WriteTextFile)
+		return dispatchConnCall(ctx, c, request, config.WriteTextFile)
 	case methodTerminalCreate:
-		return dispatchCall(ctx, request, config.Terminal.Create)
+		return dispatchConnCall(ctx, c, request, config.Terminal.Create)
 	case methodTerminalOutput:
-		return dispatchCall(ctx, request, config.Terminal.Output)
+		return dispatchConnCall(ctx, c, request, config.Terminal.Output)
 	case methodTerminalWaitForExit:
-		return dispatchCall(ctx, request, config.Terminal.WaitForExit)
+		return dispatchConnCall(ctx, c, request, config.Terminal.WaitForExit)
 	case methodTerminalKill:
-		return dispatchCall(ctx, request, config.Terminal.Kill)
+		return dispatchConnCall(ctx, c, request, config.Terminal.Kill)
 	case methodTerminalRelease:
-		return dispatchCall(ctx, request, config.Terminal.Release)
+		return dispatchConnCall(ctx, c, request, config.Terminal.Release)
 	case methodElicitationCreate:
 		return c.createElicitation(ctx, request)
 	case methodElicitationComplete:
@@ -626,7 +633,7 @@ func (c *ClientConn) serve(ctx context.Context, request *jsonrpc.Request) (any, 
 	if isStandardMethod(request.Method) {
 		return nil, methodNotImplemented(request.Method)
 	}
-	return dispatchExtension(ctx, request, config.CallFallback, config.NotifyFallback)
+	return dispatchExtension(ctx, c, request, config.CallFallback, config.NotifyFallback)
 }
 
 func (c *ClientConn) session(id SessionID) *ClientSession {
@@ -650,10 +657,12 @@ func (c *ClientConn) checkSessionSetup(cwd string, servers []McpServer, director
 	if err := absolutePath("cwd", cwd); err != nil {
 		return err
 	}
-	return absoluteDirectories(directories)
+	if err := absoluteDirectories("additionalDirectories", directories); err != nil {
+		return err
+	}
+	return absoluteMCPCommands(servers)
 }
 
-// createElicitation routes an inbound request to the handler for its mode.
 func (c *ClientConn) createElicitation(ctx context.Context, request *jsonrpc.Request) (any, error) {
 	handlers := c.client.config.Elicitation
 	if handlers == nil {
@@ -670,19 +679,18 @@ func (c *ClientConn) createElicitation(ctx context.Context, request *jsonrpc.Req
 		if handlers.Form == nil {
 			return nil, elicitationForm.unadvertised()
 		}
-		// The handler may edit its form model; the peer's original constraints
-		// still own what constitutes a valid answer.
-		schema := deepCopy(mode.RequestedSchema)
-		response, err = handlers.Form(ctx, params, mode)
-		if err == nil {
-			if content, answered := response.acceptedContent(); answered {
-				if bad := schema.validate(content); bad != nil {
-					// The client's own form and the client's own answer disagree, so
-					// this is a bug on this side and the agent is told so rather than
-					// handed a value its schema does not describe.
-					return nil, newError(ErrorCodeInternalError, "%s", bad.Error())
-				}
-			}
+		form, compileErr := newCompiledForm(mode.RequestedSchema)
+		if compileErr != nil {
+			return nil, newError(ErrorCodeInvalidParams, "%s", compileErr)
+		}
+		response, err = handlers.Form(ctx, c, params, mode)
+		if err != nil {
+			return nil, err
+		}
+		if bad := form.validateResponse(ctx, response); bad != nil {
+			// The local answer violates the peer's valid schema, so blame belongs
+			// to this handler rather than to the peer's request.
+			return nil, newError(ErrorCodeInternalError, "%s", bad.Error())
 		}
 
 	case *ElicitationURLMode:
@@ -696,7 +704,7 @@ func (c *ClientConn) createElicitation(ctx context.Context, request *jsonrpc.Req
 			}
 			return nil, newError(ErrorCodeInternalError, "%s", reserveErr)
 		}
-		response, err = handlers.URL(ctx, params, mode)
+		response, err = handlers.URL(ctx, c, params, mode)
 		if err != nil || response == nil || !response.accepted() {
 			reservation.reject()
 		} else {
@@ -748,7 +756,7 @@ func (c *ClientConn) completeElicitation(ctx context.Context, request *jsonrpc.R
 		return nil
 	}
 	if handlers := c.client.config.Elicitation; handlers != nil && handlers.Complete != nil {
-		handlers.Complete(ctx, params)
+		handlers.Complete(ctx, c, params)
 	}
 	return nil
 }
@@ -762,13 +770,20 @@ func (c *ClientConn) requestPermission(ctx context.Context, request *jsonrpc.Req
 	if err != nil {
 		return nil, err
 	}
+	options, err := ownPermissionOptions(params.Options)
+	if err != nil {
+		return nil, newError(ErrorCodeInvalidParams, "%s", err)
+	}
 
-	response, err := c.client.config.RequestPermission(ctx, params)
+	response, err := c.client.config.RequestPermission(ctx, c, params)
 	if err != nil {
 		return nil, err
 	}
 	if response == nil {
 		return nil, nilHandlerResponse(request.Method)
+	}
+	if invalid := options.validate(response.Outcome); invalid != nil {
+		return nil, newError(ErrorCodeInternalError, "%s", invalid)
 	}
 	return response, nil
 }

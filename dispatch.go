@@ -38,19 +38,13 @@ func dispatchCall[Request, Response any](
 	return response, nil
 }
 
-// dispatchConnCall is [dispatchCall] for an agent method scoped to the connection
-// rather than to a session, which is the difference between the two dispatchers
-// on this side: one hands the handler an [AgentSession] and the other an
-// [AgentConn]. Both hand it the handle its method belongs to, so that a handler
-// can act within its own scope without re-deriving it.
-//
-// The nil check is here rather than inside, because the closure below is never
-// nil however absent the handler it wraps is.
-func dispatchConnCall[Request, Response any](
+// The nil check precedes the closure: the closure itself would hide a missing
+// handler. Passing the source connection keeps peer-local identifiers scoped.
+func dispatchConnCall[Conn, Request, Response any](
 	ctx context.Context,
-	conn *AgentConn,
+	conn Conn,
 	request *jsonrpc.Request,
-	handle func(context.Context, *AgentConn, *Request) (*Response, error),
+	handle func(context.Context, Conn, *Request) (*Response, error),
 ) (any, error) {
 	if handle == nil {
 		return nil, methodNotImplemented(request.Method)
@@ -60,10 +54,11 @@ func dispatchConnCall[Request, Response any](
 	})
 }
 
-func dispatchNotificationContext[Params any](
+func dispatchConnNotification[Conn, Params any](
 	ctx context.Context,
+	conn Conn,
 	request *jsonrpc.Request,
-	handle func(context.Context, *Params),
+	handle func(context.Context, Conn, *Params),
 ) error {
 	if handle == nil {
 		return methodNotImplemented(request.Method)
@@ -72,18 +67,19 @@ func dispatchNotificationContext[Params any](
 	if err != nil {
 		return err
 	}
-	handle(ctx, params)
+	handle(ctx, conn, params)
 	return nil
 }
 
 // The reserved-name check happens before this: a standard method never reaches a
 // fallback handler, however it is misspelled, because a fallback that could
 // intercept one would be a second path through the capability gate.
-func dispatchExtension(
+func dispatchExtension[Conn any](
 	ctx context.Context,
+	conn Conn,
 	request *jsonrpc.Request,
-	call func(context.Context, *ExtRequest) (json.RawMessage, error),
-	notify func(context.Context, *ExtNotification),
+	call func(context.Context, Conn, *ExtRequest) (json.RawMessage, error),
+	notify func(context.Context, Conn, *ExtNotification),
 ) (any, error) {
 	if err := validateExtensionMethod(request.Method); err != nil {
 		if !request.IsCall() {
@@ -98,7 +94,7 @@ func dispatchExtension(
 		if notify == nil {
 			return nil, methodNotImplemented(request.Method)
 		}
-		notify(ctx, &ExtNotification{Method: request.Method, Params: request.Params})
+		notify(ctx, conn, &ExtNotification{Method: request.Method, Params: request.Params})
 		// A notification has no result and no failure to report. The connection
 		// knows not to write a response for one, so both being nil is the answer
 		// rather than the absence of one.
@@ -107,7 +103,7 @@ func dispatchExtension(
 	if call == nil {
 		return nil, methodNotImplemented(request.Method)
 	}
-	result, err := call(ctx, &ExtRequest{Method: request.Method, Params: request.Params})
+	result, err := call(ctx, conn, &ExtRequest{Method: request.Method, Params: request.Params})
 	if err != nil {
 		return nil, err
 	}

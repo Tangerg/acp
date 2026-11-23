@@ -385,7 +385,7 @@
     },
     {
       "name": "a fractional integer property",
-      "why": "the schema types size as an integer; this package refuses the value and recovers, and the reference implementation keeps it",
+      "why": "size is an integer; the field-level recovery drops a fractional value without rejecting the content",
       "input": {
         "sessionId": "sess-1",
         "prompt": [
@@ -403,25 +403,10 @@
         "prompt": [
           {
             "name": "n",
-            "size": 1.5,
             "uri": "file:///a",
             "type": "resource_link"
           }
         ]
-      },
-      "divergence": {
-        "accepted": true,
-        "normalized": {
-          "sessionId": "sess-1",
-          "prompt": [
-            {
-              "type": "resource_link",
-              "name": "n",
-              "uri": "file:///a"
-            }
-          ]
-        },
-        "because": "The schema types this property `{\"type\":[\"integer\",\"null\"],\"format\":\"int64\"}`, so 1.5 is not a value it admits — and the property carries x-deserialize-default-on-error, so refusing it recovers to absent rather than failing the message. The reference implementation validates int64 and int32 properties as `z.number()`, reaching for `z.int()` only where the schema also states a minimum, so it keeps the fraction. AGENTS.md says the schema wins."
       }
     }
   ]

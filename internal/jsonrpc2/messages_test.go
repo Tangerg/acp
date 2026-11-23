@@ -2,9 +2,88 @@ package jsonrpc2
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestMessageBoundariesRejectInvalidRawJSON(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		data json.RawMessage
+	}{
+		{"malformed", json.RawMessage(`{`)},
+		{"empty", json.RawMessage{}},
+		{"invalid UTF-8", json.RawMessage{'"', 0xff, '"'}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			id := Int64ID(1)
+			if _, err := NewCall(id, "_test", test.data); err == nil {
+				t.Error("request constructor accepted invalid raw params")
+			}
+			if _, err := NewResponse(id, test.data, nil); err == nil {
+				t.Error("response constructor accepted invalid raw result")
+			}
+			wireError := &WireError{Code: -32603, Message: "failed", Data: test.data}
+			if _, err := NewResponse(id, nil, wireError); err == nil {
+				t.Error("response constructor accepted invalid raw error data")
+			}
+			for _, message := range []Message{
+				&Request{ID: id, Method: "_test", Params: test.data},
+				&Response{ID: id, Result: test.data},
+				&Response{ID: id, Error: wireError},
+				&Response{ID: id, Result: test.data, Error: &WireError{Code: -32603, Message: "failed"}},
+			} {
+				if _, err := EncodeMessage(message); err == nil {
+					t.Errorf("encoder accepted invalid raw data in %T", message)
+				}
+			}
+		})
+	}
+}
+
+func TestResponseOwnsValidatedErrorData(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		data json.RawMessage
+		want string
+	}{
+		{"absent", nil, `"error":{"code":-32603,"message":"failed"}`},
+		{"null", json.RawMessage(`null`), `"data":null`},
+		{"value", json.RawMessage(`{"reason":"expected"}`), `"data":{"reason":"expected"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			original := &WireError{Code: -32603, Message: "failed", Data: test.data}
+			response, err := NewResponse(Int64ID(1), nil, original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original.Message = "changed"
+			if len(original.Data) != 0 {
+				original.Data[0] = '!'
+			}
+			encoded, err := EncodeMessage(response)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(encoded, []byte(test.want)) || bytes.Contains(encoded, []byte("changed")) {
+				t.Fatalf("validated response changed with its input: %s", encoded)
+			}
+		})
+	}
+}
+
+func TestErrorCodeAcceptsIntegralRepresentations(t *testing.T) {
+	for _, code := range []string{"-32603.0", "-3.2603e4"} {
+		message, err := DecodeMessage([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":` + code + `,"message":"failed"}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := message.(*Response).Error.Code; got != -32603 {
+			t.Fatalf("code = %d", got)
+		}
+	}
+}
 
 func TestRequestIDKeepsAbsentAndNullSeparate(t *testing.T) {
 	notification, err := DecodeMessage([]byte(`{"jsonrpc":"2.0","method":"_test"}`))

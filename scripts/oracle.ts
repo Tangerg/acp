@@ -3,22 +3,22 @@
 // the fixture files.
 //
 // It runs inside a checkout of agentclientprotocol/typescript-sdk, pinned by
-// scripts/update-fixtures.sh, because the answers have to come from the
+// schema/provenance.json, because the answers have to come from the
 // reference implementation's deserialisation rules rather than from this Go
 // implementation. The generator input is replaced with this module's pinned
-// published schema by scripts/update-fixtures.sh: the SDK's normal v1 input is
-// explicitly unstable and therefore cannot be a stable-protocol oracle.
+// published schema by scripts/update-fixtures.sh, keeping the selected grammar
+// independent of the SDK's experimental lanes.
 //
 // The published npm package cannot be used for this. Its exports map reaches
 // dist/acp.js, the experimental entry points and the raw schema JSON, and
 // nothing else — the generated Zod validators and the deserialisation helpers,
 // which are the actual oracle, are not reachable from it.
 //
-// Invoked as: npx tsx oracle.ts <fixtures-directory>
+// Invoked as: node --import tsx oracle.ts <fixtures-directory>
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as schemas from "./src/schema/zod.gen.js";
+import * as schemas from "./src/v1/schema/zod.gen.js";
 
 const fixturesDir = process.argv[2];
 if (!fixturesDir) {

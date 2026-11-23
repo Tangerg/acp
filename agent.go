@@ -99,8 +99,8 @@ type AgentConfig struct {
 	// CallFallback and NotifyFallback receive extension methods, exactly as on the
 	// client side: the extension contract is symmetric because both directions can
 	// send extension messages and both can receive them.
-	CallFallback   func(ctx context.Context, request *ExtRequest) (json.RawMessage, error)
-	NotifyFallback func(ctx context.Context, notification *ExtNotification)
+	CallFallback   func(ctx context.Context, conn *AgentConn, request *ExtRequest) (json.RawMessage, error)
+	NotifyFallback func(ctx context.Context, conn *AgentConn, notification *ExtNotification)
 
 	// Capabilities is the complete desired advertisement, never a patch, and never
 	// inferred from the client callbacks an agent happens to be able to make: what
@@ -243,7 +243,7 @@ func (a *Agent) Connect(ctx context.Context, transport Transport) (*AgentConn, e
 	conn.link = newLink(stream, conn, a.config.Logger, a.config.Limits)
 	conn.run()
 
-	a.conns.add(conn)
+	a.conns.add(conn, conn.life)
 	return conn, nil
 }
 
@@ -485,6 +485,20 @@ func (c *AgentConn) authenticate(ctx context.Context, request *jsonrpc.Request) 
 }
 
 func (c *AgentConn) serve(ctx context.Context, request *jsonrpc.Request) (any, error) {
+	response, err := c.dispatch(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	if invalid := c.Peer().validateAgentResponse(response); invalid != nil {
+		return nil, newError(ErrorCodeInternalError, "handler for method %q returned an invalid response: %s", request.Method, invalid)
+	}
+	if session, created := response.(*NewSessionResponse); created {
+		c.session(session.SessionID)
+	}
+	return response, nil
+}
+
+func (c *AgentConn) dispatch(ctx context.Context, request *jsonrpc.Request) (any, error) {
 	config := &c.agent.config
 
 	if request.Method == methodInitialize {
@@ -513,7 +527,7 @@ func (c *AgentConn) serve(ctx context.Context, request *jsonrpc.Request) (any, e
 	case methodAuthenticate:
 		return c.authenticate(ctx, request)
 	case methodSessionNew:
-		return c.newSession(ctx, request)
+		return dispatchConnCall(ctx, c, request, config.NewSession)
 	case methodSessionLoad:
 		return dispatchSessionCall(ctx, c, request, config.LoadSession)
 	case methodSessionSetMode:
@@ -539,7 +553,7 @@ func (c *AgentConn) serve(ctx context.Context, request *jsonrpc.Request) (any, e
 	if isStandardMethod(request.Method) {
 		return nil, methodNotImplemented(request.Method)
 	}
-	return dispatchExtension(ctx, request, config.CallFallback, config.NotifyFallback)
+	return dispatchExtension(ctx, c, request, config.CallFallback, config.NotifyFallback)
 }
 
 func (c *AgentConn) session(id SessionID) *AgentSession {
@@ -550,20 +564,6 @@ func (c *AgentConn) session(id SessionID) *AgentSession {
 		c.tooManySessions()
 	}
 	return handle
-}
-
-// The handler receives no handle because this is the call that creates one.
-func (c *AgentConn) newSession(ctx context.Context, request *jsonrpc.Request) (any, error) {
-	result, err := dispatchConnCall(ctx, c, request, c.agent.config.NewSession)
-	if err != nil {
-		return nil, err
-	}
-	response, ok := result.(*NewSessionResponse)
-	if !ok {
-		return nil, newError(ErrorCodeInternalError, "session/new returned %T", result)
-	}
-	c.session(response.SessionID)
-	return response, nil
 }
 
 // closeSession serves session/close, whose obligation is the schema's rather than

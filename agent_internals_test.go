@@ -271,7 +271,7 @@ func TestAReservedFutureMethodDoesNotReachTheExtensionFallback(t *testing.T) {
 			return &PromptResponse{StopReason: StopReasonEndTurn}, nil
 		},
 		Cancel: func(context.Context, *AgentSession, *CancelNotification) {},
-		CallFallback: func(context.Context, *ExtRequest) (json.RawMessage, error) {
+		CallFallback: func(context.Context, *AgentConn, *ExtRequest) (json.RawMessage, error) {
 			reached = true
 			return json.RawMessage(`{}`), nil
 		},

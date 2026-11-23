@@ -26,7 +26,7 @@ func TestATurnEndToEnd(t *testing.T) {
 
 	client, err := acp.NewClient(&acp.ClientConfig{
 		Info: &acp.Implementation{Name: "an editor", Version: "1.0.0"},
-		SessionUpdate: func(_ context.Context, notification *acp.SessionNotification) {
+		SessionUpdate: func(_ context.Context, _ *acp.ClientConn, notification *acp.SessionNotification) {
 			if chunk, ok := notification.Update.(*acp.AgentMessageChunk); ok {
 				if text, ok := chunk.Content.(*acp.TextContent); ok {
 					updates = append(updates, text.Text)
@@ -34,8 +34,7 @@ func TestATurnEndToEnd(t *testing.T) {
 			}
 		},
 		RequestPermission: func(
-			_ context.Context,
-			request *acp.RequestPermissionRequest,
+			_ context.Context, _ *acp.ClientConn, request *acp.RequestPermissionRequest,
 		) (*acp.RequestPermissionResponse, error) {
 			permissionAsked++
 			return &acp.RequestPermissionResponse{
@@ -59,7 +58,7 @@ func TestATurnEndToEnd(t *testing.T) {
 		) (*acp.PromptResponse, error) {
 			if updateErr := session.Update(ctx, &acp.SessionUpdateParams{
 				Update: &acp.AgentMessageChunk{
-					ContentChunk: acp.ContentChunk{Content: &acp.TextContent{Text: "thinking"}},
+					Content: &acp.TextContent{Text: "thinking"},
 				},
 			}); updateErr != nil {
 				return nil, updateErr
@@ -82,7 +81,7 @@ func TestATurnEndToEnd(t *testing.T) {
 
 			if updateErr := session.Update(ctx, &acp.SessionUpdateParams{
 				Update: &acp.AgentMessageChunk{
-					ContentChunk: acp.ContentChunk{Content: &acp.TextContent{Text: "done"}},
+					Content: &acp.TextContent{Text: "done"},
 				},
 			}); updateErr != nil {
 				return nil, updateErr
@@ -162,7 +161,7 @@ func TestATurnEndToEnd(t *testing.T) {
 func TestAnUnadvertisedMethodIsRefused(t *testing.T) {
 	reached := false
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		// No ReadTextFile handler, so fs.readTextFile is not advertised. The
 		// capability derived from the handlers is what goes on the wire.
@@ -282,9 +281,9 @@ func TestPromptContentTheAgentAdvertisedIsSent(t *testing.T) {
 func TestExtensionMethodsAndTheReservedSet(t *testing.T) {
 	var seen string
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
-		CallFallback: func(_ context.Context, request *acp.ExtRequest) (json.RawMessage, error) {
+		CallFallback: func(_ context.Context, _ *acp.ClientConn, request *acp.ExtRequest) (json.RawMessage, error) {
 			seen = request.Method
 			return json.RawMessage(`{"answered":true}`), nil
 		},

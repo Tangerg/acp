@@ -79,8 +79,7 @@ func findUnexported(typ reflect.Type, seen map[reflect.Type]bool, path string) s
 		return findUnexported(typ.Elem(), seen, path+"{}")
 
 	case reflect.Struct:
-		for i := range typ.NumField() {
-			field := typ.Field(i)
+		for field := range typ.Fields() {
 			if !field.IsExported() {
 				return path + "." + field.Name
 			}

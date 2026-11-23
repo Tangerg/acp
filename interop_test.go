@@ -514,14 +514,13 @@ func sameObservations(got observedFields, want struct {
 func interopClient(seen *interopObservations) (*acp.Client, error) {
 	return acp.NewClient(&acp.ClientConfig{
 		Info: &acp.Implementation{Name: "acp-go-interop", Version: "0.0.0"},
-		SessionUpdate: func(_ context.Context, notification *acp.SessionNotification) {
+		SessionUpdate: func(_ context.Context, _ *acp.ClientConn, notification *acp.SessionNotification) {
 			seen.mu.Lock()
 			seen.Updates = append(seen.Updates, describeInteropUpdate(notification.Update))
 			seen.mu.Unlock()
 		},
 		RequestPermission: func(
-			_ context.Context,
-			request *acp.RequestPermissionRequest,
+			_ context.Context, _ *acp.ClientConn, request *acp.RequestPermissionRequest,
 		) (*acp.RequestPermissionResponse, error) {
 			seen.mu.Lock()
 			seen.PermissionRequests++
@@ -532,8 +531,7 @@ func interopClient(seen *interopObservations) (*acp.Client, error) {
 		},
 		Elicitation: &acp.ElicitationHandlers{
 			Form: func(
-				_ context.Context,
-				request *acp.CreateElicitationRequest,
+				_ context.Context, _ *acp.ClientConn, request *acp.CreateElicitationRequest,
 				mode *acp.ElicitationFormMode,
 			) (*acp.CreateElicitationResponse, error) {
 				seen.mu.Lock()
@@ -548,8 +546,7 @@ func interopClient(seen *interopObservations) (*acp.Client, error) {
 				}, nil
 			},
 			URL: func(
-				_ context.Context,
-				_ *acp.CreateElicitationRequest,
+				_ context.Context, _ *acp.ClientConn, _ *acp.CreateElicitationRequest,
 				mode *acp.ElicitationURLMode,
 			) (*acp.CreateElicitationResponse, error) {
 				seen.mu.Lock()
@@ -557,15 +554,14 @@ func interopClient(seen *interopObservations) (*acp.Client, error) {
 				seen.mu.Unlock()
 				return &acp.CreateElicitationResponse{Value: &acp.ElicitationAcceptAction{}}, nil
 			},
-			Complete: func(_ context.Context, notification *acp.CompleteElicitationNotification) {
+			Complete: func(_ context.Context, _ *acp.ClientConn, notification *acp.CompleteElicitationNotification) {
 				seen.mu.Lock()
 				seen.ElicitationsDone = append(seen.ElicitationsDone, string(notification.ElicitationID))
 				seen.mu.Unlock()
 			},
 		},
 		ReadTextFile: func(
-			_ context.Context,
-			request *acp.ReadTextFileRequest,
+			_ context.Context, _ *acp.ClientConn, request *acp.ReadTextFileRequest,
 		) (*acp.ReadTextFileResponse, error) {
 			seen.mu.Lock()
 			seen.FilesRead = append(seen.FilesRead, request.Path)
@@ -573,8 +569,7 @@ func interopClient(seen *interopObservations) (*acp.Client, error) {
 			return &acp.ReadTextFileResponse{Content: "the file's contents"}, nil
 		},
 		WriteTextFile: func(
-			_ context.Context,
-			request *acp.WriteTextFileRequest,
+			_ context.Context, _ *acp.ClientConn, request *acp.WriteTextFileRequest,
 		) (*acp.WriteTextFileResponse, error) {
 			seen.mu.Lock()
 			seen.FilesWritten = append(seen.FilesWritten, request.Path)
@@ -582,25 +577,24 @@ func interopClient(seen *interopObservations) (*acp.Client, error) {
 			return &acp.WriteTextFileResponse{}, nil
 		},
 		Terminal: &acp.TerminalHandlers{
-			Create: func(context.Context, *acp.CreateTerminalRequest) (*acp.CreateTerminalResponse, error) {
+			Create: func(context.Context, *acp.ClientConn, *acp.CreateTerminalRequest) (*acp.CreateTerminalResponse, error) {
 				seen.mu.Lock()
 				seen.TerminalsCreated++
 				seen.mu.Unlock()
 				return &acp.CreateTerminalResponse{TerminalID: "interop-terminal"}, nil
 			},
-			Output: func(context.Context, *acp.TerminalOutputRequest) (*acp.TerminalOutputResponse, error) {
+			Output: func(context.Context, *acp.ClientConn, *acp.TerminalOutputRequest) (*acp.TerminalOutputResponse, error) {
 				return &acp.TerminalOutputResponse{Output: "done\n", Truncated: false}, nil
 			},
 			WaitForExit: func(
-				context.Context,
-				*acp.WaitForTerminalExitRequest,
+				context.Context, *acp.ClientConn, *acp.WaitForTerminalExitRequest,
 			) (*acp.WaitForTerminalExitResponse, error) {
 				return &acp.WaitForTerminalExitResponse{ExitCode: acp.OptValue(uint32(0))}, nil
 			},
-			Kill: func(context.Context, *acp.KillTerminalRequest) (*acp.KillTerminalResponse, error) {
+			Kill: func(context.Context, *acp.ClientConn, *acp.KillTerminalRequest) (*acp.KillTerminalResponse, error) {
 				return &acp.KillTerminalResponse{}, nil
 			},
-			Release: func(context.Context, *acp.ReleaseTerminalRequest) (*acp.ReleaseTerminalResponse, error) {
+			Release: func(context.Context, *acp.ClientConn, *acp.ReleaseTerminalRequest) (*acp.ReleaseTerminalResponse, error) {
 				return &acp.ReleaseTerminalResponse{}, nil
 			},
 		},

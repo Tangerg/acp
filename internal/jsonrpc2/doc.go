@@ -20,7 +20,7 @@
 // that nothing here uses, which is the speculative abstraction AGENTS.md rules
 // out. The connection is written against these message types instead.
 //
-// Four changes were also made around the forked files:
+// The fork changes these contracts:
 //
 //   - EncodeIndent. Nothing in a protocol stream wants indented JSON.
 //   - Upstream's non-standard error sentinels. It uses -32000 for "overloaded"
@@ -33,10 +33,15 @@
 //   - Request IDs retain explicit null and reject non-integral or out-of-range
 //     numbers. The published ACP schema narrows the numeric arm to int64, while
 //     upstream's generic JSON-RPC representation uses float64 and collapses null
-//     into an absent identifier.
+//     into an absent identifier. The shared integer decoder accepts equivalent
+//     decimal and exponent forms without allocating expanded powers.
 //   - Inbound envelopes decode through a raw-member map. Looking up jsonrpc is
 //     exact where decoding a tagged struct would also accept JSONRPC, and the map
 //     preserves presence separately from zero values. Responses and error objects
 //     therefore enforce their required, mutually exclusive members without a
 //     second representation of the same envelope.
+//   - Constructors and the encoder reject invalid raw JSON and invalid UTF-8,
+//     including explicitly supplied empty raw values that omitempty would erase.
+//     A constructed error response snapshots its data so later caller mutation
+//     cannot invalidate the envelope that already passed the boundary.
 package jsonrpc2

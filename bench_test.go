@@ -21,7 +21,7 @@ func benchmarkNotification() *acp.SessionNotification {
 	return &acp.SessionNotification{
 		SessionID: "sess-1",
 		Update: &acp.AgentMessageChunk{
-			ContentChunk: acp.ContentChunk{Content: &acp.TextContent{Text: "the quick brown fox jumps over the lazy dog"}},
+			Content: &acp.TextContent{Text: "the quick brown fox jumps over the lazy dog"},
 		},
 	}
 }
@@ -71,7 +71,7 @@ func BenchmarkPromptTurn(b *testing.B) {
 			for range updatesPerTurn {
 				err := session.Update(ctx, &acp.SessionUpdateParams{
 					Update: &acp.AgentMessageChunk{
-						ContentChunk: acp.ContentChunk{Content: &acp.TextContent{Text: "the quick brown fox jumps over the lazy dog"}},
+						Content: &acp.TextContent{Text: "the quick brown fox jumps over the lazy dog"},
 					},
 				})
 				if err != nil {
@@ -88,10 +88,9 @@ func BenchmarkPromptTurn(b *testing.B) {
 
 	var received int
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate: func(context.Context, *acp.SessionNotification) { received++ },
+		SessionUpdate: func(context.Context, *acp.ClientConn, *acp.SessionNotification) { received++ },
 		RequestPermission: func(
-			context.Context,
-			*acp.RequestPermissionRequest,
+			context.Context, *acp.ClientConn, *acp.RequestPermissionRequest,
 		) (*acp.RequestPermissionResponse, error) {
 			return &acp.RequestPermissionResponse{}, nil
 		},

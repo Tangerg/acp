@@ -6,7 +6,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/Tangerg/acp.svg)](https://pkg.go.dev/github.com/Tangerg/acp)
 [![CI](https://github.com/Tangerg/acp/actions/workflows/ci.yml/badge.svg)](https://github.com/Tangerg/acp/actions/workflows/ci.yml)
-[![Go 1.25+](https://img.shields.io/badge/go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
+[![Go version](https://img.shields.io/github/go-mod/go-version/Tangerg/acp?logo=go&logoColor=white)](./go.mod)
 [![Apache 2.0](https://img.shields.io/badge/licence-Apache--2.0-blue)](./LICENSE)
 
 `acp` is a Go implementation of the [Agent Client
@@ -25,7 +25,7 @@ Install the module with:
 go get github.com/Tangerg/acp
 ```
 
-The module requires Go 1.25 or newer.
+Use the Go version declared in [go.mod](./go.mod) or newer.
 
 ## Start a client
 
@@ -43,6 +43,10 @@ if err != nil {
 	return err
 }
 ```
+
+Each client handler receives the originating `*acp.ClientConn` after its context,
+then the protocol payload. A shared client can connect to several agents whose
+session identifiers overlap; the connection supplies that missing scope.
 
 Connect to an agent subprocess. `CommandTransport` owns the process and its pipes,
 so use `exec.Command` rather than attaching the process to the handshake context:
@@ -172,6 +176,13 @@ twice.
 and must unblock pending reads and writes. For a shared `net.Conn`, set both
 streams to that connection and `Close` to its `Close` method.
 
+`CommandTransport` sets an unset `exec.Cmd.WaitDelay` to the effective
+`TerminationGrace` before starting the process. An explicit `WaitDelay` is
+preserved. This bounds draining output pipes inherited by descendants; a custom
+`Stderr` writer must still finish its own `Write` calls. Expected process exit
+status is ignored during shutdown, while unexpected pipe-copy errors remain
+observable.
+
 ## Protocol coverage
 
 The SDK serves all 25 methods in the pinned schema:
@@ -193,6 +204,13 @@ invalid-params. An agent names the mode and never the scope:
 `AgentSession.CreateElicitation` elicits within its session, and
 `AgentConn.CreateElicitation` elicits within the request being served.
 
+Form schemas are compiled before a handler can display them or an agent can send
+them. Answers use the same private compiled constraints, including declared
+email, URI, date and date-time formats. A pure Go ECMAScript engine owns pattern
+syntax and matching, with explicit parsing, compilation and execution budgets.
+Budget exhaustion and cancellation are reported as errors, distinct from an
+ordinary non-matching answer.
+
 For URL mode, `accept` is consent to start the out-of-band interaction; it does
 not say the page has finished. Decline, cancellation, and failure release the ID
 immediately. An accepted ID remains unique on that connection until the agent
@@ -205,9 +223,9 @@ The module is pre-1.0, so its Go API may change. Its protocol target is fixed:
 | Property | Value |
 | --- | --- |
 | Protocol version | 1 |
-| Schema release | `schema-v1.21.0` |
+| Schema release | [Pinned stable release](./schema/provenance.json) |
 | Module version | `v0.3.0` |
-| Minimum Go version | 1.25 |
+| Minimum Go version | Declared in [go.mod](./go.mod) |
 
 The [published
 schema](https://github.com/agentclientprotocol/agent-client-protocol) defines the
@@ -216,22 +234,24 @@ implementation is wrong. Proposed grammar changes belong upstream rather than in
 a local dialect.
 
 The repository vendors `schema/schema.json` from the published release. The
-generator commits 153 of its 170 definitions to `schema.gen.go`, so schema updates
-produce reviewable source diffs and `go get` needs no generator.
+generator commits the closure of `schema/manifest.json` to `schema.gen.go`, so
+schema updates produce reviewable source diffs and `go get` needs no generator.
+The schema tag, asset hashes and reference SDK commit have one owner in
+[`schema/provenance.json`](./schema/provenance.json); scripts, CI and the generator
+read it directly.
 
 ### The stable grammar only
 
 Upstream publishes two schemas per release: `schema.json` and
 `schema.unstable.json`, the second being the first plus whatever is being tried.
-At `schema-v1.21.0` the unstable one adds 95 definitions and 17 methods —
-`session/fork`, `nes/*`, `providers/*`, `document/did*`, `mcp/connect`.
+Experimental methods and fields belong to that separate grammar.
 
 This module generates from the stable asset alone, pinned by tag and SHA-256. That
 is what lets its exported surface be a published grammar and `gorelease` mean
 something. The cost is real and worth knowing before you choose: **experimental
-features are not reachable through this module**, not even by hand, because none of
-those 17 method names begins with `_` and the extension API only carries names the
-protocol reserves for implementations.
+standard methods are not reachable through this module**, not even by hand. The
+extension API only carries `_`-prefixed names the protocol reserves for
+implementations.
 
 If you need them, use a library generated from the unstable channel — the other
 Go implementations are. What you can do here is what a real editor does: the
@@ -254,25 +274,15 @@ and there is no flag, option, or extension method that changes this — the
 extension API covers `_`-prefixed methods, and what v2 changes is the standard
 ones.
 
-It is not a flag because v2 is a different grammar rather than an increment.
-Measured against the pinned v1.21.0, `schema-v2.0.0-alpha.3` keeps 14 of the 25
-methods and drops 11:
-
-| Change | Methods |
-| --- | --- |
-| Removed | all five `terminal/*`, both `fs/*`, `session/load`, `session/set_mode`, `authenticate`, `logout` |
-| Added | `auth/login`, `auth/logout` |
-
-Terminals stop being methods and become session updates, and running a command
-becomes a permission subject. Forty definitions disappear and forty-five arrive. A
-package that tried to speak both would have `ReadTextFile` in one grammar and not
-the other, and a version branch inside every operation.
+A new protocol major changes the standard method and payload grammar. Supporting
+it inside the same API would require version branches throughout the operations
+and competing definitions of the same message types.
 
 An ACP version number is only bumped for breaking changes — the schema says so,
 and says non-breaking ones arrive as capabilities instead. That is why every v1.x
 schema release is protocol version 1 and why there is nothing to negotiate within
-a major: what differs between 1.19 and 1.21 is which capabilities a peer
-advertises, which the connection already checks in both directions.
+a major. Successive stable v1 schemas add capabilities, which the connection
+checks in both directions.
 
 So the module major will track the protocol major: when v2 stabilises this module
 becomes `acp/v2` and speaks version 2 only. Both can be imported side by side by

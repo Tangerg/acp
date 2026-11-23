@@ -11,13 +11,17 @@ script.
 
 ## Requirements
 
-- **Go 1.25 or newer.** CI tests the exact language floor, so a newer local toolchain cannot hide an
-  unsupported language dependency. Go 1.25 is required for `testing/synctest`, which tests concurrency and
-  shutdown without sleeps.
-- **Pinned checkers.** `golangci-lint` v2 (CI pins v2.13.1), `deadcode` from `golang.org/x/tools` (v0.49.0),
-  `gofumpt` (v0.11.0), `shfmt` (v3.13.1), and `govulncheck` (v1.7.0). The release check pins
-  `golang.org/x/exp/cmd/gorelease` at `v0.0.0-20260820142414-ca536658362e`.
-- **Node.js 22.18 or newer** when changing Markdown. The exact toolchain is in `.tools/package-lock.json`.
+- **Go at least as new as the `go` directive in [go.mod](./go.mod).** CI tests
+  that exact floor and the latest patch in the same Go release, so a newer local
+  toolchain cannot hide an unsupported language dependency. Concurrency and
+  shutdown tests use `testing/synctest` to avoid sleeps.
+- **Pinned checkers.** CI owns the `golangci-lint`, `deadcode`, `gofumpt`, `shfmt`
+  and `govulncheck` versions in [its workflow](.github/workflows/ci.yml).
+  [`schema/provenance.json`](schema/provenance.json) owns the shared Node and
+  `gorelease` pins. Local recording and release scripts require `jq` to read it.
+- **Node.js and npm** when changing Markdown or recording reference evidence. Use
+  the Node major from the provenance file; `.tools/package-lock.json` pins the
+  Markdown dependencies.
 - Tests use the standard `testing` package.
 
 This is one module at the repository root. There is no workspace file, and a plain checkout builds.
@@ -54,8 +58,8 @@ go run ./internal/cmd/schemagen -check
 (cd .tools && npm ci && npm run docs:check)
 ```
 
-CI additionally runs fuzz targets, the Go 1.25.0 floor, platform-specific lint, and the cross-compilation
-matrix. Run a fuzz target locally with:
+CI additionally runs fuzz targets, the declared module floor, platform-specific
+lint, and the cross-compilation matrix. Run a fuzz target locally with:
 
 ```sh
 go test . -run '^$' -fuzz FuzzName -fuzztime=30s
@@ -67,7 +71,10 @@ dot-directories without a glob dependency. `cspell.json` names `.github/**/*.md`
 glob does not descend into a leading-dot directory. Its word list carries only words the checked prose
 actually uses; a term that lives solely in Go comments does not belong there, because no check reads them.
 
-The same command audits every dependency at low severity and runs the toolchain's regression tests.
+The same command audits every dependency at low severity, runs the toolchain's
+regression tests, and checks that failed reference recordings preserve a supplied
+checkout. Those script tests use Git, Bash, `jq` and `shasum`, with a temporary
+local repository and a simulated failing npm command; they use no network.
 KaTeX's version has one owner in `.tools/package.json`: the direct development dependency used by those
 tests. The `overrides` reference makes the math extension resolve that same patched renderer, because its
 upstream range still selects a version affected by the
@@ -114,13 +121,16 @@ repository did not write. Three corpora do that, and none of them may be written
 
 `go test` replays all three with no network and no Node.
 
-**Fixtures.** The updater feeds independently implemented validators this repository's pinned published
-schema; the SDK's normal v1 input is explicitly unstable and is not a stable-protocol oracle. Add a case by
-writing its `name`, `why`, and `input`, then run the updater to fill in the outcome. It needs Node and either
-the network or `ACP_TYPESCRIPT_SDK` pointing at a checkout of the pinned commit, and it refuses anything that
-is not that commit.
+**Fixtures.** The updater generates independent reference validators from this
+repository's pinned published schema in the SDK's stable v1 lane. Add a case by
+writing its `name`, `why`, and `input`, then run the updater to fill in the outcome.
+It needs Node and either the network or `ACP_TYPESCRIPT_SDK` pointing at a checkout
+that contains the pinned commit. Both recording scripts execute a clean archive
+of that commit in their own temporary directory. They never install, generate or
+clean up files in the supplied checkout, and its dirty files cannot change the
+recorded oracle. The SDK package version is read from the archived source.
 
-**Interop.** `scripts/interop.sh` runs the reference agent as a real subprocess against a pinned checkout. Add
+**Interop.** `scripts/interop.sh` runs the reference agent as a real subprocess from that isolated archive. Add
 a scenario in `scripts/interop-agent.ts` and `internal/cmd/interop`, then record it with the script. Re-record
 when the pin moves.
 

@@ -1,7 +1,7 @@
 # Written by internal/cmd/schemagen. Do not edit.
 #
 # Every exported Go name generation produces, one per line, sorted. The
-# transitive $ref closure of manifest.json is 153 of the schema's
+# transitive $ref closure of manifest.json is 161 of the schema's
 # definitions; exported_test.go holds the package's exports against this list.
 AgentAuthCapabilities
 AgentCapabilities
@@ -29,6 +29,15 @@ ClientSessionCapabilities
 CloseParams
 CloseSessionRequest
 CloseSessionResponse
+CompactionCapabilities
+CompactionID
+CompactionStatus
+CompactionStatusCancelled
+CompactionStatusCompleted
+CompactionStatusFailed
+CompactionStatusInProgress
+CompactionSummaryChunk
+CompactionUpdate
 CompleteElicitationNotification
 ConfigOptionUpdate
 Content
@@ -117,6 +126,12 @@ MultiSelectItemsOther
 MultiSelectPropertySchema
 NewSessionRequest
 NewSessionResponse
+Notice
+NoticeCapabilities
+NoticeSeverity
+NoticeSeverityError
+NoticeSeverityInfo
+NoticeSeverityWarning
 NumberPropertySchema
 PermissionOption
 PermissionOptionID

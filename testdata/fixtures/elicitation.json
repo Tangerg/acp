@@ -541,6 +541,146 @@
       "why": "elicitationId is required; a completion that names nothing closes nothing",
       "input": {},
       "accepted": false
+    },
+    {
+      "name": "URI without an authority",
+      "type": "CreateElicitationRequest",
+      "why": "the published uri format follows RFC 3986; the reference SDK uses a WHATWG URL validator",
+      "input": {
+        "mode": "url",
+        "sessionId": "sess-1",
+        "message": "visit this resource",
+        "elicitationId": "uri-0",
+        "url": "https:"
+      },
+      "accepted": false,
+      "divergence": {
+        "accepted": true,
+        "because": "CreateElicitationRequest.url has format uri in the published schema, which requires RFC 3986 syntax. The reference SDK uses a WHATWG URL validator with different authority, escaping and Unicode rules; the wire codec follows the published URI contract.",
+        "normalized": {
+          "mode": "url",
+          "sessionId": "sess-1",
+          "message": "visit this resource",
+          "elicitationId": "uri-0",
+          "url": "https:"
+        }
+      }
+    },
+    {
+      "name": "URI with an IPvFuture host",
+      "type": "CreateElicitationRequest",
+      "why": "the published uri format follows RFC 3986; the reference SDK uses a WHATWG URL validator",
+      "input": {
+        "mode": "url",
+        "sessionId": "sess-1",
+        "message": "visit this resource",
+        "elicitationId": "uri-1",
+        "url": "x://[v1.addr]/"
+      },
+      "accepted": false,
+      "divergence": {
+        "accepted": true,
+        "because": "CreateElicitationRequest.url has format uri in the published schema, which requires RFC 3986 syntax. The reference SDK uses a WHATWG URL validator with different authority, escaping and Unicode rules; the wire codec follows the published URI contract.",
+        "normalized": {
+          "mode": "url",
+          "sessionId": "sess-1",
+          "message": "visit this resource",
+          "elicitationId": "uri-1",
+          "url": "x://[v1.addr]/"
+        }
+      }
+    },
+    {
+      "name": "URI with a percent-encoded registered name",
+      "type": "CreateElicitationRequest",
+      "why": "the published uri format follows RFC 3986; the reference SDK uses a WHATWG URL validator",
+      "input": {
+        "mode": "url",
+        "sessionId": "sess-1",
+        "message": "visit this resource",
+        "elicitationId": "uri-2",
+        "url": "https://exa%6dple.com/"
+      },
+      "accepted": true,
+      "normalized": {
+        "sessionId": "sess-1",
+        "elicitationId": "uri-2",
+        "url": "https://exa%6dple.com/",
+        "mode": "url",
+        "message": "visit this resource"
+      }
+    },
+    {
+      "name": "URL with an unescaped space",
+      "type": "CreateElicitationRequest",
+      "why": "the published uri format follows RFC 3986; the reference SDK uses a WHATWG URL validator",
+      "input": {
+        "mode": "url",
+        "sessionId": "sess-1",
+        "message": "visit this resource",
+        "elicitationId": "uri-3",
+        "url": "https://example.com/a b"
+      },
+      "accepted": true,
+      "normalized": {
+        "sessionId": "sess-1",
+        "elicitationId": "uri-3",
+        "url": "https://example.com/a b",
+        "mode": "url",
+        "message": "visit this resource"
+      },
+      "divergence": {
+        "accepted": false,
+        "because": "CreateElicitationRequest.url has format uri in the published schema, which requires RFC 3986 syntax. The reference SDK uses a WHATWG URL validator with different authority, escaping and Unicode rules; the wire codec follows the published URI contract."
+      }
+    },
+    {
+      "name": "URL with an unescaped Unicode path",
+      "type": "CreateElicitationRequest",
+      "why": "the published uri format follows RFC 3986; the reference SDK uses a WHATWG URL validator",
+      "input": {
+        "mode": "url",
+        "sessionId": "sess-1",
+        "message": "visit this resource",
+        "elicitationId": "uri-4",
+        "url": "https://example.com/λ"
+      },
+      "accepted": true,
+      "normalized": {
+        "sessionId": "sess-1",
+        "elicitationId": "uri-4",
+        "url": "https://example.com/λ",
+        "mode": "url",
+        "message": "visit this resource"
+      },
+      "divergence": {
+        "accepted": false,
+        "because": "CreateElicitationRequest.url has format uri in the published schema, which requires RFC 3986 syntax. The reference SDK uses a WHATWG URL validator with different authority, escaping and Unicode rules; the wire codec follows the published URI contract."
+      }
+    },
+    {
+      "name": "URL with an invalid percent escape",
+      "type": "CreateElicitationRequest",
+      "why": "the published uri format follows RFC 3986; the reference SDK uses a WHATWG URL validator",
+      "input": {
+        "mode": "url",
+        "sessionId": "sess-1",
+        "message": "visit this resource",
+        "elicitationId": "uri-5",
+        "url": "https://example.com/?x=%ZZ"
+      },
+      "accepted": true,
+      "normalized": {
+        "sessionId": "sess-1",
+        "elicitationId": "uri-5",
+        "url": "https://example.com/?x=%ZZ",
+        "mode": "url",
+        "message": "visit this resource"
+      },
+      "divergence": {
+        "accepted": false,
+        "because": "CreateElicitationRequest.url has format uri in the published schema, which requires RFC 3986 syntax. The reference SDK uses a WHATWG URL validator with different authority, escaping and Unicode rules; the wire codec follows the published URI contract."
+      }
     }
   ]
 }

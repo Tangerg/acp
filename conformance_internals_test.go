@@ -67,7 +67,7 @@ var obligations = map[string]obligation{
 		ownedHere,
 		"the same switch: a resource link reaches no case, so it is never gated",
 	},
-	"As a baseline, the Agent MUST support [`ContentBlock::Text`] and [`ContentBlock::ResourceLink`], while other variants are optionally enabled via [`PromptCapabilities`].": {
+	"As a baseline, the Agent MUST support `text` and `resource_link` content blocks, while other variants are optionally enabled via `PromptCapabilities`.": {
 		ownedHere,
 		"the sentence above, stated where PromptRequest.prompt is defined",
 	},
@@ -77,12 +77,12 @@ var obligations = map[string]obligation{
 			"session/update is an outbound operation every AgentSession has",
 	},
 
-	"When a client sends a `session/cancel` notification to cancel an ongoing prompt turn, it MUST respond to all pending `session/request_permission` requests with this `Cancelled` outcome.": {
+	"When a client sends a `session/cancel` notification to cancel an ongoing prompt turn, it MUST respond to all pending `session/request_permission` requests with this `cancelled` outcome.": {
 		ownedHere,
 		"ClientSession.Cancel claims the turn's pending permission requests and answers them " +
 			"before the notification goes out; see cancel.go",
 	},
-	"If the client cancels the prompt turn via `session/cancel`, it MUST respond to this request with `RequestPermissionOutcome::Cancelled`.": {
+	"If the client cancels the prompt turn via `session/cancel`, it MUST respond to this request with the `cancelled` outcome.": {
 		ownedHere,
 		"the same claim, stated where RequestPermissionRequest is defined",
 	},
@@ -91,12 +91,12 @@ var obligations = map[string]obligation{
 		"the connection turns a committed cancellation into StopReasonCancelled rather than " +
 			"letting a handler's context error escape as -32603",
 	},
-	"MUST send one of these responses for the original request: - Valid response with appropriate data (partial results or cancellation marker) - Error response with code `-32800` (Cancelled) See protocol docs: [Cancellation](https://agentclientprotocol.com/protocol/cancellation)": {
+	"MUST send one of these responses for the original request: - Valid response with appropriate data (partial results or cancellation marker) - Error response with code `-32800` (Cancelled) See protocol docs: [Cancellation](https://agentclientprotocol.com/protocol/v1/cancellation)": {
 		ownedHere,
 		"a request cancelled by $/cancel_request is answered by the connection, with -32800 " +
 			"when the handler could not produce a valid response",
 	},
-	"Upon receiving this notification, the Agent SHOULD: - Stop all language model requests as soon as possible - Abort all tool call invocations in progress - Send any pending `session/update` notifications - Respond to the original `session/prompt` request with `StopReason::Cancelled` See protocol docs: [Cancellation](https://agentclientprotocol.com/protocol/prompt-turn#cancellation)": {
+	"Upon receiving this notification, the Agent SHOULD: - Stop all language model requests as soon as possible - Abort all tool call invocations in progress - Send any pending `session/update` notifications - Respond to the original `session/prompt` request with the `cancelled` stop reason See protocol docs: [Cancellation](https://agentclientprotocol.com/protocol/v1/prompt-turn#cancellation)": {
 		ownedHere,
 		"the connection cancels the turn's context and owns the stop reason; stopping the model " +
 			"and the tools is what the application's Cancel handler is called to do, and it is " +
@@ -107,6 +107,22 @@ var obligations = map[string]obligation{
 		"the connection keeps delivering updates after Cancel, so this is only a rule about " +
 			"what a handler does with them; documented on ClientSession.Cancel and shown in " +
 			"ExampleClientSession_Cancel",
+	},
+	"Agents MUST only send notices when the Client advertised the `session.notices` Client capability.": {
+		ownedHere,
+		"PeerInfo.validateSessionUpdate gates Notice on the advertised notices object; " +
+			"TestSessionUpdatesRequireTheirSpecificClientCapabilities checks absent, null, " +
+			"and independently advertised update capabilities before anything is sent",
+	},
+	"Agents MUST only send this update when the Client advertised the `session.notices` Client capability.": {
+		ownedHere,
+		"the same Notice gate, stated on the session/update union arm",
+	},
+	"Agents MUST only send this update when the Client advertised the `session.compaction` Client capability.": {
+		ownedHere,
+		"PeerInfo.validateSessionUpdate gates both CompactionUpdate and CompactionSummaryChunk " +
+			"on the compaction object; TestSessionUpdatesRequireTheirSpecificClientCapabilities " +
+			"proves notice support does not also enable compaction",
 	},
 
 	"JSON RPC Request Id An identifier established by the Client that MUST contain a String, Number, or NULL value if included.": {
@@ -151,7 +167,7 @@ var obligations = map[string]obligation{
 		ownedByApplication,
 		"a protocol library does not render",
 	},
-	"The Client MUST adapt its interface according to [`PromptCapabilities`].": {
+	"The Client MUST adapt its interface according to `PromptCapabilities`.": {
 		ownedByApplication,
 		"the interface is the application's; this package enforces the same capabilities on " +
 			"the wire so that an application which does not adapt still cannot send what the " +

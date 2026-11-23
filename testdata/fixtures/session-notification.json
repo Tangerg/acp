@@ -568,7 +568,7 @@
     },
     {
       "name": "a compaction",
-      "why": "compaction_update is not part of the published stable schema",
+      "why": "compaction_update is a stable session update arm",
       "input": {
         "sessionId": "sess-1",
         "update": {
@@ -577,11 +577,19 @@
           "status": "in_progress"
         }
       },
-      "accepted": false
+      "accepted": true,
+      "normalized": {
+        "sessionId": "sess-1",
+        "update": {
+          "compactionId": "c-1",
+          "status": "in_progress",
+          "sessionUpdate": "compaction_update"
+        }
+      }
     },
     {
       "name": "a compaction with an unlisted status",
-      "why": "compaction_update remains non-standard even with an extension-like status",
+      "why": "the compaction status enumeration admits future string values",
       "input": {
         "sessionId": "sess-1",
         "update": {
@@ -590,11 +598,19 @@
           "status": "_vendor_paused"
         }
       },
-      "accepted": false
+      "accepted": true,
+      "normalized": {
+        "sessionId": "sess-1",
+        "update": {
+          "compactionId": "c-1",
+          "status": "_vendor_paused",
+          "sessionUpdate": "compaction_update"
+        }
+      }
     },
     {
       "name": "a compaction summary chunk",
-      "why": "compaction_summary_chunk is not part of the published stable schema",
+      "why": "compaction_summary_chunk preserves summary content in a stable session update",
       "input": {
         "sessionId": "sess-1",
         "update": {
@@ -606,7 +622,18 @@
           }
         }
       },
-      "accepted": false
+      "accepted": true,
+      "normalized": {
+        "sessionId": "sess-1",
+        "update": {
+          "compactionId": "c-1",
+          "content": {
+            "text": "summary",
+            "type": "text"
+          },
+          "sessionUpdate": "compaction_summary_chunk"
+        }
+      }
     },
     {
       "name": "an unknown update arm",

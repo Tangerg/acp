@@ -63,8 +63,7 @@ func Index(i int, err error) error {
 // wraps one inside another message, which is the only case where the innermost
 // match would not be the outermost.
 func prepend(segment string, err error) error {
-	var pe *PathError
-	if errors.As(err, &pe) {
+	if pe, ok := errors.AsType[*PathError](err); ok {
 		return &PathError{Path: segment + pe.Path, Err: pe.Err}
 	}
 	return &PathError{Path: segment, Err: err}

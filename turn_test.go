@@ -26,10 +26,9 @@ import (
 func TestAPermissionRequestArrivingAfterCancellationNeverReachesTheUser(t *testing.T) {
 	asked := make(chan struct{}, 1)
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate: func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate: func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: func(
-			context.Context,
-			*acp.RequestPermissionRequest,
+			context.Context, *acp.ClientConn, *acp.RequestPermissionRequest,
 		) (*acp.RequestPermissionResponse, error) {
 			asked <- struct{}{}
 			return &acp.RequestPermissionResponse{
@@ -87,10 +86,9 @@ func TestAPermissionRequestArrivingAfterCancellationNeverReachesTheUser(t *testi
 func TestAPermissionRequestOutsideAPromptIsDispatched(t *testing.T) {
 	asked := make(chan struct{}, 1)
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate: func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate: func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: func(
-			context.Context,
-			*acp.RequestPermissionRequest,
+			context.Context, *acp.ClientConn, *acp.RequestPermissionRequest,
 		) (*acp.RequestPermissionResponse, error) {
 			asked <- struct{}{}
 			return &acp.RequestPermissionResponse{
@@ -195,10 +193,9 @@ func TestACancelledPromptCallerDoesNotEndTheTurn(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		asked := make(chan struct{}, 1)
 		client, err := acp.NewClient(&acp.ClientConfig{
-			SessionUpdate: func(context.Context, *acp.SessionNotification) {},
+			SessionUpdate: func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 			RequestPermission: func(
-				context.Context,
-				*acp.RequestPermissionRequest,
+				context.Context, *acp.ClientConn, *acp.RequestPermissionRequest,
 			) (*acp.RequestPermissionResponse, error) {
 				asked <- struct{}{}
 				return &acp.RequestPermissionResponse{
@@ -429,10 +426,9 @@ func answerCall(ctx context.Context, t *testing.T, stream acp.Connection, reques
 func TestCancellationWaitsForAClaimedPermissionAnswerToReachTheWire(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		client, err := acp.NewClient(&acp.ClientConfig{
-			SessionUpdate: func(context.Context, *acp.SessionNotification) {},
+			SessionUpdate: func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 			RequestPermission: func(
-				context.Context,
-				*acp.RequestPermissionRequest,
+				context.Context, *acp.ClientConn, *acp.RequestPermissionRequest,
 			) (*acp.RequestPermissionResponse, error) {
 				return &acp.RequestPermissionResponse{
 					Outcome: &acp.SelectedPermissionOutcome{OptionID: "yes"},
@@ -524,7 +520,7 @@ func TestCancellationWaitsForAClaimedPermissionAnswerToReachTheWire(t *testing.T
 func TestACancellationThatHasNotBeenSentStillHoldsItsTurn(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		client, err := acp.NewClient(&acp.ClientConfig{
-			SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+			SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 			RequestPermission: denyingPermission,
 		})
 		if err != nil {

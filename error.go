@@ -32,12 +32,14 @@ func (x *Error) Error() string {
 // code, and answering it should not require extracting a value and comparing a
 // field. See [ErrAuthRequired].
 func (x *Error) Is(target error) bool {
-	var sentinel codeSentinelError
-	if errors.As(target, &sentinel) {
+	if x == nil {
+		return false
+	}
+	if sentinel, ok := errors.AsType[codeSentinelError](target); ok {
 		return x.Code == ErrorCode(sentinel)
 	}
 	var other *Error
-	if errors.As(target, &other) {
+	if errors.As(target, &other) && other != nil {
 		return x.Code == other.Code
 	}
 	return false
@@ -70,13 +72,7 @@ func (x ErrorCode) String() string {
 	}
 }
 
-// A codeSentinelError is a package-level error that matches any peer error
-// carrying its code.
-//
-// It is an unexported type rather than an exported *Error, because a package-level
-// var of a pointer type is writable by every importer, and one that mutated it
-// would silently change how every other importer's errors.Is behaved. A value of
-// an unexported type cannot be reassigned into something that means anything else.
+// A value sentinel keeps matching independent of mutable peer error objects.
 type codeSentinelError ErrorCode
 
 func (c codeSentinelError) Error() string {
@@ -126,9 +122,9 @@ func newError(code ErrorCode, format string, args ...any) *Error {
 func (x *Error) toWire() *jsonrpc2.WireError {
 	wire := &jsonrpc2.WireError{Code: int64(x.Code), Message: x.Message}
 	switch data, present := x.Data.Get(); {
-	case present:
+	case present && data != nil:
 		wire.Data = data
-	case x.Data.IsNull():
+	case present || x.Data.IsNull():
 		wire.Data = json.RawMessage("null")
 	}
 	return wire

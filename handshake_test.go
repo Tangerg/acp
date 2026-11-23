@@ -30,11 +30,11 @@ func TestAClientServesNothingBeforeItsHandshakeIsAnswered(t *testing.T) {
 	updated := make(chan struct{}, 1)
 	extended := make(chan struct{}, 1)
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate: func(context.Context, *acp.SessionNotification) {
+		SessionUpdate: func(context.Context, *acp.ClientConn, *acp.SessionNotification) {
 			updated <- struct{}{}
 		},
 		RequestPermission: denyingPermission,
-		CallFallback: func(context.Context, *acp.ExtRequest) (json.RawMessage, error) {
+		CallFallback: func(context.Context, *acp.ClientConn, *acp.ExtRequest) (json.RawMessage, error) {
 			extended <- struct{}{}
 			return json.RawMessage(`{}`), nil
 		},
@@ -166,7 +166,7 @@ func TestTerminalAuthenticationNeedsNoHandlerAndCannotBeCalled(t *testing.T) {
 	}
 
 	client, err := acp.NewClient(&acp.ClientConfig{
-		SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+		SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 		RequestPermission: denyingPermission,
 		Capabilities: &acp.ClientCapabilities{
 			Auth: acp.AuthCapabilities{Terminal: true},
@@ -329,15 +329,15 @@ func TestAClientServesWhatTheAgentSendsAfterAnswering(t *testing.T) {
 	for range 100 {
 		heard := make(chan string, 4)
 		client, err := acp.NewClient(&acp.ClientConfig{
-			SessionUpdate: func(context.Context, *acp.SessionNotification) {
+			SessionUpdate: func(context.Context, *acp.ClientConn, *acp.SessionNotification) {
 				heard <- "session/update"
 			},
 			RequestPermission: denyingPermission,
-			CallFallback: func(_ context.Context, request *acp.ExtRequest) (json.RawMessage, error) {
+			CallFallback: func(_ context.Context, _ *acp.ClientConn, request *acp.ExtRequest) (json.RawMessage, error) {
 				heard <- request.Method
 				return json.RawMessage(`{}`), nil
 			},
-			NotifyFallback: func(_ context.Context, notification *acp.ExtNotification) {
+			NotifyFallback: func(_ context.Context, _ *acp.ClientConn, notification *acp.ExtNotification) {
 				heard <- notification.Method
 			},
 		})
@@ -427,7 +427,7 @@ func TestAuthenticateIsHeldToTheAdvertisedMethods(t *testing.T) {
 				t.Fatalf("NewAgent: %v", err)
 			}
 			client, err := acp.NewClient(&acp.ClientConfig{
-				SessionUpdate:     func(context.Context, *acp.SessionNotification) {},
+				SessionUpdate:     func(context.Context, *acp.ClientConn, *acp.SessionNotification) {},
 				RequestPermission: denyingPermission,
 				Capabilities:      &acp.ClientCapabilities{Auth: acp.AuthCapabilities{Terminal: true}},
 			})

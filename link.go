@@ -108,7 +108,7 @@ func newLink(transport Connection, half side, logger *slog.Logger, limits Limits
 		logger:    logger,
 		limits:    limits,
 		life:      newLifetime(),
-		calls:     newCalls(),
+		calls:     newCalls(limits.PendingCalls),
 		requests:  newRequests(limits.InflightRequests),
 		queue:     newQueue(limits.QueuedDeliveries),
 	}
@@ -396,9 +396,12 @@ func (l *link) send(
 	if err := ctx.Err(); err != nil {
 		return outboundCall{}, err
 	}
-	call, open := l.calls.begin(accept, abandon)
-	if !open {
-		return call, l.life.failure()
+	call, admissionErr := l.calls.begin(accept, abandon)
+	if admissionErr != nil {
+		if errors.Is(admissionErr, ErrConnectionClosed) {
+			return call, l.life.failure()
+		}
+		return call, admissionErr
 	}
 	request, err := jsonrpc2.NewCall(call.id, method, params)
 	if err != nil {
@@ -560,8 +563,13 @@ func (l *link) writeResponse(call *inboundRequest, claim requestClaim, result an
 		var encodeErr error
 		response, encodeErr = jsonrpc2.NewResponse(call.id, nil, l.wireError(handlerErr))
 		if encodeErr != nil {
-			l.endReading(encodeErr)
-			return false
+			l.logger.Error("acp: encoding a handler error failed", slog.Any("error", encodeErr))
+			response, encodeErr = jsonrpc2.NewResponse(call.id, nil,
+				newError(ErrorCodeInternalError, "response error could not be encoded").toWire())
+			if encodeErr != nil {
+				l.endReading(encodeErr)
+				return false
+			}
 		}
 	}
 
@@ -580,8 +588,11 @@ func (l *link) wireError(err error) *jsonrpc2.WireError {
 		return nil
 	}
 	var chosen *Error
-	if errors.As(err, &chosen) {
+	if errors.As(err, &chosen) && chosen != nil {
 		return chosen.toWire()
+	}
+	if sentinel, ok := errors.AsType[codeSentinelError](err); ok {
+		return jsonrpc2.NewError(int64(sentinel), ErrorCode(sentinel).String())
 	}
 	l.logger.Error("acp: a handler failed", slog.Any("error", err))
 	return newError(ErrorCodeInternalError, "%s", ErrorCodeInternalError).toWire()

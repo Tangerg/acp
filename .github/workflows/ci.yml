@@ -28,7 +28,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  toolchains:
+    name: module toolchains
+    runs-on: ubuntu-latest
+    outputs:
+      patch: ${{ steps.version.outputs.patch }}
+    steps:
+      - uses: actions/checkout@v7
+      # The patch lane follows the module's Go release without owning another
+      # version that could drift when go.mod changes.
+      - name: Derive the Go patch range
+        id: version
+        run: |
+          awk '$1 == "go" {
+            split($2, version, ".")
+            printf "patch=%s.%s.x\n", version[1], version[2]
+            found = 1
+            exit
+          } END { if (!found) exit 1 }' go.mod >> "$GITHUB_OUTPUT"
+
   test:
+    needs: toolchains
     # All three, because the library claims to be portable and a claim nothing
     # checks is a claim that stops being true quietly. Subprocess handling and
     # stream framing are where the platforms disagree, and both are on the path
@@ -40,14 +60,16 @@ jobs:
         # The language floor and the current patch release. The first catches an
         # accidental dependency on a later point release; the second catches changes
         # in the toolchain itself.
-        go: ["1.25.0", "1.25.x"]
+        go: [floor, patch]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
         with:
-          go-version: ${{ matrix.go }}
+          go-version: ${{ matrix.go == 'patch' && needs.toolchains.outputs.patch || '' }}
+          go-version-file: go.mod
+          check-latest: true
           cache: true
           cache-dependency-path: go.sum
 
@@ -77,6 +99,7 @@ jobs:
   # release and report the drift.
   compatibility:
     name: public API release contract
+    needs: toolchains
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -87,7 +110,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25.x"
+          go-version: ${{ needs.toolchains.outputs.patch }}
           check-latest: true
           cache-dependency-path: go.sum
 
@@ -102,7 +125,7 @@ jobs:
       # is invisible until someone moves the pin. A tool brings its own compiler;
       # the version above is for this module's own commands.
       - name: Install gorelease
-        run: GOTOOLCHAIN=auto go install golang.org/x/exp/cmd/gorelease@v0.0.0-20260820142414-ca536658362e
+        run: GOTOOLCHAIN=auto go install "golang.org/x/exp/cmd/gorelease@$(jq -er '.tools.goreleaseVersion' schema/provenance.json)"
 
       - name: Compare the proposed module with its released baseline
         shell: bash
@@ -177,13 +200,13 @@ jobs:
           fi
 
   floor:
-    name: Go 1.25 module floor
+    name: module Go floor
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25.0"
+          go-version-file: go.mod
           cache: false
       - name: Test the declared floor on every supported source set
         env:
@@ -197,13 +220,14 @@ jobs:
 
   quality:
     name: lint and vulnerabilities
+    needs: toolchains
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25.x"
+          go-version: ${{ needs.toolchains.outputs.patch }}
           check-latest: true
           cache-dependency-path: go.sum
 
@@ -211,7 +235,7 @@ jobs:
       # one whose findings arrive as unrelated failures on somebody else's change.
       # GOTOOLCHAIN=auto lets each pin bring the compiler it declares, so moving
       # one is never also a decision about the version this job runs under.
-      - run: GOTOOLCHAIN=auto go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
+      - run: GOTOOLCHAIN=auto go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
 
       # Once per platform, because a linter only sees the files that build for the
       # one it is standing on. A shadowed variable in a platform-guarded file is
@@ -241,12 +265,13 @@ jobs:
   # hop, and later a message framer whose answer depends on where the read split.
   # The generator runs on every push and not only when someone remembers.
   fuzz:
+    needs: toolchains
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25.x"
+          go-version: ${{ needs.toolchains.outputs.patch }}
           check-latest: true
           cache-dependency-path: go.sum
       - name: Fuzz every target
@@ -279,9 +304,13 @@ jobs:
         working-directory: .tools
     steps:
       - uses: actions/checkout@v7
+      - name: Read the Node toolchain
+        id: toolchain
+        working-directory: .
+        run: echo "node=$(jq -er '.tools.nodeMajor' schema/provenance.json)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: ${{ steps.toolchain.outputs.node }}
           cache: npm
           cache-dependency-path: .tools/package-lock.json
       - run: npm ci
@@ -289,13 +318,14 @@ jobs:
 
   tidy:
     name: formatting and modules
+    needs: toolchains
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25.x"
+          go-version: ${{ needs.toolchains.outputs.patch }}
           check-latest: true
           cache-dependency-path: go.sum
 
@@ -319,16 +349,10 @@ jobs:
       - name: shfmt
         run: shfmt -d scripts
 
-      # The interoperability transcripts and the fixture corpus are both produced
-      # by a pinned Node toolchain and replayed by `go test`, so neither needs a
-      # gate here. What does need one is the pins agreeing: two oracles recorded
-      # against different revisions of the reference implementation would be two
-      # different claims presented as one.
-      - name: the two oracles are pinned to one revision
+      - name: Verify the pinned schema assets
         run: |
           set -euo pipefail
-          commit=$(grep -o 'SDK_COMMIT="[a-f0-9]*"' scripts/update-fixtures.sh)
-          grep -q "$commit" scripts/interop.sh
+          jq -r '[.schema.sha256 + "  schema/schema.json", .schema.metaSha256 + "  schema/meta.json"][]' schema/provenance.json | shasum -a 256 -c -
 
       # go.mod is the module's dependency promise, and a promise nothing checks
       # drifts.
@@ -348,6 +372,7 @@ jobs:
 
   cross:
     name: cross-compile
+    needs: toolchains
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -372,7 +397,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25.x"
+          go-version: ${{ needs.toolchains.outputs.patch }}
           check-latest: true
           cache-dependency-path: go.sum
 

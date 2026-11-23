@@ -1,0 +1,15 @@
+{
+  "schema": {
+    "tag": "schema-v1.29.1",
+    "sha256": "0d0b1ca83c4872e5473f68926a894c7a8203b59b118e2a79bfe43dd76fbcbc1a",
+    "metaSha256": "061edb6efa8fb2aa2792459a86ec7268de5fe665bba48b2ffe7939df01481f88"
+  },
+  "typescript": {
+    "repository": "https://github.com/agentclientprotocol/typescript-sdk",
+    "commit": "0f8c75079ae07e6edd2feb626f5598a92632eead"
+  },
+  "tools": {
+    "nodeMajor": 22,
+    "goreleaseVersion": "v0.0.0-20260820142414-ca536658362e"
+  }
+}

@@ -1,8 +1,9 @@
 package acp
 
 import (
+	"context"
+	"fmt"
 	"sync"
-	"sync/atomic"
 
 	"github.com/Tangerg/acp/internal/jsonrpc2"
 	"github.com/Tangerg/acp/jsonrpc"
@@ -18,14 +19,15 @@ import (
 // A call whose answer settles connection-owned state stays registered instead;
 // that state outlives the caller and the peer may already have the request.
 type calls struct {
-	next atomic.Int64
-
-	mu sync.Mutex
+	mu   sync.Mutex
+	next int64
 	// closed is what makes the retirement of every waiter final. It lives under
 	// the same lock as the map so that a call cannot be registered into a map that
 	// has already been emptied and will never be drained again.
 	closed  bool
 	waiting map[jsonrpc.ID]*pendingCall
+	limit   int
+	changed chan struct{}
 }
 
 // outboundCall is the handle returned to the goroutine waiting for one call.
@@ -48,28 +50,31 @@ type callResult struct {
 	err      error
 }
 
-func newCalls() *calls {
-	return &calls{waiting: make(map[jsonrpc.ID]*pendingCall)}
+func newCalls(limit int) *calls {
+	return &calls{waiting: make(map[jsonrpc.ID]*pendingCall), limit: limit}
 }
 
 func (c *calls) begin(
 	accept func(*jsonrpc.Response) error,
 	abandon func(),
-) (outboundCall, bool) {
-	id := jsonrpc2.Int64ID(c.next.Add(1))
-	completed := make(chan callResult, 1)
-
+) (outboundCall, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return outboundCall{id: id}, false
+		return outboundCall{}, ErrConnectionClosed
 	}
+	if len(c.waiting) >= c.limit {
+		return outboundCall{}, fmt.Errorf("%w (limit %d)", ErrTooManyPendingCalls, c.limit)
+	}
+	c.next++
+	id := jsonrpc2.Int64ID(c.next)
+	completed := make(chan callResult, 1)
 	c.waiting[id] = &pendingCall{completed: completed, accept: accept, abandon: abandon}
 	return outboundCall{
 		id:                  id,
 		completed:           completed,
 		observeLateResponse: accept != nil,
-	}, true
+	}, nil
 }
 
 // Runs on the delivery loop, so accepting a response finishes before any later
@@ -78,6 +83,9 @@ func (c *calls) deliver(response *jsonrpc.Response) {
 	c.mu.Lock()
 	pending, waiting := c.waiting[response.ID]
 	delete(c.waiting, response.ID)
+	if waiting {
+		c.signalCapacity()
+	}
 	c.mu.Unlock()
 
 	if !waiting {
@@ -96,7 +104,40 @@ func (c *calls) deliver(response *jsonrpc.Response) {
 func (c *calls) retire(id jsonrpc.ID) {
 	c.mu.Lock()
 	delete(c.waiting, id)
+	c.signalCapacity()
 	c.mu.Unlock()
+}
+
+// Cleanup may wait for a slot, but ordinary callers receive backpressure. The
+// map remains the only count; this channel only announces a chance to retry.
+func (c *calls) awaitCapacity(ctx context.Context) error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return ErrConnectionClosed
+	}
+	if len(c.waiting) < c.limit {
+		c.mu.Unlock()
+		return nil
+	}
+	if c.changed == nil {
+		c.changed = make(chan struct{})
+	}
+	changed := c.changed
+	c.mu.Unlock()
+	select {
+	case <-changed:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *calls) signalCapacity() {
+	if c.changed != nil {
+		close(c.changed)
+		c.changed = nil
+	}
 }
 
 // Retiring the waiters belongs to the moment the delivery queue has drained
@@ -107,6 +148,7 @@ func (c *calls) close() {
 	c.closed = true
 	waiting := c.waiting
 	c.waiting = make(map[jsonrpc.ID]*pendingCall)
+	c.signalCapacity()
 	c.mu.Unlock()
 
 	for _, pending := range waiting {

@@ -2,40 +2,149 @@ package acp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
+	"time"
 
 	"github.com/Tangerg/acp/internal/wire"
+	ecmascript "github.com/faustbrian/go-ecma-regexp/v2"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-// validate keeps the ACP-specific representation at the boundary and delegates
-// JSON Schema semantics to a validator that retains exact numbers on both sides
-// of a bound. Both peers use this boundary for form answers.
-func (e ElicitationSchema) validate(content map[string]ElicitationContentValue) error {
-	compiled, err := e.validationSchema()
+// A compiled form owns the constraints before a handler can edit its wire model.
+// Pattern matching stays separate because the validator's boolean regexp adapter
+// cannot distinguish a mismatch from a resource-limit failure.
+type compiledForm struct {
+	schema   *jsonschema.Schema
+	patterns []formPattern
+}
+
+type formPattern struct {
+	property   string
+	expression *ecmascript.JSONSchemaPattern
+}
+
+// Peer-controlled interactive forms need smaller compile and execution budgets
+// than general-purpose pattern processing. The wall-time check is cooperative.
+const (
+	formPatternMaxBytes        = 64 << 10
+	formPatternMaxNodes        = 16 << 10
+	formPatternMaxDepth        = 64
+	formPatternMaxCaptures     = 128
+	formPatternMaxClasses      = 256
+	formPatternMaxInstructions = 64 << 10
+	formPatternMaxSteps        = 1_000_000
+	formPatternMaxBacktracks   = 100_000
+	formPatternMaxStackDepth   = 4096
+	formPatternMaxAllocations  = 200_000
+	formPatternTimeout         = 100 * time.Millisecond
+)
+
+func newCompiledForm(schema ElicitationSchema) (*compiledForm, error) {
+	compiled, err := schema.validationSchema()
 	if err != nil {
-		return fmt.Errorf("acp: invalid elicitation schema: %w", err)
+		return nil, fmt.Errorf("acp: invalid elicitation schema: %w", err)
+	}
+	patterns, err := compileFormPatterns(schema, compiled)
+	if err != nil {
+		return nil, fmt.Errorf("acp: invalid elicitation schema: %w", err)
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.DefaultDraft(jsonschema.Draft2020)
+	compiler.AssertFormat()
+	compiler.RegisterFormat(&jsonschema.Format{
+		Name: string(StringFormatURI),
+		Validate: func(value any) error {
+			if text, isString := value.(string); isString {
+				return wire.ValidateURI(text)
+			}
+			return nil
+		},
+	})
 	compiler.UseLoader(jsonschema.SchemeURLLoader{})
 	const resource = "urn:acp:elicitation"
 	if addErr := compiler.AddResource(resource, compiled); addErr != nil {
-		return fmt.Errorf("acp: invalid elicitation schema: %w", addErr)
+		return nil, fmt.Errorf("acp: invalid elicitation schema: %w", addErr)
 	}
 	resolved, err := compiler.Compile(resource)
 	if err != nil {
-		return fmt.Errorf("acp: invalid elicitation schema: %w", err)
+		return nil, fmt.Errorf("acp: invalid elicitation schema: %w", err)
 	}
+	return &compiledForm{schema: resolved, patterns: patterns}, nil
+}
+
+func (f *compiledForm) validateResponse(ctx context.Context, response *CreateElicitationResponse) error {
+	content, answered := response.acceptedContent()
+	if !answered {
+		return nil
+	}
+	return f.validate(ctx, content)
+}
+
+func (f *compiledForm) validate(ctx context.Context, content map[string]ElicitationContentValue) error {
 	instance, err := elicitationContentInstance(content)
 	if err != nil {
 		return fmt.Errorf("acp: invalid form answer: %w", err)
 	}
-	if invalid := resolved.Validate(instance); invalid != nil {
+	if invalid := f.schema.Validate(instance); invalid != nil {
 		return fmt.Errorf("acp: form answer does not match requested schema: %w", invalid)
 	}
+	options := ecmascript.DefaultMatchOptions()
+	options.Limits.Steps = formPatternMaxSteps
+	options.Limits.Backtracks = formPatternMaxBacktracks
+	options.Limits.StackDepth = formPatternMaxStackDepth
+	options.Limits.RecursionDepth = formPatternMaxDepth
+	options.Limits.Allocations = formPatternMaxAllocations
+	options.Limits.WallTime = formPatternTimeout
+	for _, pattern := range f.patterns {
+		value, present := content[pattern.property].(*ElicitationContentValueString)
+		if !present {
+			continue
+		}
+		matched, matchErr := pattern.expression.Match(ctx, string(*value), options)
+		if matchErr != nil {
+			return fmt.Errorf("acp: evaluating form pattern for %q: %w", pattern.property, matchErr)
+		}
+		if !matched {
+			return fmt.Errorf("acp: form answer %q does not match its declared pattern", pattern.property)
+		}
+	}
 	return nil
+}
+
+func compileFormPatterns(schema ElicitationSchema, projection map[string]any) ([]formPattern, error) {
+	properties, _ := projection["properties"].(map[string]any)
+	options := ecmascript.DefaultCompileOptions()
+	options.Parse.Limits = ecmascript.ParseLimits{
+		PatternBytes:     formPatternMaxBytes,
+		ASTDepth:         formPatternMaxDepth,
+		Captures:         formPatternMaxCaptures,
+		CharacterClasses: formPatternMaxClasses,
+		ASTNodes:         formPatternMaxNodes,
+	}
+	options.Limits.ProgramInstructions = formPatternMaxInstructions
+	var patterns []formPattern
+	for _, name := range slices.Sorted(maps.Keys(schema.Properties)) {
+		property, isString := schema.Properties[name].(*StringPropertySchema)
+		if !isString {
+			continue
+		}
+		pattern, present := property.Pattern.Get()
+		if !present {
+			continue
+		}
+		expression, err := ecmascript.CompileJSONSchemaPattern(pattern, options)
+		if err != nil {
+			return nil, fmt.Errorf("property %q pattern: %w", name, err)
+		}
+		patterns = append(patterns, formPattern{property: name, expression: expression})
+		object, _ := properties[name].(map[string]any)
+		delete(object, "pattern")
+	}
+	return patterns, nil
 }
 
 func (e ElicitationSchema) validationSchema() (map[string]any, error) {

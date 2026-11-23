@@ -9,6 +9,17 @@ import (
 	"github.com/Tangerg/acp/internal/jsonrpc2"
 )
 
+func TestErrorCodeComparisonHandlesTypedNilErrors(t *testing.T) {
+	var absent *Error
+	failure := &Error{Code: ErrorCodeInvalidParams}
+	if errors.Is(failure, absent) {
+		t.Fatal("a real error matched a nil target")
+	}
+	if errors.Is(absent, failure) {
+		t.Fatal("a nil error matched a real target")
+	}
+}
+
 func TestWireErrorCodeMustFitThePublishedInt32Union(t *testing.T) {
 	for _, code := range []int64{-1 << 31, -32042, 1<<31 - 1} {
 		var failure *Error

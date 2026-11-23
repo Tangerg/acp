@@ -10,11 +10,8 @@ import (
 
 func TestNullArrayItemsFollowTheSchemasRecoveryPolicy(t *testing.T) {
 	var terminal acp.CreateTerminalRequest
-	if err := json.Unmarshal([]byte(`{"sessionId":"s","command":"tool","args":["a",null,"b"]}`), &terminal); err != nil {
-		t.Fatal(err)
-	}
-	if got := text(t, terminal.Args); got != `["a","b"]` {
-		t.Fatalf("recoverable args = %s, want null dropped", got)
+	if err := json.Unmarshal([]byte(`{"sessionId":"s","command":"tool","args":["a",null,"b"]}`), &terminal); err == nil {
+		t.Fatal("operational arguments must reject malformed items rather than change the command")
 	}
 	var server acp.McpServerStdio
 	if err := json.Unmarshal([]byte(`{"name":"tool","command":"tool","args":[null],"env":[]}`), &server); err == nil {

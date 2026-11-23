@@ -6,24 +6,26 @@ import (
 )
 
 // A message's size and the time this side will wait were already bounded; its
-// count was not. These are the four connection-owned populations that can grow
+// count was not. These are the connection-owned populations that can grow
 // without an application deliberately retaining each member.
 //
 // They are not memory proofs — a count times maxMessageBytes is still a large
 // number. What they remove is the two realistic ways a well-formed peer exhausts
 // this process: a backlog that never drains and a population that never shrinks.
 //
-// The peer drives the delivery, request, and session populations, so breaching
-// those ends the connection rather than silently dropping protocol state. URL
-// elicitation reservations are different: either peer may originate one, and its
-// creation can be refused before a new interaction exists, so that breach fails
-// the operation without killing an otherwise healthy connection.
+// The peer drives the delivery, inbound request, and session populations, so
+// breaching those ends the connection rather than dropping protocol state.
+// Outbound calls and URL elicitation reservations can be refused before a new
+// remote obligation exists, so their bounds leave the connection usable.
 const (
 	defaultQueuedDeliveries = 1024
 
 	// Each inbound call holds a goroutine, a context and the right to answer, so
 	// this is the bound on work a peer can start and never finish.
 	defaultInflightRequests = 1024
+
+	// Observed responses keep their resource obligations after a caller leaves.
+	defaultPendingCalls = 1024
 
 	// Successful session/close and session/delete reclaim the named handle on both
 	// sides. A peer that names new sessions and closes neither can otherwise grow
@@ -46,7 +48,10 @@ const (
 type Limits struct {
 	QueuedDeliveries int
 	InflightRequests int
-	SessionHandles   int
+	// PendingCalls includes outbound requests retained to observe late replies.
+	// Reaching it refuses the next call before writing, without ending the link.
+	PendingCalls   int
+	SessionHandles int
 	// OutstandingElicitations bounds URL interactions in provisional, accepted,
 	// and completing states. Reaching it refuses the new elicitation only.
 	OutstandingElicitations int
@@ -58,6 +63,9 @@ func (l Limits) resolve() Limits {
 	}
 	if l.InflightRequests == 0 {
 		l.InflightRequests = defaultInflightRequests
+	}
+	if l.PendingCalls == 0 {
+		l.PendingCalls = defaultPendingCalls
 	}
 	if l.SessionHandles == 0 {
 		l.SessionHandles = defaultSessionHandles
@@ -78,6 +86,7 @@ func (l Limits) check() error {
 	}{
 		{"QueuedDeliveries", l.QueuedDeliveries},
 		{"InflightRequests", l.InflightRequests},
+		{"PendingCalls", l.PendingCalls},
 		{"SessionHandles", l.SessionHandles},
 		{"OutstandingElicitations", l.OutstandingElicitations},
 	} {
@@ -87,6 +96,10 @@ func (l Limits) check() error {
 	}
 	return nil
 }
+
+// ErrTooManyPendingCalls lets callers apply backpressure without abandoning a
+// request that may have committed or closing a connection with other live work.
+var ErrTooManyPendingCalls = errors.New("acp: outbound pending call limit exceeded")
 
 var (
 	errTooManyQueued       = errors.New("acp: inbound delivery queue limit exceeded")

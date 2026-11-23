@@ -76,7 +76,7 @@ func (e *emitter) definition(def *Def) {
 	case kindStruct:
 		e.structDef(def)
 	case kindNewtype:
-		e.printf("%stype %s %s\n\n", comment("", def.Doc), def.GoName, def.GoBase)
+		e.newtype(def)
 	case kindNullArm:
 		e.nullArm(def)
 	case kindRawValue:
@@ -119,6 +119,7 @@ func (e *emitter) stringUnion(def *Def) {
 		e.printf(")\n\n")
 	}
 	if !def.Closed {
+		e.namedValueUnmarshal(def, &ValueType{Kind: vScalar, Go: goString})
 		return
 	}
 
@@ -242,29 +243,29 @@ func (e *emitter) numberUnion(def *Def) {
 			"the arms' own format, because a wider one would admit values that cannot be",
 			"encoded.")
 	}
-	e.printf("%stype %s %s\n\n", comment("", doc), def.GoName, def.GoBase)
+	e.printf("%stype %s %s\n\n", comment("", doc), def.GoName, def.Base.Go)
 
-	if len(def.Values) == 0 {
-		return
-	}
-	e.printf("const (\n")
-	for i, value := range def.Values {
-		if i > 0 {
-			e.printf("\n")
+	if len(def.Values) > 0 {
+		e.printf("const (\n")
+		for i, value := range def.Values {
+			if i > 0 {
+				e.printf("\n")
+			}
+			e.printf("%s\t%s %s = %s\n", comment("\t", value.Doc), value.GoName, def.GoName, value.Value)
 		}
-		e.printf("%s\t%s %s = %s\n", comment("\t", value.Doc), value.GoName, def.GoName, value.Value)
+		e.printf(")\n\n")
 	}
-	e.printf(")\n\n")
 
 	if !def.Closed {
+		e.namedValueUnmarshal(def, def.Base)
 		return
 	}
 	e.printf("func (x %s) MarshalJSON() ([]byte, error) {\n", def.GoName)
 	e.printf("\tif err := x.validate(); err != nil {\n\t\treturn nil, err\n\t}\n")
-	e.printf("\treturn json.Marshal(%s(x))\n}\n\n", def.GoBase)
+	e.printf("\treturn json.Marshal(%s(x))\n}\n\n", def.Base.Go)
 
 	e.printf("func (x *%s) UnmarshalJSON(data []byte) error {\n", def.GoName)
-	e.printf("\tvalue, err := wire.UnmarshalValue[%s](data)\n", def.GoBase)
+	e.printf("\tvalue, err := wire.UnmarshalValue[%s](data)\n", def.Base.Go)
 	e.printf("\tif err != nil {\n\t\treturn err\n\t}\n")
 	e.printf("\tparsed := %s(value)\n", def.GoName)
 	e.printf("\tif invalid := parsed.validate(); invalid != nil {\n\t\treturn invalid\n\t}\n")
@@ -278,8 +279,24 @@ func (e *emitter) numberUnion(def *Def) {
 	}
 	e.printf("%s:\n\t\treturn nil\n", strings.Join(names, ", "))
 	e.printf("\tdefault:\n\t\treturn fmt.Errorf(\"acp: %%d is not a %s the schema defines\", %s(x))\n",
-		def.GoName, def.GoBase)
+		def.GoName, def.Base.Go)
 	e.printf("\t}\n}\n\n")
+}
+
+func (e *emitter) newtype(def *Def) {
+	e.printf("%stype %s %s\n\n", comment("", def.Doc), def.GoName, def.Base.Go)
+	e.namedValueUnmarshal(def, def.Base)
+	if encode := e.encodeExpr(&Field{Value: def.Base, Required: true}); encode != "" {
+		e.printf("func (x %s) MarshalJSON() ([]byte, error) {\n", def.GoName)
+		e.printf("\treturn %s\n}\n\n", strings.ReplaceAll(encode, "$", def.Base.Go+"(x)"))
+	}
+}
+
+func (e *emitter) namedValueUnmarshal(def *Def, base *ValueType) {
+	e.printf("func (x *%s) UnmarshalJSON(data []byte) error {\n", def.GoName)
+	e.printf("\tvalue, err := %s\n", e.decodeExpr(&Field{Value: base}, "data"))
+	e.printf("\tif err != nil {\n\t\treturn err\n\t}\n")
+	e.printf("\t*x = %s(value)\n\treturn nil\n}\n\n", def.GoName)
 }
 
 // -- object unions -----------------------------------------------------------
@@ -368,6 +385,12 @@ func (e *emitter) unionUnmarshal(def *Def) {
 	}
 	e.printf("\tif objectErr != nil {\n\t\treturn nil, objectErr\n\t}\n")
 
+	if len(untagged) > 0 {
+		e.overlappingUnionArms(def, len(tagged) > 0, catchAll != nil)
+		e.printf("}\n\n")
+		return
+	}
+
 	if len(tagged) > 0 || catchAll != nil {
 		e.printf("\n\tif tag, ok := wire.Tag(object, %q); ok {\n", def.Discriminant)
 		switch len(tagged) {
@@ -399,28 +422,48 @@ func (e *emitter) unionUnmarshal(def *Def) {
 			e.printf("\t\tvalue, err := wire.UnmarshalValue[%s](data)\n", catchAll.GoType)
 			e.printf("\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
 			e.printf("\t\treturn &value, nil\n")
-		case len(untagged) == 0:
-			e.printf("\n\t\treturn nil, fmt.Errorf(\"acp: %%q is not a %s the schema defines\", tag)\n", def.GoName)
 		default:
-			e.printf("\n%s", comment("\t\t", []string{
-				"A discriminant no known arm claims. The remaining arms declare none, so",
-				"they are tried below in schema order, which is what anyOf asks for.",
-			}))
+			e.printf("\n\t\treturn nil, fmt.Errorf(\"acp: %%q is not a %s the schema defines\", tag)\n", def.GoName)
 		}
 		e.printf("\t}\n")
 	}
 
-	for _, arm := range untagged {
-		e.printf("\n\tif value, err := wire.UnmarshalValue[%s](data); err == nil {\n", arm.GoType)
-		e.printf("\t\treturn &value, nil\n\t}\n")
-	}
-
-	if len(untagged) == 0 && (len(tagged) > 0 || catchAll != nil) {
+	if len(tagged) > 0 || catchAll != nil {
 		e.printf("\n\treturn nil, wire.At(%q, wire.ErrRequired)\n", def.Discriminant)
 	} else {
 		e.printf("\n\treturn nil, errors.New(\"acp: no %s arm matches this value\")\n", def.GoName)
 	}
 	e.printf("}\n\n")
+}
+
+// Untagged anyOf alternatives can match even when a known tag's payload is
+// malformed. Schema order resolves overlapping successes; catch-all arms still
+// enforce their own exclusions rather than absorbing malformed known arms.
+func (e *emitter) overlappingUnionArms(def *Def, tagged, catchAll bool) {
+	if tagged {
+		e.printf("\ttag, hasTag := wire.Tag(object, %q)\n", def.Discriminant)
+	} else if catchAll {
+		e.printf("\t_, hasTag := wire.Tag(object, %q)\n", def.Discriminant)
+	}
+	for _, arm := range def.Arms {
+		indent := "\t"
+		switch {
+		case arm.Tag != "":
+			e.printf("\n\tif hasTag && tag == %q {\n", arm.Tag)
+			indent += "\t"
+		case arm.CatchAll:
+			e.printf("\n\tif hasTag {\n")
+			indent += "\t"
+		default:
+			e.printf("\n")
+		}
+		e.printf("%sif value, err := wire.UnmarshalValue[%s](data); err == nil {\n", indent, arm.GoType)
+		e.printf("%s\treturn &value, nil\n%s}\n", indent, indent)
+		if arm.Tag != "" || arm.CatchAll {
+			e.printf("\t}\n")
+		}
+	}
+	e.printf("\n\treturn nil, errors.New(\"acp: no %s arm matches this value\")\n", def.GoName)
 }
 
 // -- structs -----------------------------------------------------------------
@@ -458,10 +501,9 @@ func (e *emitter) structDef(def *Def) {
 	}
 	if def.Retained {
 		e.printf("\n%s", comment("\t", []string{
-			"Extra holds every property this arm's schema does not declare, exactly as",
-			"received. They are the sender's payload: the schema gives the arm",
-			"additionalProperties, so anything it does not name belongs to whoever sent",
-			"it and has to survive a decode and re-encode.",
+			"Extra preserves the sender's extension payload. Declared properties belong",
+			"to their typed fields, including common fields of the containing object;",
+			"an Extra entry cannot override one of those owners.",
 		}))
 		e.printf("\tExtra map[string]json.RawMessage `json:\"-\"`\n")
 	}
@@ -517,11 +559,7 @@ func (e *emitter) structUnmarshal(def *Def) {
 		e.printf("\t\tx.%s = value\n\t}\n", flattenedSuffix)
 	}
 	if def.Retained {
-		declared := make([]string, len(def.Fields))
-		for i, field := range def.Fields {
-			declared[i] = strconv.Quote(field.JSONName)
-		}
-		e.printf("\n\tx.Extra = wire.Extra(object, %s)\n", strings.Join(declared, ", "))
+		e.printf("\n\tx.Extra = wire.Extra(object, %s)\n", quotedStrings(def.ExcludedExtraKeys))
 		e.printf("\n\treturn x.validate()\n}\n\n")
 		return
 	}
@@ -531,14 +569,23 @@ func (e *emitter) structUnmarshal(def *Def) {
 func (e *emitter) fieldUnmarshal(field *Field) {
 	e.printf("\n\tif raw, ok := object[%q]; ok {\n", field.JSONName)
 	body := "\t\t"
-	if field.Opt && field.Nullable {
+	hasNullCase := field.DefaultOnNull || field.Opt && field.Nullable
+	if hasNullCase {
 		e.printf("\t\tif wire.IsNull(raw) {\n")
-		e.printf("\t\t\tx.%s = OptNull[%s]()\n", field.GoName, field.Value.Go)
+		if field.DefaultOnNull {
+			literal := field.Value.Go + "{}"
+			if field.Opt {
+				literal = "OptValue(" + literal + ")"
+			}
+			e.printf("\t\t\tx.%s = %s\n", field.GoName, literal)
+		} else {
+			e.printf("\t\t\tx.%s = OptNull[%s]()\n", field.GoName, field.Value.Go)
+		}
 		e.printf("\t\t} else {\n")
 		body = "\t\t\t"
 	}
 
-	e.printf("%svalue, err := %s\n", body, e.decodeExpr(field))
+	e.printf("%svalue, err := %s\n", body, e.decodeExpr(field, "raw"))
 	e.printf("%sif err == nil {\n", body)
 	if field.Opt {
 		e.printf("%s\tx.%s = OptValue(value)\n", body, field.GoName)
@@ -551,7 +598,7 @@ func (e *emitter) fieldUnmarshal(field *Field) {
 		e.printf("%s}\n", body)
 	}
 
-	if field.Opt && field.Nullable {
+	if hasNullCase {
 		e.printf("\t\t}\n")
 	}
 	if absent := e.absent(field); absent != "" {
@@ -562,19 +609,19 @@ func (e *emitter) fieldUnmarshal(field *Field) {
 }
 
 // decodeExpr is the call that turns one property's raw bytes into its value.
-func (e *emitter) decodeExpr(field *Field) string {
+func (e *emitter) decodeExpr(field *Field, input string) string {
 	value := field.Value
 	if value.Kind == vSlice {
 		elem := value.Elem
 		switch {
 		case elem.IsUnion && field.Skip:
-			return fmt.Sprintf("wire.UnmarshalSliceFuncSkippingInvalid(raw, unmarshal%s)", elem.Ident)
+			return fmt.Sprintf("wire.UnmarshalSliceFuncSkippingInvalid(%s, unmarshal%s)", input, elem.Ident)
 		case elem.IsUnion:
-			return fmt.Sprintf("wire.UnmarshalSliceFunc(raw, unmarshal%s)", elem.Ident)
+			return fmt.Sprintf("wire.UnmarshalSliceFunc(%s, unmarshal%s)", input, elem.Ident)
 		case field.Skip:
-			return fmt.Sprintf("wire.UnmarshalSliceSkippingInvalid[%s](raw)", elem.Go)
+			return fmt.Sprintf("wire.UnmarshalSliceSkippingInvalid[%s](%s)", elem.Go, input)
 		default:
-			return fmt.Sprintf("wire.UnmarshalSlice[%s](raw)", elem.Go)
+			return fmt.Sprintf("wire.UnmarshalSlice[%s](%s)", elem.Go, input)
 		}
 	}
 	// A map of unions needs the same treatment an array of them does, and for the
@@ -582,19 +629,22 @@ func (e *emitter) decodeExpr(field *Field) string {
 	// selected by the union's generated function. x-deserialize-skip-invalid-items
 	// has no map form — the planner refuses it on anything but an array — so there
 	// is no skipping variant to choose between.
-	if value.Kind == vMap && value.Elem.IsUnion {
-		return fmt.Sprintf("wire.UnmarshalMapFunc(raw, unmarshal%s)", value.Elem.Ident)
+	if value.Kind == vMap {
+		if value.Elem.IsUnion {
+			return fmt.Sprintf("wire.UnmarshalMapFunc(%s, unmarshal%s)", input, value.Elem.Ident)
+		}
+		return fmt.Sprintf("wire.UnmarshalMap[%s](%s)", value.Elem.Go, input)
 	}
 	if value.IsUnion {
-		return fmt.Sprintf("unmarshal%s(raw)", value.Ident)
+		return fmt.Sprintf("unmarshal%s(%s)", value.Ident, input)
 	}
 	// A format is enforced where the value is read, so it takes whatever the
 	// property's own fallback is: a malformed URI recovers exactly as a malformed
 	// anything else does.
-	if value.Format == formatURI {
-		return "wire.UnmarshalURI(raw)"
+	if constraints := stringConstraints(value); constraints != "" {
+		return fmt.Sprintf("%s.Decode(%s)", constraints, input)
 	}
-	return fmt.Sprintf("wire.UnmarshalValue[%s](raw)", value.Go)
+	return fmt.Sprintf("wire.UnmarshalValue[%s](%s)", value.Go, input)
 }
 
 // recovery is what a malformed property becomes, or the empty string when the
@@ -655,9 +705,17 @@ func (e *emitter) structMarshal(def *Def) {
 		e.printf("\t\twriter.Embed(raw)\n\t}\n")
 	}
 	if def.Retained {
-		e.printf("\twriter.SetExtra(x.Extra)\n")
+		e.printf("\twriter.SetExtra(x.Extra, %s)\n", quotedStrings(def.ExcludedExtraKeys))
 	}
 	e.printf("\n\treturn writer.Bytes()\n}\n\n")
+}
+
+func quotedStrings(values []string) string {
+	quoted := make([]string, len(values))
+	for i, value := range values {
+		quoted[i] = strconv.Quote(value)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 func (e *emitter) fieldMarshal(field *Field) {
@@ -716,16 +774,33 @@ func (e *emitter) encodeExpr(field *Field) string {
 	// And on the way out the discriminant is the union's to write, so a map of
 	// unions handed to the writer would encode every value without the property
 	// that says which arm it is — a message this side could not read back.
-	if value.Kind == vMap && value.Elem.IsUnion {
-		return fmt.Sprintf("wire.MarshalMapFunc($, marshal%s)", value.Elem.Ident)
+	if value.Kind == vMap {
+		if value.Elem.IsUnion {
+			return fmt.Sprintf("wire.MarshalMapFunc($, marshal%s)", value.Elem.Ident)
+		}
+		return "wire.MarshalMap($)"
 	}
 	if value.IsUnion {
 		return fmt.Sprintf("marshal%s($)", value.Ident)
 	}
-	if value.Format == formatURI {
-		return "wire.MarshalURI($)"
+	if constraints := stringConstraints(value); constraints != "" {
+		return constraints + ".Encode($)"
 	}
 	return ""
+}
+
+func stringConstraints(value *ValueType) string {
+	var constraints []string
+	if value.MinLength > 0 {
+		constraints = append(constraints, fmt.Sprintf("MinLength: %d", value.MinLength))
+	}
+	if value.Format == formatURI {
+		constraints = append(constraints, "AbsoluteURI: true")
+	}
+	if len(constraints) == 0 {
+		return ""
+	}
+	return "wire.StringConstraints{" + strings.Join(constraints, ", ") + "}"
 }
 
 func (e *emitter) retainedValidate(def *Def) {

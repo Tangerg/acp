@@ -23,6 +23,7 @@ import (
 type ElicitationHandlers struct {
 	Form func(
 		ctx context.Context,
+		conn *ClientConn,
 		request *CreateElicitationRequest,
 		mode *ElicitationFormMode,
 	) (*CreateElicitationResponse, error)
@@ -32,6 +33,7 @@ type ElicitationHandlers struct {
 	// action releases the ID with the response.
 	URL func(
 		ctx context.Context,
+		conn *ClientConn,
 		request *CreateElicitationRequest,
 		mode *ElicitationURLMode,
 	) (*CreateElicitationResponse, error)
@@ -41,7 +43,7 @@ type ElicitationHandlers struct {
 	// that leaves it nil still tracks each accepted interaction and ignores a
 	// completion it does not recognise; it just does not hear about the ones it
 	// does. Setting it without URL is refused, because nothing could ever call it.
-	Complete func(ctx context.Context, notification *CompleteElicitationNotification)
+	Complete func(ctx context.Context, conn *ClientConn, notification *CompleteElicitationNotification)
 }
 
 // check refuses at construction a group that advertises elicitation and renders
@@ -130,6 +132,14 @@ func (c *AgentConn) createElicitation(
 	if scopeErr != nil {
 		return nil, scopeErr
 	}
+	var form *compiledForm
+	if formMode, isForm := scoped.(*ElicitationFormMode); isForm {
+		var compileErr error
+		form, compileErr = newCompiledForm(formMode.RequestedSchema)
+		if compileErr != nil {
+			return nil, compileErr
+		}
+	}
 
 	request := &CreateElicitationRequest{
 		Message: params.Message,
@@ -171,11 +181,9 @@ func (c *AgentConn) createElicitation(
 	if awaitErr := c.awaitInto(ctx, call, response); awaitErr != nil {
 		return nil, awaitErr
 	}
-	if form, isForm := scoped.(*ElicitationFormMode); isForm {
-		if content, answered := response.acceptedContent(); answered {
-			if bad := form.RequestedSchema.validate(content); bad != nil {
-				return nil, bad
-			}
+	if form != nil {
+		if bad := form.validateResponse(ctx, response); bad != nil {
+			return nil, bad
 		}
 	}
 	return response, nil

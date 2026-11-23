@@ -34,6 +34,8 @@ type lifetime struct {
 	terminal error
 
 	mu sync.Mutex
+	// Registry membership ends at release, even if nobody enumerates connections.
+	unregister func()
 	// stopped closes the work pool to new entrants. It is a separate flag from the
 	// channels because it guards a WaitGroup, and adding to one that Wait has
 	// already begun draining is a data race rather than a late arrival.
@@ -75,8 +77,24 @@ func (l *lifetime) endReading(cause error, release func() error) {
 		}
 		l.terminal = cause
 
+		l.mu.Lock()
+		if l.unregister != nil {
+			l.unregister()
+			l.unregister = nil
+		}
 		close(l.released)
+		l.mu.Unlock()
 	})
+}
+
+func (l *lifetime) onRelease(unregister func()) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.ended() {
+		unregister()
+		return
+	}
+	l.unregister = unregister
 }
 
 func (l *lifetime) finishDelivering(release func()) {

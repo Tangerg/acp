@@ -20,7 +20,7 @@ func TestCallRetainsTheResultUntilDecodingFinishes(t *testing.T) {
 				return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 			},
 			Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
-			CallFallback: func(context.Context, *acp.ExtRequest) (json.RawMessage, error) {
+			CallFallback: func(context.Context, *acp.AgentConn, *acp.ExtRequest) (json.RawMessage, error) {
 				return json.RawMessage(`{"value":42}`), nil
 			},
 		})
@@ -85,7 +85,7 @@ func TestAResultDecoderCanCallTheSameConnection(t *testing.T) {
 				return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 			},
 			Cancel: func(context.Context, *acp.AgentSession, *acp.CancelNotification) {},
-			CallFallback: func(context.Context, *acp.ExtRequest) (json.RawMessage, error) {
+			CallFallback: func(context.Context, *acp.AgentConn, *acp.ExtRequest) (json.RawMessage, error) {
 				return json.RawMessage(`{}`), nil
 			},
 		})

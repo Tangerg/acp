@@ -1,9 +1,11 @@
 package acp
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -246,6 +248,17 @@ func checkDivergence(testCase *fixtureCase) error {
 		return fmt.Errorf("case %q records a divergence that agrees with the reference implementation",
 			testCase.Name)
 	default:
+		actual, err := fixtureJSONValue(testCase.Normalized)
+		if err != nil {
+			return fmt.Errorf("case %q has invalid oracle JSON: %w", testCase.Name, err)
+		}
+		claimed, err := fixtureJSONValue(divergence.Normalized)
+		if err != nil {
+			return fmt.Errorf("case %q has invalid divergence JSON: %w", testCase.Name, err)
+		}
+		if reflect.DeepEqual(actual, claimed) {
+			return fmt.Errorf("case %q records a divergence that agrees with the reference implementation", testCase.Name)
+		}
 		return nil
 	}
 }
@@ -256,12 +269,82 @@ func checkDivergence(testCase *fixtureCase) error {
 // gone too.
 func equivalentJSON(t *testing.T, got, want []byte) bool {
 	t.Helper()
-	var decodedGot, decodedWant any
-	if err := json.Unmarshal(got, &decodedGot); err != nil {
+	decodedGot, err := fixtureJSONValue(got)
+	if err != nil {
 		t.Fatalf("the Go encoding is not valid JSON: %v", err)
 	}
-	if err := json.Unmarshal(want, &decodedWant); err != nil {
+	decodedWant, err := fixtureJSONValue(want)
+	if err != nil {
 		t.Fatalf("the recorded expectation is not valid JSON: %v", err)
 	}
 	return reflect.DeepEqual(decodedGot, decodedWant)
+}
+
+// The fixture oracle must compare exact numbers independently of the production
+// codec. float64 would make adjacent integers beyond 2^53 look equivalent.
+func fixtureJSONValue(data []byte) (any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	return normalizeFixtureNumbers(value)
+}
+
+func normalizeFixtureNumbers(value any) (any, error) {
+	switch current := value.(type) {
+	case json.Number:
+		number, valid := new(big.Rat).SetString(string(current))
+		if !valid {
+			return nil, fmt.Errorf("cannot compare fixture number %q", current)
+		}
+		return number, nil
+	case []any:
+		for index, item := range current {
+			normalized, err := normalizeFixtureNumbers(item)
+			if err != nil {
+				return nil, err
+			}
+			current[index] = normalized
+		}
+	case map[string]any:
+		for name, item := range current {
+			normalized, err := normalizeFixtureNumbers(item)
+			if err != nil {
+				return nil, err
+			}
+			current[name] = normalized
+		}
+	}
+	return value, nil
+}
+
+func TestFixtureDivergencesMustRemainDifferent(t *testing.T) {
+	accepted := true
+	for _, test := range []struct {
+		name           string
+		oracle         string
+		claimed        string
+		wantDivergence bool
+	}{
+		{name: "key order and number spelling", oracle: `{"a":1,"b":[true]}`, claimed: `{"b":[true],"a":1e0}`},
+		{name: "adjacent exact integers", oracle: `{"n":9007199254740992}`, claimed: `{"n":9007199254740993}`, wantDivergence: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := checkDivergence(&fixtureCase{
+				Name:       test.name,
+				Accepted:   &accepted,
+				Normalized: json.RawMessage(test.oracle),
+				Divergence: &fixtureDivergence{
+					Accepted:   &accepted,
+					Normalized: json.RawMessage(test.claimed),
+					Because:    "test comparison boundary",
+				},
+			})
+			if (err == nil) != test.wantDivergence {
+				t.Fatalf("divergence check = %v, want different = %v", err, test.wantDivergence)
+			}
+		})
+	}
 }

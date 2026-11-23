@@ -89,6 +89,13 @@ var (
 
 	mcpHTTP = mcpServer("http", mcpCapabilities+".http")
 	mcpSse  = mcpServer("sse", mcpCapabilities+".sse")
+
+	noticeUpdateCapability = parameterCapability{
+		kind: "notice", noun: "session update", capability: "clientCapabilities.session.notices",
+	}
+	compactionUpdateCapability = parameterCapability{
+		kind: "compaction", noun: "session update", capability: "clientCapabilities.session.compaction",
+	}
 )
 
 func contentBlock(kind, capability string) parameterCapability {
