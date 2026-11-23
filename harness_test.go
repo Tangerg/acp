@@ -55,6 +55,13 @@ func testClient(t *testing.T) *acp.Client {
 	return client
 }
 
+// testSessionID is the session every agent built from openTestSession opens.
+const testSessionID = "sess-1"
+
+func openTestSession(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
+	return &acp.NewSessionResponse{SessionID: testSessionID}, nil
+}
+
 func testAgent(
 	t *testing.T,
 	prompt func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error),
@@ -66,10 +73,8 @@ func testAgent(
 		}
 	}
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
-			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
-		},
-		Prompt: prompt,
+		NewSession: openTestSession,
+		Prompt:     prompt,
 	})
 	if err != nil {
 		t.Fatalf("NewAgent: %v", err)

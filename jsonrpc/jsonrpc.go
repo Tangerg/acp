@@ -91,7 +91,8 @@ func (id *ID) UnmarshalJSON(data []byte) error {
 	}
 	number, err := jsonnumber.Parse[int64](data)
 	if err != nil {
-		return fmt.Errorf("jsonrpc: request ID %s is not a string, null, or int64", data)
+		// The identifier is the peer's and may be any size, so it is not echoed.
+		return errors.New("jsonrpc: request ID is not a string, null, or int64")
 	}
 	*id = Int64ID(number)
 	return nil

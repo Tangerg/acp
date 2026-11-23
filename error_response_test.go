@@ -167,7 +167,7 @@ func TestAHandlerThatAnswersNothingIsAnInternalError(t *testing.T) {
 						if request.Cwd == "/nil" {
 							return answerNothing[acp.NewSessionResponse]()
 						}
-						return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
+						return &acp.NewSessionResponse{SessionID: testSessionID}, nil
 					},
 					Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 						return answerNothing[acp.PromptResponse]()

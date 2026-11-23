@@ -69,11 +69,9 @@ func roundTrippable(def *Def) bool {
 		// encodes from.
 		return false
 	}
-	switch def.Kind {
-	case kindStruct, kindNewtype, kindStringUnion, kindNumberUnion:
+	switch def.Body.(type) {
+	case *structBody, *newtypeBody, *stringEnumBody, *numberEnumBody:
 		return true
-	case kindObjectUnion, kindValueUnion, kindNullArm, kindRawValue:
-		return false
 	default:
 		return false
 	}

@@ -36,9 +36,7 @@ func TestAnAgentDoesNotShareItsConfigurationWithItsCaller(t *testing.T) {
 		},
 		Meta:        mustMeta(t, map[string]any{"nested": map[string]any{"depth": 2}}),
 		AuthMethods: []acp.AuthMethod{terminal},
-		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
-			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
-		},
+		NewSession:  openTestSession,
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},
@@ -101,9 +99,7 @@ func TestPeerHandsOutASnapshotNobodyElseHolds(t *testing.T) {
 		Authenticate: func(context.Context, *acp.AgentConn, *acp.AuthenticateRequest) (*acp.AuthenticateResponse, error) {
 			return &acp.AuthenticateResponse{}, nil
 		},
-		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
-			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
-		},
+		NewSession: openTestSession,
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},

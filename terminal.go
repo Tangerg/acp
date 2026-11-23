@@ -78,11 +78,7 @@ func (t *TerminalHandle) Release(
 	if err != nil {
 		return nil, err
 	}
-	response := new(ReleaseTerminalResponse)
-	if awaitErr := t.session.conn.awaitInto(ctx, call, response); awaitErr != nil {
-		return nil, awaitErr
-	}
-	return response, nil
+	return awaitFor[ReleaseTerminalResponse](ctx, t.session.conn.link, call)
 }
 
 func callTerminal[Response any](ctx context.Context, t *TerminalHandle, method string, request any) (*Response, error) {
@@ -92,11 +88,7 @@ func callTerminal[Response any](ctx context.Context, t *TerminalHandle, method s
 	if err != nil {
 		return nil, err
 	}
-	response := new(Response)
-	if awaitErr := t.session.conn.awaitInto(ctx, call, response); awaitErr != nil {
-		return nil, awaitErr
-	}
-	return response, nil
+	return awaitFor[Response](ctx, t.session.conn.link, call)
 }
 
 // admit runs send under the handle's gate, refusing a released handle.

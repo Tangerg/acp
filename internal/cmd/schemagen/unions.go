@@ -12,19 +12,20 @@ import (
 const retainedField = "Extra"
 
 func (p *planner) planStringUnion(def *Def, arms []*Schema) error {
-	def.Kind = kindStringUnion
+	body := new(stringEnumBody)
+	def.Body = body
 	for i, arm := range arms {
 		if len(arm.Const) == 0 {
 			// The bare-typed arm. Its presence is how the schema says the union is
 			// open, so a value outside the list is valid and is kept as received.
-			def.Open = true
+			body.Open = true
 			continue
 		}
 		var value string
 		if err := json.Unmarshal(arm.Const, &value); err != nil {
 			return fmt.Errorf("arm %d: a constant that is not a string: %s", i, arm.Const)
 		}
-		if err := p.addEnumValue(def, goName(value), value, arm.Description); err != nil {
+		if err := p.addEnumValue(def, &body.enumeration, goName(value), value, arm.Description); err != nil {
 			return err
 		}
 	}
@@ -35,20 +36,21 @@ func (p *planner) planStringUnion(def *Def, arms []*Schema) error {
 // constants are named after each arm's title, because an integer reads poorly
 // as a name: ErrorCode's arms are named after "Parse error", not after -32700.
 func (p *planner) planNumberUnion(def *Def, arms []*Schema) error {
-	def.Kind = kindNumberUnion
+	body := new(numberEnumBody)
+	def.Body = body
 	for i, arm := range arms {
 		goType, err := goNumericType(arm)
 		if err != nil {
 			return err
 		}
-		if def.Base == nil {
-			def.Base = &ValueType{Kind: vScalar, Go: goType}
+		if body.Base == nil {
+			body.Base = &ValueType{Kind: vScalar, Go: goType}
 		}
-		if def.Base.Go != goType {
-			return fmt.Errorf("arms disagree about the numeric format: %s and %s", def.Base.Go, goType)
+		if body.Base.Go != goType {
+			return fmt.Errorf("arms disagree about the numeric format: %s and %s", body.Base.Go, goType)
 		}
 		if len(arm.Const) == 0 {
-			def.Open = true
+			body.Open = true
 			continue
 		}
 		var value json.Number
@@ -58,19 +60,20 @@ func (p *planner) planNumberUnion(def *Def, arms []*Schema) error {
 		if arm.Title == "" {
 			return fmt.Errorf("arm %d: a constant arm with the value %s and no title to name it after", i, value)
 		}
-		if addErr := p.addEnumValue(def, goName(arm.Title), value.String(), arm.Description); addErr != nil {
+		if addErr := p.addEnumValue(def, &body.enumeration, goName(arm.Title), value.String(),
+			arm.Description); addErr != nil {
 			return addErr
 		}
 	}
 	return nil
 }
 
-func (p *planner) addEnumValue(def *Def, suffix, value, description string) error {
+func (p *planner) addEnumValue(def *Def, values *enumeration, suffix, value, description string) error {
 	name := def.GoName + suffix
 	if err := p.names.claim(name, fmt.Sprintf("%s%s value %s", definitionPointer, def.SchemaName, value)); err != nil {
 		return err
 	}
-	def.Values = append(def.Values, &EnumValue{GoName: name, Value: value, Doc: docComment(name, description)})
+	values.Values = append(values.Values, &EnumValue{GoName: name, Value: value, Doc: docComment(name, description)})
 	return nil
 }
 
@@ -102,8 +105,8 @@ func unionOwnedProperty(schema *Schema) (string, error) {
 // is a type of its own, held in a field, because a Go struct cannot be several
 // shapes at once; the schema gives the construct no name, so it is named after
 // the struct.
-func (p *planner) planFlattenedUnion(def *Def, schema *Schema) error {
-	for _, field := range def.Fields {
+func (p *planner) planFlattenedUnion(def *Def, body *structBody, schema *Schema) error {
+	for _, field := range body.Fields {
 		if field.GoName == flattenedSuffix {
 			return fmt.Errorf("the type already declares a %s property, so its flattened union has no name",
 				field.JSONName)
@@ -120,7 +123,7 @@ func (p *planner) planFlattenedUnion(def *Def, schema *Schema) error {
 		return err
 	}
 	p.add(union)
-	def.Flattened = union
+	body.Flattened = union
 	return nil
 }
 
@@ -129,7 +132,8 @@ func (p *planner) planFlattenedUnion(def *Def, schema *Schema) error {
 // interface, and it is named after the union as well as itself: a value union's
 // titles are shape words that would be poor names on their own.
 func (p *planner) planValueUnion(def *Def, arms []*Schema) error {
-	def.Kind = kindValueUnion
+	body := new(valueUnionBody)
+	def.Body = body
 	for i, arm := range arms {
 		allocated := p.arms[armKey{def.SchemaName, i}]
 		armDef := &Def{
@@ -138,19 +142,18 @@ func (p *planner) planValueUnion(def *Def, arms []*Schema) error {
 			Doc:    armDoc(allocated.goType, "one arm of "+def.GoName, arm.Description),
 		}
 		if arm.Type.Base() == "" && arm.Type.Has(jsonNull) {
-			armDef.Kind = kindNullArm
+			armDef.Body = nullArmBody{}
 			p.add(armDef)
-			def.Arms = append(def.Arms, &Arm{GoType: allocated.goType, IsNull: true})
+			body.Arms = append(body.Arms, &Arm{GoType: allocated.goType, IsNull: true})
 			continue
 		}
 		base, err := p.valueType(arm)
 		if err != nil {
 			return fmt.Errorf("arm %d: %w", i, err)
 		}
-		armDef.Kind = kindNewtype
-		armDef.Base = base
+		armDef.Body = &newtypeBody{Base: base}
 		p.add(armDef)
-		def.Arms = append(def.Arms, &Arm{GoType: allocated.goType})
+		body.Arms = append(body.Arms, &Arm{GoType: allocated.goType})
 	}
 	return nil
 }
@@ -165,19 +168,18 @@ func armDoc(goType, role, description string) []string {
 }
 
 func (p *planner) planObjectUnion(def *Def, schema *Schema) error {
-	def.Kind = kindObjectUnion
 	arms := schema.Arms()
-
 	// A union without a discriminant is an ordinary anyOf: its arms are tried in
 	// schema order and the first that decodes wins.
-	def.Discriminant = discriminant(schema, arms)
+	body := &objectUnionBody{Discriminant: discriminant(schema, arms)}
+	def.Body = body
 
 	common := slices.DeleteFunc(slices.Clone(schema.PropertyOrder), func(name string) bool {
-		return name == def.Discriminant
+		return name == body.Discriminant
 	})
 	var siblingTags []string
 	for i, arm := range arms {
-		tag, err := arm.armTag(def.Discriminant)
+		tag, err := arm.armTag(body.Discriminant)
 		if err != nil {
 			return fmt.Errorf("arm %d: %w", i, err)
 		}
@@ -188,8 +190,10 @@ func (p *planner) planObjectUnion(def *Def, schema *Schema) error {
 
 	for i, arm := range arms {
 		allocated := p.arms[armKey{def.SchemaName, i}]
-		tag, _ := arm.armTag(def.Discriminant)
-		planned := &Arm{Tag: tag, GoType: allocated.goType, CatchAll: arm.isCatchAll(), Untagged: arm.isUntagged(def.Discriminant)}
+		tag, _ := arm.armTag(body.Discriminant)
+		planned := &Arm{
+			Tag: tag, GoType: allocated.goType, CatchAll: arm.isCatchAll(), Untagged: arm.isUntagged(body.Discriminant),
+		}
 		if tag != "" {
 			planned.TagConst = unexport(allocated.ident) + "Tag"
 			if err := p.names.claim(planned.TagConst, fmt.Sprintf("%s%s arm %d tag", definitionPointer,
@@ -197,24 +201,24 @@ func (p *planner) planObjectUnion(def *Def, schema *Schema) error {
 				return err
 			}
 		}
-		def.Arms = append(def.Arms, planned)
+		body.Arms = append(body.Arms, planned)
 		if planned.CatchAll {
-			def.Open = true
+			body.Open = true
 		}
 
 		payload := arm.armPayload()
 		var err error
 		switch {
 		case planned.CatchAll:
-			err = p.planCatchAllArm(allocated, arm, def, siblingTags, common)
+			err = p.planCatchAllArm(allocated, arm, def, body.Discriminant, siblingTags, common)
 		case payload != "" && allocated.goType == p.goNames[payload]:
 			var target *Def
 			target, err = p.plan(payload)
 			if err == nil {
-				err = checkArmPayload(target, def.Discriminant, common)
+				err = checkArmPayload(target, body.Discriminant, common)
 			}
 		default:
-			err = p.planWrapperArm(allocated, arm, def, payload, common)
+			err = p.planWrapperArm(allocated, arm, def, body.Discriminant, payload, common)
 		}
 		if err != nil {
 			return fmt.Errorf("arm %d: %w", i, err)
@@ -226,12 +230,19 @@ func (p *planner) planObjectUnion(def *Def, schema *Schema) error {
 // planWrapperArm plans an arm that needs a type of its own: one whose payload
 // another arm also uses, so only the discriminant tells them apart, or one with
 // no payload at all.
-func (p *planner) planWrapperArm(allocated allocatedArm, arm *Schema, union *Def, payload string, common []string) error {
-	def := &Def{GoName: allocated.goType, Ident: allocated.ident, Kind: kindStruct}
+func (p *planner) planWrapperArm(
+	allocated allocatedArm,
+	arm *Schema,
+	union *Def,
+	discriminant, payload string,
+	common []string,
+) error {
+	body := new(structBody)
+	def := &Def{GoName: allocated.goType, Ident: allocated.ident, Body: body}
 	doc := armDoc(allocated.goType, "one arm of "+union.GoName, arm.Description)
 
 	for _, jsonName := range arm.PropertyOrder {
-		if jsonName == union.Discriminant {
+		if jsonName == discriminant {
 			continue // the union writes and reads its own discriminant
 		}
 		if slices.Contains(common, jsonName) {
@@ -241,7 +252,7 @@ func (p *planner) planWrapperArm(allocated allocatedArm, arm *Schema, union *Def
 		if err != nil {
 			return fmt.Errorf("property %q: %w", jsonName, err)
 		}
-		def.Fields = append(def.Fields, field)
+		body.Fields = append(body.Fields, field)
 	}
 
 	if payload != "" {
@@ -249,16 +260,16 @@ func (p *planner) planWrapperArm(allocated allocatedArm, arm *Schema, union *Def
 		if err != nil {
 			return fmt.Errorf("%s%s: %w", definitionPointer, payload, err)
 		}
-		if payloadErr := checkArmPayload(target, union.Discriminant, common); payloadErr != nil {
+		if payloadErr := checkArmPayload(target, discriminant, common); payloadErr != nil {
 			return payloadErr
 		}
-		if len(def.Fields) > 0 {
+		if len(body.Fields) > 0 {
 			return fmt.Errorf(
 				"an arm with both a %s payload and properties of its own is not implemented", target.GoName)
 		}
-		def.Embeds = target.GoName
+		body.Embeds = target.GoName
 		doc = append(doc, "")
-		doc = append(doc, wrap(76, "It carries "+article(target.GoName, false)+" "+target.GoName+
+		doc = append(doc, wrap("It carries "+article(target.GoName, false)+" "+target.GoName+
 			" and exists as a type of its own because more than one arm of "+union.GoName+
 			" carries one: the discriminant is the only thing that tells them apart.")...)
 	}
@@ -272,7 +283,11 @@ func (p *planner) planWrapperArm(allocated allocatedArm, arm *Schema, union *Def
 // discriminant is spliced in without re-parsing the payload, which is only safe
 // when each part owns disjoint keys.
 func checkArmPayload(payload *Def, discriminantName string, common []string) error {
-	for _, field := range payload.Fields {
+	body, isStruct := payload.Body.(*structBody)
+	if !isStruct {
+		return nil
+	}
+	for _, field := range body.Fields {
 		if field.JSONName == discriminantName {
 			return fmt.Errorf("payload %s declares the discriminant property %q", payload.GoName, discriminantName)
 		}
@@ -283,8 +298,14 @@ func checkArmPayload(payload *Def, discriminantName string, common []string) err
 	return nil
 }
 
-func (p *planner) planCatchAllArm(allocated allocatedArm, arm *Schema, union *Def, siblingTags, common []string) error {
-	reserved, err := arm.reservedTags(union.Discriminant)
+func (p *planner) planCatchAllArm(
+	allocated allocatedArm,
+	arm *Schema,
+	union *Def,
+	discriminant string,
+	siblingTags, common []string,
+) error {
+	reserved, err := arm.reservedTags(discriminant)
 	if err != nil {
 		return err
 	}
@@ -297,14 +318,15 @@ func (p *planner) planCatchAllArm(allocated allocatedArm, arm *Schema, union *De
 
 	doc := armDoc(allocated.goType, "the open catch-all arm of "+union.GoName, arm.Description)
 	doc = append(doc, "")
-	doc = append(doc, wrap(76, fmt.Sprintf(
+	doc = append(doc, wrap(fmt.Sprintf(
 		"The schema's `not` clause reserves the discriminant values %s's known arms claim, so a value carrying "+
 			"one of those is a malformed known arm rather than a custom one and does not land here. Every "+
 			"property neither this arm nor its containing object declares is kept in %s, because the schema "+
 			"gives the arm additionalProperties: those keys are the sender's payload.", union.GoName, retainedField))...)
 
-	catchAll := &CatchAll{TagProperty: union.Discriminant, ReservedTags: reserved}
-	def := &Def{GoName: allocated.goType, Ident: allocated.ident, Kind: kindStruct, CatchAll: catchAll, Doc: doc}
+	catchAll := &CatchAll{TagProperty: discriminant, ReservedTags: reserved}
+	body := &structBody{CatchAll: catchAll}
+	def := &Def{GoName: allocated.goType, Ident: allocated.ident, Doc: doc, Body: body}
 	for _, jsonName := range arm.PropertyOrder {
 		if slices.Contains(common, jsonName) {
 			return fmt.Errorf("catch-all %s redeclares common property %q", allocated.goType, jsonName)
@@ -316,15 +338,15 @@ func (p *planner) planCatchAllArm(allocated allocatedArm, arm *Schema, union *De
 		if field.GoName == retainedField {
 			return fmt.Errorf("property %q collides with the field that retains the sender's properties", jsonName)
 		}
-		def.Fields = append(def.Fields, field)
+		body.Fields = append(body.Fields, field)
 		catchAll.ExcludedExtraKeys = append(catchAll.ExcludedExtraKeys, jsonName)
 	}
 	catchAll.ExcludedExtraKeys = append(catchAll.ExcludedExtraKeys, common...)
-	if !slices.Contains(catchAll.ExcludedExtraKeys, union.Discriminant) {
+	if !slices.Contains(catchAll.ExcludedExtraKeys, discriminant) {
 		return errors.New("a catch-all arm with no declared discriminant property")
 	}
 
-	alternatives, err := p.catchAllRequiredGroups(arm, def)
+	alternatives, err := p.catchAllRequiredGroups(arm, body)
 	if err != nil {
 		return err
 	}
@@ -346,14 +368,14 @@ func sameSet(left, right []string) bool {
 // properties they require, which must not be ones the arm declares, because the
 // check reads the retained properties. A shape this cannot express stops
 // generation instead of being dropped.
-func (p *planner) catchAllRequiredGroups(arm *Schema, def *Def) ([]catchAllAlternative, error) {
+func (p *planner) catchAllRequiredGroups(arm *Schema, body *structBody) ([]catchAllAlternative, error) {
 	alternatives := arm.Arms()
 	if len(alternatives) == 0 {
 		return nil, nil
 	}
 
-	declared := make(map[string]bool, len(def.Fields))
-	for _, field := range def.Fields {
+	declared := make(map[string]bool, len(body.Fields))
+	for _, field := range body.Fields {
 		declared[field.JSONName] = true
 	}
 

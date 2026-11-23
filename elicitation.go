@@ -109,6 +109,21 @@ type CreateElicitationParams struct {
 	Meta Opt[Meta]
 }
 
+// accepted reports an answer that consents to the elicitation, which for a URL
+// mode is what makes its identifier outstanding.
+func (c *CreateElicitationResponse) accepted() bool {
+	_, accepted := c.acceptedAction()
+	return accepted
+}
+
+func (c *CreateElicitationResponse) acceptedAction() (*ElicitationAcceptAction, bool) {
+	if c == nil {
+		return nil, false
+	}
+	action, accepted := c.Value.(*ElicitationAcceptAction)
+	return action, accepted && action != nil
+}
+
 // An elicitationScope writes the operation's scope into a mode.
 type elicitationScope interface {
 	apply(mode CreateElicitationRequestValue, params *CreateElicitationParams)
@@ -175,9 +190,9 @@ func (c *AgentConn) createElicitation(
 	if err != nil {
 		return nil, err
 	}
-	response := new(CreateElicitationResponse)
-	if awaitErr := c.awaitInto(ctx, call, response); awaitErr != nil {
-		return nil, awaitErr
+	response, err := awaitFor[CreateElicitationResponse](ctx, c.link, call)
+	if err != nil {
+		return nil, err
 	}
 	if bad := form.validateResponse(ctx, response); bad != nil {
 		return nil, bad

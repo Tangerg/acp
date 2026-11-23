@@ -52,11 +52,7 @@ func (s *ClientSession) Prompt(ctx context.Context, params *PromptParams) (*Prom
 		turn.complete()
 		return nil, err
 	}
-	result := new(PromptResponse)
-	if awaitErr := s.conn.awaitInto(ctx, call, result); awaitErr != nil {
-		return nil, awaitErr
-	}
-	return result, nil
+	return awaitFor[PromptResponse](ctx, s.conn.link, call)
 }
 
 // Cancel ends the current turn. The agent must still answer the outstanding

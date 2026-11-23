@@ -27,9 +27,7 @@ import (
 func TestANotificationMethodSentAsACallIsRefused(t *testing.T) {
 	cancelled := make(chan acp.SessionID, 1)
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
-			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
-		},
+		NewSession: openTestSession,
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},

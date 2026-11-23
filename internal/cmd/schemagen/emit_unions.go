@@ -8,9 +8,25 @@ import (
 
 // -- enumerations ------------------------------------------------------------
 
-func (e *emitter) stringUnion(def *Def) {
+// An enumSpelling is how an enumeration's values are written in Go: its
+// underlying type, that type's zero literal, the verb that prints one, and a value
+// as a literal.
+type enumSpelling struct {
+	base    string
+	zero    string
+	verb    string
+	literal func(string) string
+}
+
+var stringSpelling = enumSpelling{base: goString, zero: `""`, verb: "%q", literal: strconv.Quote}
+
+func numberSpelling(base string) enumSpelling {
+	return enumSpelling{base: base, zero: "0", verb: "%d", literal: func(value string) string { return value }}
+}
+
+func (e *emitter) stringUnion(def *Def, body *stringEnumBody) {
 	doc := def.Doc
-	if def.Open {
+	if body.Open {
 		doc = append(doc, "",
 			"The schema's last arm is a bare string, so this union is open: a value",
 			"outside the constants below is valid and is kept as received.")
@@ -20,17 +36,17 @@ func (e *emitter) stringUnion(def *Def) {
 			"decode error rather than a value to keep.")
 	}
 	e.printf("%stype %s string\n\n", comment("", doc), def.GoName)
-	e.enumConstants(def, "%q")
-	if def.Open {
+	e.enumConstants(def, &body.enumeration, stringSpelling)
+	if body.Open {
 		e.namedValueUnmarshal(def, &ValueType{Kind: vScalar, Go: goString})
 		return
 	}
-	e.closedEnumCodec(def, goString, "%q", "string(x)")
+	e.closedEnumCodec(def, &body.enumeration, stringSpelling)
 }
 
-func (e *emitter) numberUnion(def *Def) {
+func (e *emitter) numberUnion(def *Def, body *numberEnumBody) {
 	doc := def.Doc
-	if def.Open {
+	if body.Open {
 		doc = append(doc, "",
 			"The schema's last arm carries no constant, so this union is open: a value",
 			"outside the constants below is valid and is kept as received. The Go type is",
@@ -41,29 +57,26 @@ func (e *emitter) numberUnion(def *Def) {
 			"The schema lists these values and no others, so a value outside them is a",
 			"decode error rather than a value to keep.")
 	}
-	e.printf("%stype %s %s\n\n", comment("", doc), def.GoName, def.Base.Go)
-	e.enumConstants(def, "%s")
-	if def.Open {
-		e.namedValueUnmarshal(def, def.Base)
+	e.printf("%stype %s %s\n\n", comment("", doc), def.GoName, body.Base.Go)
+	spelling := numberSpelling(body.Base.Go)
+	e.enumConstants(def, &body.enumeration, spelling)
+	if body.Open {
+		e.namedValueUnmarshal(def, body.Base)
 		return
 	}
-	e.closedEnumCodec(def, def.Base.Go, "%d", def.Base.Go+"(x)")
+	e.closedEnumCodec(def, &body.enumeration, spelling)
 }
 
-func (e *emitter) enumConstants(def *Def, valueFormat string) {
-	if len(def.Values) == 0 {
+func (e *emitter) enumConstants(def *Def, values *enumeration, spelling enumSpelling) {
+	if len(values.Values) == 0 {
 		return
 	}
 	e.printf("const (\n")
-	for i, value := range def.Values {
+	for i, value := range values.Values {
 		if i > 0 {
 			e.printf("\n")
 		}
-		literal := value.Value
-		if valueFormat == "%q" {
-			literal = strconv.Quote(value.Value)
-		}
-		e.printf("%s\t%s %s = %s\n", comment("\t", value.Doc), value.GoName, def.GoName, literal)
+		e.printf("%s\t%s %s = %s\n", comment("\t", value.Doc), value.GoName, def.GoName, spelling.literal(value.Value))
 	}
 	e.printf(")\n\n")
 }
@@ -71,35 +84,30 @@ func (e *emitter) enumConstants(def *Def, valueFormat string) {
 // closedEnumCodec validates a closed enumeration in both directions. An
 // enumeration with a single value has one encodable value, so its zero value
 // encodes as that value rather than failing.
-func (e *emitter) closedEnumCodec(def *Def, base, verb, underlying string) {
+func (e *emitter) closedEnumCodec(def *Def, values *enumeration, spelling enumSpelling) {
+	underlying := spelling.base + "(x)"
 	e.printf("func (x %s) MarshalJSON() ([]byte, error) {\n", def.GoName)
-	if len(def.Values) == 1 {
-		var zero string
-		if base == goString {
-			zero = `""`
-		} else {
-			zero = "0"
-		}
-		e.printf("\tif x == %s {\n\t\tx = %s\n\t}\n", zero, def.Values[0].GoName)
+	if len(values.Values) == 1 {
+		e.printf("\tif x == %s {\n\t\tx = %s\n\t}\n", spelling.zero, values.Values[0].GoName)
 	}
 	e.printf("\tif err := x.validate(); err != nil {\n\t\treturn nil, err\n\t}\n")
 	e.printf("\treturn json.Marshal(%s)\n}\n\n", underlying)
 
 	e.printf("func (x *%s) UnmarshalJSON(data []byte) error {\n", def.GoName)
-	e.printf("\tvalue, err := wire.UnmarshalValue[%s](data)\n", base)
+	e.printf("\tvalue, err := wire.UnmarshalValue[%s](data)\n", spelling.base)
 	e.printf("\tif err != nil {\n\t\treturn err\n\t}\n")
 	e.printf("\tparsed := %s(value)\n", def.GoName)
 	e.printf("\tif invalid := parsed.validate(); invalid != nil {\n\t\treturn invalid\n\t}\n")
 	e.printf("\t*x = parsed\n\treturn nil\n}\n\n")
 
-	names := make([]string, len(def.Values))
-	for i, value := range def.Values {
+	names := make([]string, len(values.Values))
+	for i, value := range values.Values {
 		names[i] = value.GoName
 	}
 	e.printf("func (x %s) validate() error {\n", def.GoName)
 	e.printf("\tswitch x {\n\tcase %s:\n\t\treturn nil\n", strings.Join(names, ", "))
 	e.printf("\tdefault:\n\t\treturn fmt.Errorf(\"acp: %s is not a %s the schema defines\", %s)\n",
-		verb, def.GoName, underlying)
+		spelling.verb, def.GoName, underlying)
 	e.printf("\t}\n}\n\n")
 }
 
@@ -108,18 +116,18 @@ func (e *emitter) closedEnumCodec(def *Def, base, verb, underlying string) {
 // A value union's arms are different JSON shapes, so there is no discriminant to
 // read. They are tried in schema order and the first that decodes wins, except
 // that the null arm goes first, because every other arm's decoder refuses null.
-func (e *emitter) valueUnion(def *Def) {
-	doc := unionDoc(def.GoName, armTypes(def), def.Description)
+func (e *emitter) valueUnion(def *Def, body *valueUnionBody) {
+	doc := unionDoc(def.GoName, armTypes(body.Arms), def.Description)
 	doc = append(doc, "",
 		"The arms are different JSON shapes rather than different values of one, so",
 		"there is no discriminant: a value is offered to each arm in schema order and",
 		"belongs to the first that accepts it.")
-	e.unionInterface(def, doc)
+	e.unionInterface(def, body.Arms, doc)
 
 	e.printf("// marshal%s encodes whichever arm the value is.\n", def.Ident)
 	e.printf("func marshal%s(value %s) ([]byte, error) {\n", def.Ident, def.GoName)
 	e.printf("\tswitch value := value.(type) {\n")
-	for _, arm := range def.Arms {
+	for _, arm := range body.Arms {
 		e.printf("\tcase *%s:\n", arm.GoType)
 		e.rejectNilUnionArm(def, arm)
 		e.printf("\t\treturn json.Marshal(value)\n")
@@ -128,12 +136,12 @@ func (e *emitter) valueUnion(def *Def) {
 
 	e.printf("// unmarshal%s selects the arm the value belongs to.\n", def.Ident)
 	e.printf("func unmarshal%s(data json.RawMessage) (%s, error) {\n", def.Ident, def.GoName)
-	for _, arm := range def.Arms {
+	for _, arm := range body.Arms {
 		if arm.IsNull {
 			e.printf("\tif wire.IsNull(data) {\n\t\treturn &%s{}, nil\n\t}\n\n", arm.GoType)
 		}
 	}
-	for _, arm := range def.Arms {
+	for _, arm := range body.Arms {
 		if arm.IsNull {
 			continue
 		}
@@ -156,9 +164,9 @@ func (e *emitter) nullArm(def *Def) {
 
 // -- object unions -----------------------------------------------------------
 
-func (e *emitter) objectUnion(def *Def) {
-	doc := unionDoc(def.GoName, armTypes(def), def.Description)
-	if def.Open {
+func (e *emitter) objectUnion(def *Def, body *objectUnionBody) {
+	doc := unionDoc(def.GoName, armTypes(body.Arms), def.Description)
+	if body.Open {
 		doc = append(doc, "",
 			"The union is open: the schema gives it a catch-all arm whose `not` clause",
 			"reserves the known discriminant values, so a value carrying an unknown one",
@@ -168,23 +176,15 @@ func (e *emitter) objectUnion(def *Def) {
 			"The union is closed: the schema defines these arms and no others, so a value",
 			"matching none of them is a decode error.")
 	}
-	e.unionInterface(def, doc)
-	e.tagConstants(def)
-	e.unionMarshal(def)
-	e.unionUnmarshal(def)
+	e.unionInterface(def, body.Arms, doc)
+	e.tagConstants(def, body)
+	e.unionMarshal(def, body)
+	e.unionUnmarshal(def, body)
 }
 
-func armTypes(def *Def) []string {
-	arms := make([]string, len(def.Arms))
-	for i, arm := range def.Arms {
-		arms[i] = arm.GoType
-	}
-	return arms
-}
-
-func (e *emitter) unionInterface(def *Def, doc []string) {
+func (e *emitter) unionInterface(def *Def, arms []*Arm, doc []string) {
 	e.printf("%stype %s interface {\n\tis%s()\n}\n\n", comment("", doc), def.GoName, def.Ident)
-	for _, arm := range def.Arms {
+	for _, arm := range arms {
 		e.printf("func (*%s) is%s() {}\n", arm.GoType, def.Ident)
 	}
 	e.printf("\n")
@@ -192,9 +192,9 @@ func (e *emitter) unionInterface(def *Def, doc []string) {
 
 // tagConstants names each discriminant value once, for the codec and for the
 // hand-written code that refers to an arm by its wire spelling.
-func (e *emitter) tagConstants(def *Def) {
+func (e *emitter) tagConstants(def *Def, body *objectUnionBody) {
 	var tagged []*Arm
-	for _, arm := range def.Arms {
+	for _, arm := range body.Arms {
 		if arm.TagConst != "" {
 			tagged = append(tagged, arm)
 		}
@@ -202,22 +202,22 @@ func (e *emitter) tagConstants(def *Def) {
 	if len(tagged) == 0 {
 		return
 	}
-	e.printf("// The %s values of %s's arms.\nconst (\n", def.Discriminant, def.GoName)
+	e.printf("// The %s values of %s's arms.\nconst (\n", body.Discriminant, def.GoName)
 	for _, arm := range tagged {
 		e.printf("\t%s = %q\n", arm.TagConst, arm.Tag)
 	}
 	e.printf(")\n\n")
 }
 
-func (e *emitter) unionMarshal(def *Def) {
+func (e *emitter) unionMarshal(def *Def, body *objectUnionBody) {
 	e.printf("// marshal%s writes the arm together with the discriminant the union owns.\n", def.Ident)
 	e.printf("func marshal%s(value %s) ([]byte, error) {\n", def.Ident, def.GoName)
 	e.printf("\tswitch value := value.(type) {\n")
-	for _, arm := range def.Arms {
+	for _, arm := range body.Arms {
 		e.printf("\tcase *%s:\n", arm.GoType)
 		e.rejectNilUnionArm(def, arm)
 		if arm.TagConst != "" {
-			e.printf("\t\treturn wire.TagObject(%q, %s, value)\n", def.Discriminant, arm.TagConst)
+			e.printf("\t\treturn wire.TagObject(%q, %s, value)\n", body.Discriminant, arm.TagConst)
 		} else {
 			e.printf("\t\treturn json.Marshal(value)\n")
 		}
@@ -240,10 +240,10 @@ func (e *emitter) rejectNilUnionArm(union *Def, arm *Arm) {
 	e.printf("\t\t}\n")
 }
 
-func (e *emitter) unionUnmarshal(def *Def) {
+func (e *emitter) unionUnmarshal(def *Def, body *objectUnionBody) {
 	var tagged, untagged []*Arm
 	var catchAll, absent *Arm
-	for _, arm := range def.Arms {
+	for _, arm := range body.Arms {
 		switch {
 		case arm.CatchAll:
 			catchAll = arm
@@ -269,7 +269,7 @@ func (e *emitter) unionUnmarshal(def *Def) {
 	e.printf("\tif objectErr != nil {\n\t\treturn nil, objectErr\n\t}\n")
 
 	if len(untagged) > 0 {
-		e.overlappingUnionArms(def, len(tagged) > 0, catchAll != nil || absent != nil)
+		e.overlappingUnionArms(def, body, len(tagged) > 0, catchAll != nil || absent != nil)
 		e.printf("}\n\n")
 		return
 	}
@@ -278,12 +278,12 @@ func (e *emitter) unionUnmarshal(def *Def) {
 		return
 	}
 
-	e.printf("\n\ttag, ok := wire.Tag(object, %q)\n", def.Discriminant)
+	e.printf("\n\ttag, ok := wire.Tag(object, %q)\n", body.Discriminant)
 	e.printf("\tif !ok {\n")
 	if absent != nil {
 		e.decodeArm(absent, "\t\t")
 	} else {
-		e.printf("\t\treturn nil, wire.At(%q, wire.ErrRequired)\n", def.Discriminant)
+		e.printf("\t\treturn nil, wire.At(%q, wire.ErrRequired)\n", body.Discriminant)
 	}
 	e.printf("\t}\n")
 	if len(tagged) == 1 {
@@ -319,13 +319,13 @@ func (e *emitter) decodeArm(arm *Arm, indent string) {
 // Untagged anyOf alternatives can match even when a known tag's payload is
 // malformed. Schema order resolves overlapping successes; catch-all arms still
 // enforce their own exclusions rather than absorbing malformed known arms.
-func (e *emitter) overlappingUnionArms(def *Def, tagged, guarded bool) {
+func (e *emitter) overlappingUnionArms(def *Def, body *objectUnionBody, tagged, guarded bool) {
 	if tagged {
-		e.printf("\ttag, hasTag := wire.Tag(object, %q)\n", def.Discriminant)
+		e.printf("\ttag, hasTag := wire.Tag(object, %q)\n", body.Discriminant)
 	} else if guarded {
-		e.printf("\t_, hasTag := wire.Tag(object, %q)\n", def.Discriminant)
+		e.printf("\t_, hasTag := wire.Tag(object, %q)\n", body.Discriminant)
 	}
-	for _, arm := range def.Arms {
+	for _, arm := range body.Arms {
 		indent := "\t"
 		switch {
 		case arm.TagConst != "":
@@ -351,8 +351,7 @@ func (e *emitter) overlappingUnionArms(def *Def, tagged, guarded bool) {
 
 // catchAllValidate enforces the catch-all arm's `not` clause in both directions,
 // and the alternatives the arm is itself a union of.
-func (e *emitter) catchAllValidate(def *Def) {
-	catchAll := def.CatchAll
+func (e *emitter) catchAllValidate(def *Def, catchAll *CatchAll) {
 	doc := []string{
 		"validate enforces the `not` clause of the catch-all arm: the discriminant",
 		"values the known arms claim are reserved, and a value carrying one is a",

@@ -364,7 +364,7 @@ func TestACatchAllArmsAlternativesAreReadOrRefused(t *testing.T) {
 	}
 	// The arm declares its discriminant and nothing else, which is what a
 	// catch-all is.
-	def := &Def{GoName: "Other", Fields: []*Field{{JSONName: "mode"}}}
+	def := &Def{GoName: "Other", Body: &structBody{Fields: []*Field{{JSONName: "mode"}}}}
 
 	t.Run("the elicitation scopes", func(t *testing.T) {
 		var arm Schema
@@ -374,7 +374,7 @@ func TestACatchAllArmsAlternativesAreReadOrRefused(t *testing.T) {
 		]}`)); err != nil {
 			t.Fatalf("the case's own schema does not parse: %v", err)
 		}
-		groups, err := planner.catchAllRequiredGroups(&arm, def)
+		groups, err := planner.catchAllRequiredGroups(&arm, def.structure())
 		if err != nil {
 			t.Fatalf("catchAllRequiredGroups: %v", err)
 		}
@@ -392,7 +392,7 @@ func TestACatchAllArmsAlternativesAreReadOrRefused(t *testing.T) {
 		if err := arm.UnmarshalJSON([]byte(`{"type":"object"}`)); err != nil {
 			t.Fatalf("the case's own schema does not parse: %v", err)
 		}
-		groups, err := planner.catchAllRequiredGroups(&arm, def)
+		groups, err := planner.catchAllRequiredGroups(&arm, def.structure())
 		if err != nil || groups != nil {
 			t.Fatalf("read %v, %v; an arm with no alternatives constrains nothing", groups, err)
 		}
@@ -418,8 +418,8 @@ func TestACatchAllArmsAlternativesAreReadOrRefused(t *testing.T) {
 			if err := arm.UnmarshalJSON([]byte(test.schema)); err != nil {
 				t.Fatalf("the case's own schema does not parse: %v", err)
 			}
-			declaring := &Def{GoName: "Other", Fields: []*Field{{JSONName: "elicitationId"}}}
-			_, err := planner.catchAllRequiredGroups(&arm, declaring)
+			declaring := &Def{GoName: "Other", Body: &structBody{Fields: []*Field{{JSONName: "elicitationId"}}}}
+			_, err := planner.catchAllRequiredGroups(&arm, declaring.structure())
 			if err == nil {
 				t.Fatal("the shape was accepted; if it is implemented now, move this case above")
 			}
@@ -459,7 +459,7 @@ func TestKeywordsAreRefusedWhereTheyAreNotConsumed(t *testing.T) {
 		`{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":false}`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := planner.planStruct(&Def{}, &closed, ""); err == nil ||
+	if _, err := planner.planStruct(&Def{}, &closed, ""); err == nil ||
 		!strings.Contains(err.Error(), "additionalProperties") {
 		t.Fatalf("a closed struct was accepted: %v", err)
 	}

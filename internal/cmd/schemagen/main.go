@@ -204,8 +204,11 @@ func (p *Plan) exportedNames() []string {
 			continue
 		}
 		names = append(names, def.GoName)
-		for _, value := range def.Values {
-			names = append(names, value.GoName)
+		switch body := def.Body.(type) {
+		case *stringEnumBody:
+			names = append(names, body.constantNames()...)
+		case *numberEnumBody:
+			names = append(names, body.constantNames()...)
 		}
 	}
 	slices.Sort(names)

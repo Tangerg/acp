@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
-	"strings"
 )
 
 // planProjection derives a handle-facing params type from a wire request type,
@@ -18,56 +17,52 @@ func (p *planner) planProjection(name string, spec *ProjectionSpec) error {
 	if err != nil {
 		return err
 	}
-	if source.Kind != kindStruct {
+	sourceBody, isStruct := source.Body.(*structBody)
+	if !isStruct {
 		return fmt.Errorf("%s is not a struct, so there is nothing to project", spec.From)
 	}
 	if claimErr := p.names.claim(name, "projection of "+definitionPointer+spec.From); claimErr != nil {
 		return claimErr
 	}
 
+	body := &structBody{
+		CatchAll:   sourceBody.CatchAll,
+		Flattened:  sourceBody.Flattened,
+		Projection: &Projection{From: source},
+	}
 	def := &Def{
-		GoName:    name,
-		Ident:     name,
-		Kind:      kindStruct,
-		CatchAll:  source.CatchAll,
-		Flattened: source.Flattened,
+		GoName: name,
+		Ident:  name,
+		Body:   body,
 		Doc: append([]string{
 			name + " — the parameters of " + spec.From + " that a caller supplies.",
 			"",
-		}, wrap(76, spec.Why+" It is "+spec.From+" without "+
-			joinQuoted(spec.Without)+", which the handle owns, so every other property survives — "+
+		}, wrap(spec.Why+" It is "+spec.From+" without "+
+			quotedList(spec.Without)+", which the handle owns, so every other property survives — "+
 			"including _meta.")...),
-		Projection: &Projection{From: source},
 	}
 
-	for _, field := range source.Fields {
+	for _, field := range sourceBody.Fields {
 		if !slices.Contains(spec.Without, field.JSONName) {
-			def.Fields = append(def.Fields, field)
+			body.Fields = append(body.Fields, field)
 		}
 	}
 	for _, property := range spec.Without {
-		index := slices.IndexFunc(source.Fields, func(field *Field) bool { return field.JSONName == property })
+		index := slices.IndexFunc(sourceBody.Fields, func(field *Field) bool { return field.JSONName == property })
 		if index < 0 {
 			return fmt.Errorf("%s has no %q property to leave out", spec.From, property)
 		}
-		def.Projection.Bound = append(def.Projection.Bound, source.Fields[index])
+		body.Projection.Bound = append(body.Projection.Bound, sourceBody.Fields[index])
 	}
 
 	p.add(def)
 	return nil
 }
 
-func joinQuoted(names []string) string {
+func quotedList(names []string) string {
 	quoted := make([]string, len(names))
 	for i, name := range names {
 		quoted[i] = strconv.Quote(name)
 	}
-	switch len(quoted) {
-	case 0:
-		return "nothing"
-	case 1:
-		return quoted[0]
-	default:
-		return strings.Join(quoted[:len(quoted)-1], ", ") + " and " + quoted[len(quoted)-1]
-	}
+	return englishList(quoted, "and")
 }

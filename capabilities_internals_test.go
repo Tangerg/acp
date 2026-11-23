@@ -66,7 +66,7 @@ func TestEachCapabilityPermitsExactlyItsMethods(t *testing.T) {
 			continue
 		}
 		for other, otherGate := range gates {
-			advertised, _ := agreed.advertises(other)
+			advertised := agreed.advertises(other)
 			wanted := otherGate == nil || otherGate.path() == gate.path()
 			if advertised != wanted {
 				t.Errorf("advertising %s's capability made %s advertised = %t", method, other, advertised)
@@ -96,8 +96,8 @@ func TestTheElicitationGatesFollowTheModes(t *testing.T) {
 		"form only": {formOnly, true, false},
 		"both":      {both, true, true},
 	} {
-		create, _ := test.agreed.advertises(methodElicitationCreate)
-		complete, _ := test.agreed.advertises(methodElicitationComplete)
+		create := test.agreed.advertises(methodElicitationCreate)
+		complete := test.agreed.advertises(methodElicitationComplete)
 		if create != test.create || complete != test.complete {
 			t.Errorf("%s: create %t complete %t, want %t and %t", name, create, complete, test.create, test.complete)
 		}
@@ -106,7 +106,7 @@ func TestTheElicitationGatesFollowTheModes(t *testing.T) {
 
 func TestAnUnknownMethodIsNotAdvertised(t *testing.T) {
 	var agreed Negotiated
-	if advertised, _ := agreed.advertises("_vendor.example/thing"); advertised {
+	if agreed.advertises("_vendor.example/thing") {
 		t.Error("an extension method passed the capability gate")
 	}
 }

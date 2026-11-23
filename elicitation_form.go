@@ -261,16 +261,3 @@ func elicitationContentInstance(content map[string]ElicitationContentValue) (any
 	}
 	return jsonschema.UnmarshalJSON(bytes.NewReader(data))
 }
-
-func (c *CreateElicitationResponse) accepted() bool {
-	_, accepted := c.acceptedAction()
-	return accepted
-}
-
-func (c *CreateElicitationResponse) acceptedAction() (*ElicitationAcceptAction, bool) {
-	if c == nil {
-		return nil, false
-	}
-	action, accepted := c.Value.(*ElicitationAcceptAction)
-	return action, accepted && action != nil
-}

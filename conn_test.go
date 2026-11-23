@@ -47,10 +47,8 @@ func TestATurnEndToEnd(t *testing.T) {
 	}
 
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		Info: &acp.Implementation{Name: "an agent", Version: "0.1.0"},
-		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
-			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
-		},
+		Info:       &acp.Implementation{Name: "an agent", Version: "0.1.0"},
+		NewSession: openTestSession,
 		Prompt: func(
 			ctx context.Context,
 			session *acp.AgentSession,
@@ -121,7 +119,7 @@ func TestATurnEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	if created.SessionID != "sess-1" || session.ID() != "sess-1" {
+	if created.SessionID != testSessionID || session.ID() != testSessionID {
 		t.Fatalf("session id = %q / %q", created.SessionID, session.ID())
 	}
 
@@ -242,9 +240,7 @@ func TestParametersTheAgentNeverAdvertisedAreRefused(t *testing.T) {
 func TestPromptContentTheAgentAdvertisedIsSent(t *testing.T) {
 	var blocks int
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
-			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
-		},
+		NewSession: openTestSession,
 		Prompt: func(_ context.Context, _ *acp.AgentSession, request *acp.PromptRequest) (*acp.PromptResponse, error) {
 			blocks = len(request.Prompt)
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil

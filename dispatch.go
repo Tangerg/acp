@@ -51,8 +51,8 @@ type dispatch[Conn any] struct {
 }
 
 // judge decides in wire order whether this side serves an inbound message, and
-// decodes its params once. It returns the method's row, or nil for an extension
-// method, whose params stay raw. Every check happens here, before any goroutine,
+// decodes its params once. It returns the method's row, or nil for a method the
+// specification does not define, whose params stay raw. Every check happens here, before any goroutine,
 // so what a message is judged against is what preceded it on the wire.
 func (d *dispatch[Conn]) judge(request *jsonrpc.Request) (*methodBinding[Conn], any, *Error) {
 	method := request.Method
@@ -64,9 +64,6 @@ func (d *dispatch[Conn]) judge(request *jsonrpc.Request) (*methodBinding[Conn], 
 	}
 	descriptor, standard := standardMethods[method]
 	if !standard {
-		if !reservedForExtensions(method) {
-			return nil, nil, methodNotImplemented(method)
-		}
 		return nil, request.Params, nil
 	}
 	switch {
@@ -98,7 +95,7 @@ func (d *dispatch[Conn]) register(call *inboundRequest, request *jsonrpc.Request
 	switch {
 	case refusal != nil:
 		return answered(nil, refusal)
-	case binding == nil && d.callFallback == nil:
+	case binding == nil && (d.callFallback == nil || !reservedForExtensions(request.Method)):
 		return answered(nil, methodNotImplemented(request.Method))
 	}
 	call.params = params
@@ -142,9 +139,10 @@ func (d *dispatch[Conn]) serveExtension(ctx context.Context, call *inboundReques
 	return result, nil
 }
 
-// serveNotification handles one notification on the ordered delivery loop. A
-// notification nobody serves is ignored, as the protocol asks; the refusal is
-// returned only to be logged.
+// serveNotification handles one notification on the ordered delivery loop. One
+// this side does not recognise is ignored silently, as the protocol asks, which
+// also keeps today's fallback from claiming tomorrow's standard notification. A
+// standard one it refuses is returned to be logged.
 func (d *dispatch[Conn]) serveNotification(ctx context.Context, request *jsonrpc.Request) error {
 	binding, params, refusal := d.judge(request)
 	switch {
@@ -152,7 +150,7 @@ func (d *dispatch[Conn]) serveNotification(ctx context.Context, request *jsonrpc
 		return refusal
 	case binding != nil:
 		binding.notify(d.conn, ctx, params)
-	case d.notifyFallback != nil:
+	case d.notifyFallback != nil && reservedForExtensions(request.Method):
 		d.notifyFallback(ctx, d.conn, &ExtNotification{Method: request.Method, Params: request.Params})
 	}
 	return nil

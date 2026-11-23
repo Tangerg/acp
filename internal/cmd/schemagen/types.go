@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,25 +64,27 @@ const flattenedSuffix = "Value"
 
 // planStruct plans an object's properties, leaving out the one a flattened union
 // owns as its discriminant.
-func (p *planner) planStruct(def *Def, schema *Schema, unionOwned string) error {
-	def.Kind = kindStruct
+func (p *planner) planStruct(def *Def, schema *Schema, unionOwned string) (*structBody, error) {
 	if err := refuseUnconsumed(schema, "a struct"); err != nil {
-		return err
+		return nil, err
 	}
 	if schema.AdditionalProperties != nil && !schema.AdditionalProperties.IsTrue() {
-		return errors.New("additionalProperties other than true on a struct is not enforced, so it is not implemented")
+		return nil, errors.New(
+			"additionalProperties other than true on a struct is not enforced, so it is not implemented")
 	}
+	body := new(structBody)
 	for _, jsonName := range schema.PropertyOrder {
 		if jsonName == unionOwned {
 			continue
 		}
 		field, err := p.planField(jsonName, schema.Properties[jsonName], slices.Contains(schema.Required, jsonName))
 		if err != nil {
-			return fmt.Errorf("property %q: %w", jsonName, err)
+			return nil, fmt.Errorf("property %q: %w", jsonName, err)
 		}
-		def.Fields = append(def.Fields, field)
+		body.Fields = append(body.Fields, field)
 	}
-	return nil
+	def.Body = body
+	return body, nil
 }
 
 // refuseUnconsumed refuses the keywords no planning step consumes in this
@@ -146,7 +149,7 @@ func (p *planner) planField(jsonName string, schema *Schema, required bool) (*Fi
 		if literalErr != nil {
 			return nil, literalErr
 		}
-		field.DefaultLit = literal
+		field.Default = &declaredDefault{Literal: literal, Zero: isZeroJSON(schema.Default)}
 	}
 	if fallbackErr := planFallback(field, schema, hasDefault); fallbackErr != nil {
 		return nil, fallbackErr
@@ -427,23 +430,31 @@ func (p *planner) refDefaultLiteral(value *ValueType, raw json.RawMessage) (stri
 	if err != nil {
 		return "", err
 	}
-	switch def.Kind {
-	case kindNewtype, kindStringUnion, kindNumberUnion:
-		if literal, isConstant := def.constantFor(raw); isConstant {
-			return literal, nil
-		}
+	switch body := def.Body.(type) {
+	case *newtypeBody:
 		return scalarLiteral(def.GoName, raw)
-	case kindStruct:
-		return p.structDefaultLiteral(def, raw)
+	case *stringEnumBody:
+		return body.literal(def.GoName, raw)
+	case *numberEnumBody:
+		return body.literal(def.GoName, raw)
+	case *structBody:
+		return p.structDefaultLiteral(def, body, raw)
 	default:
 		return "", fmt.Errorf("a declared default on a %s is not implemented", def.GoName)
 	}
 }
 
-// constantFor names the generated constant whose value is raw, so a default that
-// is one of an enumeration's values reads as that value's name.
-func (d *Def) constantFor(raw json.RawMessage) (string, bool) {
-	for _, value := range d.Values {
+// literal renders raw in an enumeration's type: as the constant whose value it
+// is, so a default reads as that value's name, and otherwise as a conversion.
+func (e *enumeration) literal(goName string, raw json.RawMessage) (string, error) {
+	if constant, isConstant := e.constantFor(raw); isConstant {
+		return constant, nil
+	}
+	return scalarLiteral(goName, raw)
+}
+
+func (e *enumeration) constantFor(raw json.RawMessage) (string, bool) {
+	for _, value := range e.Values {
 		var text string
 		if err := json.Unmarshal(raw, &text); err == nil && text == value.Value {
 			return value.GoName, true
@@ -456,14 +467,14 @@ func (d *Def) constantFor(raw json.RawMessage) (string, bool) {
 	return "", false
 }
 
-func (p *planner) structDefaultLiteral(def *Def, raw json.RawMessage) (string, error) {
+func (p *planner) structDefaultLiteral(def *Def, body *structBody, raw json.RawMessage) (string, error) {
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &object); err != nil {
 		return "", fmt.Errorf("default %s is not an object: %w", raw, err)
 	}
 
-	fields := make(map[string]*Field, len(def.Fields))
-	for _, field := range def.Fields {
+	fields := make(map[string]*Field, len(body.Fields))
+	for _, field := range body.Fields {
 		fields[field.JSONName] = field
 	}
 	for _, name := range sortedKeys(object) {
@@ -475,7 +486,7 @@ func (p *planner) structDefaultLiteral(def *Def, raw json.RawMessage) (string, e
 	// Schema order, not the default's own, so that one type's literal reads the
 	// same way wherever it is defaulted.
 	var parts []string
-	for _, field := range def.Fields {
+	for _, field := range body.Fields {
 		fieldRaw, declared := object[field.JSONName]
 		if !declared {
 			continue
@@ -501,6 +512,28 @@ func (p *planner) fieldDefaultLiteral(field *Field, raw json.RawMessage) (string
 		return "", err
 	}
 	return "OptValue(" + inner + ")", nil
+}
+
+// isZeroJSON reports a JSON value that every Go type it can decode into holds as
+// its zero value: false, the empty string, or a numeric zero.
+func isZeroJSON(raw json.RawMessage) bool {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return false
+	}
+	switch value := value.(type) {
+	case bool:
+		return !value
+	case string:
+		return value == ""
+	case json.Number:
+		number, valid := new(big.Rat).SetString(value.String())
+		return valid && number.Sign() == 0
+	default:
+		return false
+	}
 }
 
 func scalarLiteral(goType string, raw json.RawMessage) (string, error) {

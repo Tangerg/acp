@@ -20,25 +20,9 @@ type Plan struct {
 	SchemaTag string
 }
 
-type defKind int
-
-const (
-	kindStruct defKind = iota
-	// kindNewtype is one Go scalar or container under a name of its own.
-	kindNewtype
-	kindStringUnion
-	kindNumberUnion
-	kindObjectUnion
-	kindValueUnion
-	// kindNullArm is the null arm of a value union: a Go type so that it can
-	// implement the union's interface, with no value to carry.
-	kindNullArm
-	// kindRawValue is a definition the schema constrains not at all.
-	kindRawValue
-)
-
-// A Def is one generated top-level type. Which of its fields are meaningful
-// depends on Kind; the per-kind groups below are never mixed.
+// A Def is one generated top-level type: the names and prose every kind shares,
+// and the body its kind owns. The body's concrete type is the kind, so a field
+// one kind needs cannot be set on another.
 type Def struct {
 	SchemaName string // "" for a generated type no definition backs
 	GoName     string
@@ -49,9 +33,17 @@ type Def struct {
 	// of a type whose comment is quoted; a union builds its own from Description.
 	Description string
 	Doc         []string
-	Kind        defKind
+	Body        defBody
+}
 
-	// kindStruct.
+// A defBody is what one kind of definition owns.
+type defBody interface {
+	// referencedTypes are the generated types the body names.
+	referencedTypes() []string
+}
+
+// A structBody is an object with properties.
+type structBody struct {
 	Fields []*Field
 	// Embeds is the payload type a generated union arm carries, or empty.
 	Embeds string
@@ -61,20 +53,87 @@ type Def struct {
 	Flattened *Def
 	// Projection is set on a handle-facing params type.
 	Projection *Projection
+}
 
-	// kindNewtype, kindNumberUnion.
+// A newtypeBody is one Go scalar or container under a name of its own.
+type newtypeBody struct {
 	Base *ValueType
+}
 
-	// kindStringUnion, kindNumberUnion.
+// An enumeration is the constants of a string or number union. Open keeps a value
+// outside them rather than refusing it.
+type enumeration struct {
 	Values []*EnumValue
+	Open   bool
+}
 
-	// kindStringUnion, kindNumberUnion, kindObjectUnion: a value outside the
-	// known ones is kept rather than refused.
-	Open bool
+type stringEnumBody struct {
+	enumeration
+}
 
-	// kindObjectUnion, kindValueUnion.
+type numberEnumBody struct {
+	enumeration
+	Base *ValueType
+}
+
+type objectUnionBody struct {
 	Discriminant string
 	Arms         []*Arm
+	// Open is set when the union has a catch-all arm.
+	Open bool
+}
+
+// A valueUnionBody is a union whose arms are different JSON shapes, so it has no
+// discriminant.
+type valueUnionBody struct {
+	Arms []*Arm
+}
+
+// A nullArmBody is the null arm of a value union: a Go type so that it can
+// implement the union's interface, with no value to carry.
+type nullArmBody struct{}
+
+// A rawValueBody is a definition the schema constrains not at all.
+type rawValueBody struct{}
+
+func (b *structBody) referencedTypes() []string {
+	var named []string
+	for _, field := range b.Fields {
+		named = append(named, field.Value.namedTypes()...)
+	}
+	if b.Embeds != "" {
+		named = append(named, b.Embeds)
+	}
+	if b.Flattened != nil {
+		named = append(named, b.Flattened.GoName)
+	}
+	return named
+}
+
+func (b *newtypeBody) referencedTypes() []string     { return b.Base.namedTypes() }
+func (*stringEnumBody) referencedTypes() []string    { return nil }
+func (b *numberEnumBody) referencedTypes() []string  { return b.Base.namedTypes() }
+func (b *objectUnionBody) referencedTypes() []string { return armTypes(b.Arms) }
+func (b *valueUnionBody) referencedTypes() []string  { return armTypes(b.Arms) }
+func (nullArmBody) referencedTypes() []string        { return nil }
+func (rawValueBody) referencedTypes() []string       { return nil }
+
+func (e *enumeration) constantNames() []string {
+	names := make([]string, len(e.Values))
+	for i, value := range e.Values {
+		names[i] = value.GoName
+	}
+	return names
+}
+
+// structure returns a struct definition's body. The planner checked the kind
+// before handing the definition on, so any other kind here is its defect.
+func (d *Def) structure() *structBody {
+	body, isStruct := d.Body.(*structBody)
+	if !isStruct {
+		panic(fmt.Sprintf("schemagen: %s is a %T, not a struct", d.GoName, d.Body))
+	}
+	return body
 }
 
 func (d *Def) exported() bool { return token.IsExported(d.GoName) }
@@ -128,6 +187,15 @@ type Arm struct {
 	IsNull bool
 }
 
+// armTypes are the Go types of a union's arms, in schema order.
+func armTypes(arms []*Arm) []string {
+	types := make([]string, len(arms))
+	for i, arm := range arms {
+		types[i] = arm.GoType
+	}
+	return types
+}
+
 // A Field is one property of a generated struct.
 type Field struct {
 	JSONName string
@@ -142,8 +210,17 @@ type Field struct {
 	Skip          bool // x-deserialize-skip-invalid-items
 	DefaultOnNull bool
 	Fallback      fallbackKind
-	// DefaultLit is the Go literal of the declared default, in the value's type.
-	DefaultLit string
+	// Default is the schema's declared default, or nil when it declares none.
+	Default *declaredDefault
+}
+
+// A declaredDefault is a property's schema default.
+type declaredDefault struct {
+	// Literal is the default as a Go literal in the property's value type.
+	Literal string
+	// Zero reports a default equal to its type's zero value, which a property
+	// reset before decoding already holds.
+	Zero bool
 }
 
 // A fallbackKind is what a property marked x-deserialize-default-on-error
@@ -337,31 +414,32 @@ func (p *planner) planShape(def *Def, schema *Schema, shape defShape) error {
 		return p.planNumberUnion(def, schema.Arms())
 	case shapeStruct:
 		def.Doc = docComment(def.GoName, schema.Description)
-		return p.planStruct(def, schema, "")
+		_, err := p.planStruct(def, schema, "")
+		return err
 	case shapeFlattenedUnion:
 		def.Doc = docComment(def.GoName, schema.Description)
 		owned, err := unionOwnedProperty(schema)
 		if err != nil {
 			return err
 		}
-		if structErr := p.planStruct(def, schema, owned); structErr != nil {
-			return structErr
+		body, err := p.planStruct(def, schema, owned)
+		if err != nil {
+			return err
 		}
-		return p.planFlattenedUnion(def, schema)
+		return p.planFlattenedUnion(def, body, schema)
 	case shapeStringNewtype, shapeNumericNewtype:
 		def.Doc = docComment(def.GoName, schema.Description)
-		def.Kind = kindNewtype
 		base, err := p.valueType(schema)
 		if err != nil {
 			return err
 		}
-		def.Base = base
+		def.Body = &newtypeBody{Base: base}
 		return nil
 	case shapeValueUnion:
 		return p.planValueUnion(def, schema.Arms())
 	case shapeRaw:
 		def.Doc = docComment(def.GoName, schema.Description)
-		def.Kind = kindRawValue
+		def.Body = rawValueBody{}
 		return nil
 	default:
 		return fmt.Errorf("unimplemented definition shape: keywords %v", schema.Keywords)
@@ -382,23 +460,7 @@ func checkVisibility(defs []*Def) error {
 		if !def.exported() {
 			continue
 		}
-		var referenced []string
-		for _, field := range def.Fields {
-			referenced = append(referenced, field.Value.namedTypes()...)
-		}
-		if def.Embeds != "" {
-			referenced = append(referenced, def.Embeds)
-		}
-		if def.Flattened != nil {
-			referenced = append(referenced, def.Flattened.GoName)
-		}
-		if def.Base != nil {
-			referenced = append(referenced, def.Base.namedTypes()...)
-		}
-		for _, arm := range def.Arms {
-			referenced = append(referenced, arm.GoType)
-		}
-		for _, name := range referenced {
+		for _, name := range def.Body.referencedTypes() {
 			if unexported[name] {
 				return fmt.Errorf(
 					"%s is exported and reaches the unexported %s; export that definition or make %s internal too",

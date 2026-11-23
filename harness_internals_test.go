@@ -34,6 +34,15 @@ func connectRawAgent(t *testing.T, agent *Agent) (Connection, *AgentConn) {
 	return stream, agentConn
 }
 
+// testSessionID is the session newSessionHandler opens. The raw params below
+// name it, because a test that registers a prompt and then cancels a session
+// needs both to name the same one.
+const (
+	testSessionID = "sess-1"
+	promptParams  = `{"sessionId":"` + testSessionID + `","prompt":[]}`
+	cancelParams  = `{"sessionId":"` + testSessionID + `"}`
+)
+
 // newTestAgentConnWith assembles an agent connection with no transport, for
 // driving registration and turn state directly.
 func newTestAgentConnWith(t *testing.T, limits Limits) *AgentConn {

@@ -60,9 +60,7 @@ func BenchmarkPromptTurn(b *testing.B) {
 	ctx := b.Context()
 
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
-			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
-		},
+		NewSession: openTestSession,
 		Prompt: func(
 			ctx context.Context,
 			session *acp.AgentSession,

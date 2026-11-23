@@ -66,7 +66,7 @@ func TestAnAutomaticResponseRetainsItsRequestUntilTheWriteSettles(t *testing.T) 
 		conn := newTestAgentConn(t)
 		barrier := &responseBarrier{entered: make(chan struct{}), release: make(chan struct{})}
 		conn.transport = barrier
-		conn.turns.claim("sess-1", &inboundRequest{id: jsonrpc.Int64ID(1)})
+		conn.turns.claim(testSessionID, &inboundRequest{id: jsonrpc.Int64ID(1)})
 		request := rawCall(2, methodSessionPrompt, promptParams)
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()

@@ -75,17 +75,21 @@ func joinArms(arms []string) string {
 	for i, arm := range arms {
 		links[i] = "[*" + arm + "]"
 	}
-	switch len(links) {
-	case 0:
-		return "no arms at all"
-	case 1:
-		return links[0]
-	case 2:
-		return links[0] + " or " + links[1]
-	default:
-		return strings.Join(links[:len(links)-1], ", ") + " or " + links[len(links)-1]
-	}
+	return englishList(links, "or")
 }
+
+// englishList joins items as an English sentence lists them, without the serial
+// comma.
+func englishList(items []string, conjunction string) string {
+	if len(items) < 2 {
+		return strings.Join(items, "")
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " " + conjunction + " " + items[len(items)-1]
+}
+
+// proseWidth is where generated prose wraps: a width that reads in a terminal
+// with the comment marker and an indent in front of it.
+const proseWidth = 76
 
 // wrap breaks generated prose at a width that reads in a terminal.
 //
@@ -93,14 +97,14 @@ func joinArms(arms []string) string {
 // line breaks upstream gave it, because those are part of the text — several
 // carry Markdown lists — and reflowing them would make the Go documentation and
 // the specification disagree about where a paragraph ends.
-func wrap(width int, text string) []string {
+func wrap(text string) []string {
 	var lines []string
 	line := ""
 	for word := range strings.FieldsSeq(text) {
 		switch {
 		case line == "":
 			line = word
-		case len(line)+1+len(word) <= width:
+		case len(line)+1+len(word) <= proseWidth:
 			line += " " + word
 		default:
 			lines = append(lines, line)

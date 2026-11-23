@@ -80,14 +80,6 @@ func (c *connection) sendStandard(
 	return c.send(ctx, method, params, accept, abandon)
 }
 
-func (c *connection) callStandard(ctx context.Context, method string, params, result any) error {
-	call, err := c.sendStandard(ctx, method, params, nil, nil)
-	if err != nil {
-		return err
-	}
-	return c.awaitInto(ctx, call, result)
-}
-
 func (c *connection) notifyStandard(ctx context.Context, method string, params any) error {
 	if err := c.checkOutbound(ctx, method, params); err != nil {
 		return err
@@ -97,11 +89,11 @@ func (c *connection) notifyStandard(ctx context.Context, method string, params a
 
 // callFor sends a standard request and decodes its result into a new Response.
 func callFor[Response any](ctx context.Context, c *connection, method string, params any) (*Response, error) {
-	response := new(Response)
-	if err := c.callStandard(ctx, method, params, response); err != nil {
+	call, err := c.sendStandard(ctx, method, params, nil, nil)
+	if err != nil {
 		return nil, err
 	}
-	return response, nil
+	return awaitFor[Response](ctx, c.link, call)
 }
 
 // A registry is the live connections of one client or agent. Membership ends

@@ -139,6 +139,21 @@ func TestAnUnimplementedMethodIsNotFound(t *testing.T) {
 	}
 }
 
+// A notification this side does not recognise is ignored silently, as the
+// protocol asks and the reference implementation does; only a standard one it
+// refuses is worth reporting.
+func TestAnUnrecognisedNotificationIsIgnoredSilently(t *testing.T) {
+	conn := newTestClientConn(t, ClientConfig{})
+	for _, method := range []string{"vendor/unprefixed", "_vendor.example/unhandled"} {
+		if err := conn.side.serveNotification(t.Context(), rawNotification(method, `{}`)); err != nil {
+			t.Errorf("%s was reported as %v; it should be ignored", method, err)
+		}
+	}
+	if err := conn.side.serveNotification(t.Context(), rawNotification(methodSessionUpdate, `[]`)); err == nil {
+		t.Error("a malformed standard notification was not reported")
+	}
+}
+
 // A method the other peer serves is not this side's to judge against a
 // capability: an agent asked to read a file refuses because agents do not serve
 // that method, whatever the client advertised about itself. The judge used to
@@ -176,7 +191,7 @@ func TestAStandardNotificationSentAsARequestIsNotFound(t *testing.T) {
 	defer agentConn.Close() //nolint:errcheck // idempotent.
 	initializeRawAgent(t, stream)
 
-	writeRaw(t, stream, rawCall(2, methodSessionCancel, `{"sessionId":"sess-1"}`))
+	writeRaw(t, stream, rawCall(2, methodSessionCancel, cancelParams))
 	if code := readRawErrorCode(t, stream); code != ErrorCodeMethodNotFound {
 		t.Fatalf("session/cancel with an id was answered %d (%s), want method not found", code, code)
 	}
@@ -293,7 +308,7 @@ func TestACancelledHandlerIsAnsweredWithRequestCancelled(t *testing.T) {
 	defer agentConn.Close() //nolint:errcheck // idempotent.
 	initializeRawAgent(t, stream)
 
-	writeRaw(t, stream, rawCall(2, methodSessionPrompt, `{"sessionId":"sess-1","prompt":[]}`))
+	writeRaw(t, stream, rawCall(2, methodSessionPrompt, promptParams))
 	writeRaw(t, stream, rawNotification(methodCancelRequest, `{"requestId":2}`))
 	if code := readRawErrorCode(t, stream); code != ErrorCodeRequestCancelled {
 		t.Fatalf("the cancelled prompt was answered %d (%s), want request cancelled", code, code)
@@ -318,7 +333,7 @@ func TestReusingAnActiveRequestIDRefusesOnlyTheDuplicate(t *testing.T) {
 	defer agentConn.Close() //nolint:errcheck // idempotent.
 	initializeRawAgent(t, stream)
 
-	writeRaw(t, stream, rawCall(2, methodSessionPrompt, `{"sessionId":"sess-1","prompt":[]}`))
+	writeRaw(t, stream, rawCall(2, methodSessionPrompt, promptParams))
 	writeRaw(t, stream, rawCall(2, methodSessionNew, `{"cwd":"/w","mcpServers":[]}`))
 	if code := readRawErrorCode(t, stream); code != ErrorCodeInvalidRequest {
 		t.Fatalf("the duplicate was answered %d (%s), want invalid request", code, code)
@@ -330,7 +345,7 @@ func TestReusingAnActiveRequestIDRefusesOnlyTheDuplicate(t *testing.T) {
 }
 
 func newSessionHandler(context.Context, *AgentConn, *NewSessionRequest) (*NewSessionResponse, error) {
-	return &NewSessionResponse{SessionID: "sess-1"}, nil
+	return &NewSessionResponse{SessionID: testSessionID}, nil
 }
 
 func endTurn(context.Context, *AgentSession, *PromptRequest) (*PromptResponse, error) {

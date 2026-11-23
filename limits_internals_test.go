@@ -42,7 +42,7 @@ func TestABacklogPastItsBoundEndsTheConnection(t *testing.T) {
 	defer cancel()
 	handshakeRaw(ctx, t, stream)
 
-	if err := stream.Write(ctx, rawNotification(methodSessionCancel, `{"sessionId":"sess-1"}`)); err != nil {
+	if err := stream.Write(ctx, rawNotification(methodSessionCancel, cancelParams)); err != nil {
 		t.Fatalf("write the notification that holds delivery: %v", err)
 	}
 	<-reached
@@ -50,7 +50,7 @@ func TestABacklogPastItsBoundEndsTheConnection(t *testing.T) {
 	// One past the bound, because the held notification has left the queue. A write
 	// may fail part-way through, which is the connection ending as intended.
 	for range testBound + 1 {
-		if err := stream.Write(ctx, rawNotification(methodSessionCancel, `{"sessionId":"sess-1"}`)); err != nil {
+		if err := stream.Write(ctx, rawNotification(methodSessionCancel, cancelParams)); err != nil {
 			break
 		}
 	}
@@ -177,7 +177,7 @@ func blockingAgent(t *testing.T, limits Limits, reached chan<- struct{}, held <-
 		Limits: limits,
 		NewSession: func(context.Context, *AgentConn, *NewSessionRequest) (*NewSessionResponse, error) {
 			arrive()
-			return &NewSessionResponse{SessionID: "sess-1"}, nil
+			return &NewSessionResponse{SessionID: testSessionID}, nil
 		},
 		Prompt: func(context.Context, *AgentSession, *PromptRequest) (*PromptResponse, error) {
 			arrive()

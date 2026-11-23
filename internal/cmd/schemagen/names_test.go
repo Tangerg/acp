@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The schema spells names three ways — PascalCase definitions, camelCase
 // properties, snake_case union tags — and Go's convention capitalises some words
@@ -165,13 +168,17 @@ func TestUnionDocsNameTheArms(t *testing.T) {
 // Generated prose is wrapped; quoted prose is not. Only the first is this
 // generator's to reflow.
 func TestWrapBreaksOnWords(t *testing.T) {
-	lines := wrap(20, "the schema's not clause reserves the known discriminant values")
+	text := strings.Repeat("the schema's not clause reserves the known discriminant values ", 4)
+	lines := wrap(text)
 	for _, line := range lines {
-		if len(line) > 20 {
+		if len(line) > proseWidth {
 			t.Errorf("line %q is %d characters, over the width", line, len(line))
 		}
 	}
 	if len(lines) < 3 {
 		t.Errorf("wrapped into %d lines, expected the text to break", len(lines))
+	}
+	if got := strings.Join(lines, " "); got != strings.TrimSpace(text) {
+		t.Errorf("wrapping changed the words: %q", got)
 	}
 }

@@ -288,9 +288,7 @@ func TestCancellingOneTurnLeavesAnotherAlone(t *testing.T) {
 		release := make(chan struct{})
 
 		agent, err := acp.NewAgent(&acp.AgentConfig{
-			NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
-				return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
-			},
+			NewSession: openTestSession,
 			Prompt: func(ctx context.Context, session *acp.AgentSession, _ *acp.PromptRequest) (*acp.PromptResponse, error) {
 				select {
 				case <-ctx.Done():
@@ -335,7 +333,7 @@ func TestCancellingOneTurnLeavesAnotherAlone(t *testing.T) {
 		if reason := <-results; reason != acp.StopReasonCancelled {
 			t.Fatalf("stop reason = %q, want cancelled", reason)
 		}
-		if id := <-cancelled; id != "sess-1" {
+		if id := <-cancelled; id != testSessionID {
 			t.Errorf("the cancelled session was %q", id)
 		}
 		close(release)

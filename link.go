@@ -413,6 +413,15 @@ func (l *link) awaitInto(ctx context.Context, call outboundCall, result any) err
 	return decodeResponse(response, result)
 }
 
+// awaitFor is awaitInto for a result this package allocates.
+func awaitFor[Response any](ctx context.Context, l *link, call outboundCall) (*Response, error) {
+	response := new(Response)
+	if err := l.awaitInto(ctx, call, response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
 // callObserved sends a call whose response settles connection-owned state in
 // response order, even after its caller stops waiting.
 func (l *link) callObserved(ctx context.Context, method string, params any, publish func(*jsonrpc.Response) error) error {

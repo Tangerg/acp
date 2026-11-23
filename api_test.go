@@ -27,7 +27,7 @@ func TestAuthenticationIsControlFlow(t *testing.T) {
 					Message: "sign in first",
 				}
 			}
-			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
+			return &acp.NewSessionResponse{SessionID: testSessionID}, nil
 		},
 		Authenticate: func(
 			_ context.Context,
@@ -92,7 +92,7 @@ func TestLoadSessionAndSetMode(t *testing.T) {
 	agent, err := acp.NewAgent(&acp.AgentConfig{
 		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
 			return &acp.NewSessionResponse{
-				SessionID: "sess-1",
+				SessionID: testSessionID,
 				Modes: acp.OptValue(acp.SessionModeState{
 					CurrentModeID:  "ask",
 					AvailableModes: []acp.SessionMode{{ID: "ask", Name: "Ask first"}, {ID: "code", Name: "Code"}},
@@ -136,11 +136,11 @@ func TestLoadSessionAndSetMode(t *testing.T) {
 	if !conn.Negotiated().AgentCapabilities.LoadSession {
 		t.Fatal("the agent has a LoadSession handler and did not advertise loadSession")
 	}
-	loaded, _, err := conn.LoadSession(ctx, &acp.LoadSessionRequest{SessionID: "sess-1", Cwd: "/w"})
+	loaded, _, err := conn.LoadSession(ctx, &acp.LoadSessionRequest{SessionID: testSessionID, Cwd: "/w"})
 	if err != nil {
 		t.Fatalf("LoadSession: %v", err)
 	}
-	if loaded.ID() != "sess-1" {
+	if loaded.ID() != testSessionID {
 		t.Errorf("the loaded handle names %q", loaded.ID())
 	}
 	if _, _, err := conn.LoadSession(ctx, nil); err == nil {
@@ -161,7 +161,7 @@ func TestLoadSessionAndSetMode(t *testing.T) {
 func TestLoadSessionIsRefusedWithoutTheCapability(t *testing.T) {
 	session := connectAndOpen(t, testClient(t), testAgent(t, nil))
 	_, _, err := session.Conn().LoadSession(context.Background(),
-		&acp.LoadSessionRequest{SessionID: "sess-1", Cwd: "/w"})
+		&acp.LoadSessionRequest{SessionID: testSessionID, Cwd: "/w"})
 	if err == nil {
 		t.Fatal("LoadSession succeeded on an agent that does not implement it")
 	}
@@ -187,9 +187,7 @@ func TestExtensionNotifications(t *testing.T) {
 
 	agentHeard := make(chan string, 1)
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
-			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
-		},
+		NewSession: openTestSession,
 		NotifyFallback: func(_ context.Context, _ *acp.AgentConn, notification *acp.ExtNotification) {
 			agentHeard <- notification.Method
 		},

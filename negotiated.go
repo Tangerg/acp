@@ -48,36 +48,31 @@ func (n *negotiation) accept(agreed Negotiated) {
 
 func (n *negotiation) open() { n.openOnce.Do(func() { close(n.opened) }) }
 
-// advertises reports whether the agreement permits a standard method, and the
-// capability that decided it. A method with no gate row is not standard.
-func (n *Negotiated) advertises(method string) (bool, string) {
-	gate, known := gates[method]
-	if !known {
-		return false, "a standard method"
-	}
-	if gate == nil {
-		return true, ""
-	}
-	return gate.advertisedBy(n), gate.path()
+// advertises reports whether the agreement permits a standard method. A method
+// with no gate row is no standard method, and nothing permits it.
+func (n *Negotiated) advertises(method string) bool {
+	gate, standard := gates[method]
+	return standard && (gate == nil || gate.advertisedBy(n))
 }
 
 // refusesInbound answers a peer's request for a method this side never
-// advertised: method-not-found, because that is what it was told.
+// advertised: method-not-found, because that is what it was told. Only a
+// standard method this side serves reaches it.
 func (n *Negotiated) refusesInbound(method string) *Error {
-	advertised, capability := n.advertises(method)
-	if advertised {
+	if n.advertises(method) {
 		return nil
 	}
-	return newError(ErrorCodeMethodNotFound, "method %q was not advertised because %s is not set", method, capability)
+	return newError(ErrorCodeMethodNotFound, "method %q was not advertised because %s is not set",
+		method, gates[method].path())
 }
 
-// refusesOutbound refuses locally a call the peer never advertised.
+// refusesOutbound refuses locally a call the peer never advertised. Only a
+// standard method's own operation reaches it.
 func (n *Negotiated) refusesOutbound(method string) error {
-	advertised, capability := n.advertises(method)
-	if advertised {
+	if n.advertises(method) {
 		return nil
 	}
-	return notAdvertised("method "+method, capability)
+	return notAdvertised("method "+method, gates[method].path())
 }
 
 // authenticates checks an authenticate method identifier against what the agent

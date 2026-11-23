@@ -220,9 +220,7 @@ func TestClosingASessionCancelsItsTurn(t *testing.T) {
 	closed := make(chan acp.SessionID, 1)
 	running := make(chan struct{})
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
-			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
-		},
+		NewSession: openTestSession,
 		Prompt: func(ctx context.Context, _ *acp.AgentSession, _ *acp.PromptRequest) (*acp.PromptResponse, error) {
 			// A turn that only ends because it was cancelled. Nothing here reports
 			// the cancelled stop reason: the connection owes that.
@@ -262,7 +260,7 @@ func TestClosingASessionCancelsItsTurn(t *testing.T) {
 	if _, err := session.Close(context.Background(), nil); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if got := <-closed; got != "sess-1" {
+	if got := <-closed; got != testSessionID {
 		t.Fatalf("the close handler saw session %q", got)
 	}
 
@@ -311,9 +309,7 @@ func lifecycleAgent(t *testing.T, served chan<- string) *acp.Agent {
 		}
 	}
 	agent, err := acp.NewAgent(&acp.AgentConfig{
-		NewSession: func(context.Context, *acp.AgentConn, *acp.NewSessionRequest) (*acp.NewSessionResponse, error) {
-			return &acp.NewSessionResponse{SessionID: "sess-1"}, nil
-		},
+		NewSession: openTestSession,
 		Prompt: func(context.Context, *acp.AgentSession, *acp.PromptRequest) (*acp.PromptResponse, error) {
 			return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 		},

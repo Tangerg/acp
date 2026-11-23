@@ -29,7 +29,8 @@ migration instructions.
   logged instead of failing the handshake.
 - `session/close` and `session/delete` answered resource-not-found succeed,
   because the end state is the same.
-- Unhandled `_`-prefixed notifications are ignored silently, as the protocol asks.
+- A notification this side does not recognise, `_`-prefixed or not, is ignored
+  silently, as the protocol asks and the reference implementation does.
 - A method the other peer serves is answered `-32601` naming that peer, without
   consulting a capability: an agent asked to read a file no longer blames the
   client's own `fs` advertisement.
@@ -89,6 +90,9 @@ migration instructions.
   wire.
 - A client holds its handlers' responses to the negotiated capabilities, as an
   agent already did.
+- A request identifier that is not a string, null or int64 is no longer echoed
+  into the decode error, so a peer cannot write an arbitrarily large value into
+  the logs.
 - A request's `sessionId` is decoded once. A second, case-insensitive decoder
   let one message claim a session's turn and cancel another's.
 - Opening more than 1024 sessions no longer ends the connection.

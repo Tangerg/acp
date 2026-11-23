@@ -8,7 +8,6 @@ import (
 	"go/parser"
 	"go/token"
 	"maps"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -120,25 +119,25 @@ func (e *emitter) printf(format string, args ...any) {
 }
 
 func (e *emitter) definition(def *Def) {
-	switch def.Kind {
-	case kindStruct:
-		e.structDef(def)
-	case kindNewtype:
-		e.newtype(def)
-	case kindNullArm:
+	switch body := def.Body.(type) {
+	case *structBody:
+		e.structDef(def, body)
+	case *newtypeBody:
+		e.newtype(def, body)
+	case nullArmBody:
 		e.nullArm(def)
-	case kindRawValue:
+	case rawValueBody:
 		e.rawValue(def)
-	case kindStringUnion:
-		e.stringUnion(def)
-	case kindNumberUnion:
-		e.numberUnion(def)
-	case kindObjectUnion:
-		e.objectUnion(def)
-	case kindValueUnion:
-		e.valueUnion(def)
+	case *stringEnumBody:
+		e.stringUnion(def, body)
+	case *numberEnumBody:
+		e.numberUnion(def, body)
+	case *objectUnionBody:
+		e.objectUnion(def, body)
+	case *valueUnionBody:
+		e.valueUnion(def, body)
 	default:
-		panic(fmt.Sprintf("schemagen: no emitter for definition kind %d", def.Kind))
+		panic(fmt.Sprintf("schemagen: no emitter for a %T", def.Body))
 	}
 }
 
@@ -166,12 +165,12 @@ func (e *emitter) rawValue(def *Def) {
 	e.printf("\t*x = append((*x)[:0], data...)\n\treturn nil\n}\n\n")
 }
 
-func (e *emitter) newtype(def *Def) {
-	e.printf("%stype %s %s\n\n", comment("", def.Doc), def.GoName, def.Base.Go)
-	e.namedValueUnmarshal(def, def.Base)
-	if encode := encodeExpr(&Field{Value: def.Base, Required: true}); encode != "" {
+func (e *emitter) newtype(def *Def, body *newtypeBody) {
+	e.printf("%stype %s %s\n\n", comment("", def.Doc), def.GoName, body.Base.Go)
+	e.namedValueUnmarshal(def, body.Base)
+	if encode := encodeExpr(&Field{Value: body.Base, Required: true}, body.Base.Go+"(x)"); encode != "" {
 		e.printf("func (x %s) MarshalJSON() ([]byte, error) {\n", def.GoName)
-		e.printf("\treturn %s\n}\n\n", strings.ReplaceAll(encode, "$", def.Base.Go+"(x)"))
+		e.printf("\treturn %s\n}\n\n", encode)
 	}
 }
 
@@ -184,27 +183,27 @@ func (e *emitter) namedValueUnmarshal(def *Def, base *ValueType) {
 
 // -- structs -----------------------------------------------------------------
 
-func (e *emitter) structDef(def *Def) {
-	if len(def.Fields) == 0 && def.Embeds == "" && def.Flattened == nil && def.CatchAll == nil {
+func (e *emitter) structDef(def *Def, body *structBody) {
+	if len(body.Fields) == 0 && body.Embeds == "" && body.Flattened == nil && body.CatchAll == nil {
 		// A type the schema gives no properties is still an object on the wire.
 		e.printf("%stype %s struct{}\n\n", comment("", def.Doc), def.GoName)
-		e.structUnmarshal(def)
-		e.structMarshal(def)
-		e.projection(def)
+		e.structUnmarshal(def, body)
+		e.structMarshal(def, body)
+		e.projection(def, body)
 		return
 	}
 	e.printf("%stype %s struct {\n", comment("", def.Doc), def.GoName)
-	if def.Embeds != "" {
-		e.printf("\t%s\n", def.Embeds)
+	if body.Embeds != "" {
+		e.printf("\t%s\n", body.Embeds)
 	}
-	for i, field := range def.Fields {
-		if i > 0 || def.Embeds != "" {
+	for i, field := range body.Fields {
+		if i > 0 || body.Embeds != "" {
 			e.printf("\n")
 		}
 		e.printf("%s\t%s %s\n", comment("\t", field.Doc), field.GoName, fieldType(field))
 	}
-	if def.Flattened != nil {
-		if len(def.Fields) > 0 {
+	if body.Flattened != nil {
+		if len(body.Fields) > 0 {
 			e.printf("\n")
 		}
 		e.printf("%s", comment("\t", []string{
@@ -212,9 +211,9 @@ func (e *emitter) structDef(def *Def) {
 			"same JSON object as the properties above. A Go struct cannot be several shapes",
 			"at once, so it holds the choice here and the encoder flattens it back.",
 		}))
-		e.printf("\t%s %s\n", flattenedSuffix, def.Flattened.GoName)
+		e.printf("\t%s %s\n", flattenedSuffix, body.Flattened.GoName)
 	}
-	if def.CatchAll != nil {
+	if body.CatchAll != nil {
 		e.printf("\n%s", comment("\t", []string{
 			retainedField + " preserves the sender's extension payload. Declared properties belong",
 			"to their typed fields, including common fields of the containing object;",
@@ -224,22 +223,22 @@ func (e *emitter) structDef(def *Def) {
 	}
 	e.printf("}\n\n")
 
-	if def.Embeds != "" {
+	if body.Embeds != "" {
 		// The embedded payload's codec is promoted: the planner refuses a wrapper
 		// with properties of its own, so the payload is the whole of its JSON.
 		return
 	}
-	e.structUnmarshal(def)
-	e.structMarshal(def)
-	if def.CatchAll != nil {
-		e.catchAllValidate(def)
+	e.structUnmarshal(def, body)
+	e.structMarshal(def, body)
+	if body.CatchAll != nil {
+		e.catchAllValidate(def, body.CatchAll)
 	}
-	e.projection(def)
+	e.projection(def, body)
 }
 
-func (e *emitter) structUnmarshal(def *Def) {
+func (e *emitter) structUnmarshal(def *Def, body *structBody) {
 	e.printf("func (x *%s) UnmarshalJSON(data []byte) error {\n", def.GoName)
-	if len(def.Fields) > 0 || def.CatchAll != nil {
+	if len(body.Fields) > 0 || body.CatchAll != nil {
 		e.printf("\tobject, objectErr := wire.DecodeObject(data)\n")
 	} else {
 		// A type with no properties is still an object, and a value that is not
@@ -248,17 +247,17 @@ func (e *emitter) structUnmarshal(def *Def) {
 	}
 	e.printf("\tif objectErr != nil {\n\t\treturn objectErr\n\t}\n")
 	e.printf("\t*x = %s{}\n", def.GoName)
-	for _, field := range def.Fields {
+	for _, field := range body.Fields {
 		e.fieldUnmarshal(field)
 	}
-	if def.Flattened != nil {
+	if body.Flattened != nil {
 		e.printf("\n\t{\n")
-		e.printf("\t\tvalue, err := unmarshal%s(data)\n", def.Flattened.Ident)
+		e.printf("\t\tvalue, err := unmarshal%s(data)\n", body.Flattened.Ident)
 		e.printf("\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n")
 		e.printf("\t\tx.%s = value\n\t}\n", flattenedSuffix)
 	}
-	if def.CatchAll != nil {
-		e.printf("\n\tx.%s = wire.Extra(object, %s)\n", retainedField, quotedStrings(def.CatchAll.ExcludedExtraKeys))
+	if body.CatchAll != nil {
+		e.printf("\n\tx.%s = wire.Extra(object, %s)\n", retainedField, quotedStrings(body.CatchAll.ExcludedExtraKeys))
 		e.printf("\n\treturn x.validate()\n}\n\n")
 		return
 	}
@@ -315,14 +314,10 @@ func assign(field *Field, value string) string {
 // fallbackLiteral is what a malformed property recovers to, in its value type.
 func fallbackLiteral(field *Field) string {
 	if field.Fallback == fbDefault {
-		return field.DefaultLit
+		return field.Default.Literal
 	}
 	return field.Value.Go + "{}"
 }
-
-// zeroLiteral matches a literal that is its type's zero value, which an absent
-// property already holds after the struct is reset.
-var zeroLiteral = regexp.MustCompile(`^(false|""|0|[A-Za-z_][A-Za-z0-9_]*\((""|0)\))$`)
 
 // absentAssignment is what an omitted property becomes, or the empty string when
 // the reset struct already holds it.
@@ -330,10 +325,10 @@ func absentAssignment(field *Field) string {
 	switch {
 	case field.Required:
 		return fmt.Sprintf("return wire.At(%q, wire.ErrRequired)", field.JSONName)
-	case field.DefaultLit == "", !field.Opt && zeroLiteral.MatchString(field.DefaultLit):
+	case field.Default == nil, !field.Opt && field.Default.Zero:
 		return ""
 	default:
-		return assign(field, field.DefaultLit)
+		return assign(field, field.Default.Literal)
 	}
 }
 
@@ -373,25 +368,25 @@ func decodeExpr(field *Field, input string) string {
 	return fmt.Sprintf("wire.UnmarshalValue[%s](%s)", value.Go, input)
 }
 
-func (e *emitter) structMarshal(def *Def) {
+func (e *emitter) structMarshal(def *Def, body *structBody) {
 	e.printf("func (x %s) MarshalJSON() ([]byte, error) {\n", def.GoName)
-	if def.CatchAll != nil {
+	if body.CatchAll != nil {
 		// x is a local and so addressable, which keeps validate on the pointer
 		// receiver an arm of a union is used through.
 		e.printf("\tif err := x.validate(); err != nil {\n\t\treturn nil, err\n\t}\n\n")
 	}
 	e.printf("\tvar writer wire.ObjectWriter\n")
-	for _, field := range def.Fields {
+	for _, field := range body.Fields {
 		e.fieldMarshal(field)
 	}
-	if def.Flattened != nil {
+	if body.Flattened != nil {
 		e.printf("\t{\n")
-		e.printf("\t\traw, err := marshal%s(x.%s)\n", def.Flattened.Ident, flattenedSuffix)
+		e.printf("\t\traw, err := marshal%s(x.%s)\n", body.Flattened.Ident, flattenedSuffix)
 		e.printf("\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n")
 		e.printf("\t\twriter.Embed(raw)\n\t}\n")
 	}
-	if def.CatchAll != nil {
-		e.printf("\twriter.SetExtra(x.%s, %s)\n", retainedField, quotedStrings(def.CatchAll.ExcludedExtraKeys))
+	if body.CatchAll != nil {
+		e.printf("\twriter.SetExtra(x.%s, %s)\n", retainedField, quotedStrings(body.CatchAll.ExcludedExtraKeys))
 	}
 	e.printf("\n\treturn writer.Bytes()\n}\n\n")
 }
@@ -405,7 +400,11 @@ func quotedStrings(values []string) string {
 }
 
 func (e *emitter) fieldMarshal(field *Field) {
-	encode := encodeExpr(field)
+	input := "x." + field.GoName
+	if field.Opt {
+		input = "value"
+	}
+	encode := encodeExpr(field, input)
 	if encode == "" {
 		if field.Opt {
 			e.printf("\twriter.SetOptional(%q, x.%s)\n", field.JSONName, field.GoName)
@@ -418,7 +417,7 @@ func (e *emitter) fieldMarshal(field *Field) {
 	switch {
 	case field.Opt:
 		e.printf("\tif value, ok := x.%s.Get(); ok {\n", field.GoName)
-		e.printf("\t\traw, err := %s\n", strings.ReplaceAll(encode, "$", "value"))
+		e.printf("\t\traw, err := %s\n", encode)
 		e.printf("\t\tif err != nil {\n\t\t\treturn nil, wire.At(%q, err)\n\t\t}\n", field.JSONName)
 		e.printf("\t\twriter.SetRaw(%q, raw)\n", field.JSONName)
 		e.printf("\t} else if x.%s.IsNull() {\n", field.GoName)
@@ -428,39 +427,39 @@ func (e *emitter) fieldMarshal(field *Field) {
 		// A nil optional slice is the absent state and is left out entirely; an
 		// empty one is present and encodes as [].
 		e.printf("\tif x.%s != nil {\n", field.GoName)
-		e.printf("\t\traw, err := %s\n", strings.ReplaceAll(encode, "$", "x."+field.GoName))
+		e.printf("\t\traw, err := %s\n", encode)
 		e.printf("\t\tif err != nil {\n\t\t\treturn nil, wire.At(%q, err)\n\t\t}\n", field.JSONName)
 		e.printf("\t\twriter.SetRaw(%q, raw)\n", field.JSONName)
 		e.printf("\t}\n")
 	default:
 		e.printf("\t{\n")
-		e.printf("\t\traw, err := %s\n", strings.ReplaceAll(encode, "$", "x."+field.GoName))
+		e.printf("\t\traw, err := %s\n", encode)
 		e.printf("\t\tif err != nil {\n\t\t\treturn nil, wire.At(%q, err)\n\t\t}\n", field.JSONName)
 		e.printf("\t\twriter.SetRaw(%q, raw)\n", field.JSONName)
 		e.printf("\t}\n")
 	}
 }
 
-// encodeExpr returns the call that encodes one property, with $ standing for the
-// value, or the empty string when the writer can encode the value itself. It
-// cannot when a union owns a discriminant, or when a required array has to encode
-// as [] where a nil slice would encode as null.
-func encodeExpr(field *Field) string {
+// encodeExpr is the call that encodes one property's value, input, or the empty
+// string when the writer can encode the value itself. It cannot when a union owns
+// a discriminant, or when a required array has to encode as [] where a nil slice
+// would encode as null.
+func encodeExpr(field *Field, input string) string {
 	value := field.Value
 	switch {
 	case value.Kind == vSlice && value.Elem.IsUnion:
-		return fmt.Sprintf("wire.MarshalSliceFunc($, marshal%s)", value.Elem.Ident)
+		return fmt.Sprintf("wire.MarshalSliceFunc(%s, marshal%s)", input, value.Elem.Ident)
 	case value.Kind == vSlice:
-		return "wire.MarshalSlice($)"
+		return fmt.Sprintf("wire.MarshalSlice(%s)", input)
 	case value.Kind == vMap && value.Elem.IsUnion:
-		return fmt.Sprintf("wire.MarshalMapFunc($, marshal%s)", value.Elem.Ident)
+		return fmt.Sprintf("wire.MarshalMapFunc(%s, marshal%s)", input, value.Elem.Ident)
 	case value.Kind == vMap:
-		return "wire.MarshalMap($)"
+		return fmt.Sprintf("wire.MarshalMap(%s)", input)
 	case value.IsUnion:
-		return fmt.Sprintf("marshal%s($)", value.Ident)
+		return fmt.Sprintf("marshal%s(%s)", value.Ident, input)
 	}
 	if constraints := stringConstraints(value); constraints != "" {
-		return constraints + ".Encode($)"
+		return fmt.Sprintf("%s.Encode(%s)", constraints, input)
 	}
 	return ""
 }
@@ -482,13 +481,13 @@ func stringConstraints(value *ValueType) string {
 // projection emits the conversion from a handle-facing params type back to the
 // wire request, given the identifiers the handle owns. A nil receiver is the
 // zero params value.
-func (e *emitter) projection(def *Def) {
-	if def.Projection == nil {
+func (e *emitter) projection(def *Def, body *structBody) {
+	if body.Projection == nil {
 		return
 	}
-	source := def.Projection.From
-	params := make([]string, len(def.Projection.Bound))
-	for i, field := range def.Projection.Bound {
+	source, sourceBody := body.Projection.From, body.Projection.From.structure()
+	params := make([]string, len(body.Projection.Bound))
+	for i, field := range body.Projection.Bound {
 		params[i] = unexport(field.GoName) + " " + fieldType(field)
 	}
 	e.printf("// bind is the %s these parameters describe once the handle supplies its identifiers.\n",
@@ -496,17 +495,17 @@ func (e *emitter) projection(def *Def) {
 	e.printf("func (x *%s) bind(%s) *%s {\n", def.GoName, strings.Join(params, ", "), source.GoName)
 	e.printf("\tif x == nil {\n\t\tx = new(%s)\n\t}\n", def.GoName)
 	e.printf("\treturn &%s{\n", source.GoName)
-	for _, field := range source.Fields {
-		if slices.Contains(def.Projection.Bound, field) {
+	for _, field := range sourceBody.Fields {
+		if slices.Contains(body.Projection.Bound, field) {
 			e.printf("\t\t%s: %s,\n", field.GoName, unexport(field.GoName))
 			continue
 		}
 		e.printf("\t\t%s: x.%s,\n", field.GoName, field.GoName)
 	}
-	if source.Flattened != nil {
+	if sourceBody.Flattened != nil {
 		e.printf("\t\t%s: x.%s,\n", flattenedSuffix, flattenedSuffix)
 	}
-	if source.CatchAll != nil {
+	if sourceBody.CatchAll != nil {
 		e.printf("\t\t%s: x.%s,\n", retainedField, retainedField)
 	}
 	e.printf("\t}\n}\n\n")
